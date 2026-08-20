@@ -94,18 +94,9 @@ export class AgentJobs {
   }
 
   async findActiveForConversationId(conversationId: string) {
-    return (
-      await this.db
-        .select()
-        .from(agentJobs)
-        .where(
-          and(
-            eq(agentJobs.conversationId, conversationId),
-            inArray(agentJobs.status, ["pending", "running"]),
-          ),
-        )
-        .limit(1)
-    )[0];
+    return this.db.transaction((transaction) =>
+      this.findActiveForConversation(transaction, conversationId),
+    );
   }
 
   async claim(id: string, startedAt: Date, leaseExpiresAt: Date) {
