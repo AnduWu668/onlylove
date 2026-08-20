@@ -443,6 +443,19 @@ async function sendInterview() {
       <p>这是建立我的恋爱分身前的第一步，择偶条件会形成后续推荐的匹配边界。</p>
     </section>
 
+    <section class="account-security">
+      <div>
+        <strong>账户安全</strong>
+        <p>通过邮箱验证码设置或重置登录密码。</p>
+      </div>
+      <RouterLink
+        class="security-link"
+        :to="{ path: '/login', query: { recovery: '1', redirect: '/app' } }"
+      >
+        设置或重置密码
+      </RouterLink>
+    </section>
+
     <p v-if="loading" class="loading-state">正在读取资料…</p>
     <section v-else-if="!profileLoaded" class="load-failure" role="alert">
       <p>{{ error }}</p>

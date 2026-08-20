@@ -240,6 +240,14 @@ describe("OnlyLove UI seam", () => {
     for (const label of ["我的分身", "候选推荐", "联系", "我的"]) {
       expect(wrapper.get("nav").text()).toContain(label);
     }
+    const passwordAction = wrapper
+      .findAll("a")
+      .find((link) => link.text().includes("设置或重置密码"))!;
+    expect(passwordAction.exists()).toBe(true);
+    await passwordAction.trigger("click");
+    await flushPromises();
+    expect(router.currentRoute.value.path).toBe("/login");
+    expect(wrapper.get('button[type="submit"]').text()).toContain("获取验证码");
   });
 
   it("shows the independent invitation-management entry to a super administrator", async () => {

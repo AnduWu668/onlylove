@@ -13,7 +13,7 @@ const code = ref("");
 const birthDate = ref("");
 const challengeId = ref("");
 const needsBirthDate = ref(false);
-const step = ref<Step>("password");
+const step = ref<Step>(route.query.recovery === "1" ? "email" : "password");
 const busy = ref(false);
 const error = ref("");
 
