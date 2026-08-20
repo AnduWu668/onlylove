@@ -1,0 +1,25 @@
+{
+  "name": "onlylove",
+  "private": true,
+  "engines": {
+    "node": ">=20.19"
+  },
+  "workspaces": [
+    "web",
+    "server",
+    "agent",
+    "evals"
+  ],
+  "scripts": {
+    "dev": "npm run db:up && concurrently -k -n WEB,SERVER,WORKER \"npm run dev -w web\" \"npm run dev -w server\" \"npm run dev -w agent\"",
+    "db:up": "docker compose up -d --wait",
+    "db:down": "docker compose down",
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run db:up && npm run test --workspaces --if-present"
+  },
+  "devDependencies": {
+    "concurrently": "10.0.5"
+  }
+}
+
