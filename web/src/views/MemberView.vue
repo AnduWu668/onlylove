@@ -32,6 +32,7 @@ interface ProfileResponse {
 const router = useRouter();
 const member = ref<{ email: string; role: string }>();
 const loading = ref(true);
+const profileLoaded = ref(false);
 const saving = ref(false);
 const error = ref("");
 const success = ref("");
@@ -67,6 +68,14 @@ const adultBirthDateLimit = (() => {
   return `${year}-${month}-${day}`;
 })();
 
+async function jsonOrUndefined<T>(response: Response) {
+  try {
+    return (await response.json()) as T;
+  } catch {
+    return undefined;
+  }
+}
+
 function loadForm(data: ProfileResponse) {
   if (data.profile) {
     Object.assign(form, {
@@ -98,23 +107,36 @@ function loadForm(data: ProfileResponse) {
   });
 }
 
-onMounted(async () => {
+async function loadProfile() {
+  loading.value = true;
+  profileLoaded.value = false;
+  error.value = "";
   try {
     const session = await fetch("/api/session");
     if (!session.ok) {
       await router.replace({ path: "/login", query: { redirect: "/app" } });
       return;
     }
-    member.value = (await session.json()).member;
+    const sessionData = await jsonOrUndefined<{
+      member: { email: string; role: string };
+    }>(session);
+    if (!sessionData) throw new Error();
+    member.value = sessionData.member;
     const response = await fetch("/api/member/profile");
-    if (!response.ok) throw new Error("暂时无法读取资料，请稍后重试。");
-    loadForm((await response.json()) as ProfileResponse);
-  } catch (caught) {
-    error.value = caught instanceof Error ? caught.message : "暂时无法读取资料。";
+    const data = response.ok
+      ? await jsonOrUndefined<ProfileResponse>(response)
+      : undefined;
+    if (!data) throw new Error();
+    loadForm(data);
+    profileLoaded.value = true;
+  } catch {
+    error.value = "暂时无法读取资料，请稍后重试。";
   } finally {
     loading.value = false;
   }
-});
+}
+
+onMounted(loadProfile);
 
 async function signOut() {
   await fetch("/api/session", { method: "DELETE" });
@@ -203,13 +225,19 @@ async function save() {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),
     });
-    const data = (await response.json()) as ProfileResponse;
-    if (!response.ok) throw new Error("资料未保存，请检查填写内容。");
-    if (!data.matchCriteria) throw new Error("资料已返回，但缺少条件版本。");
+    if (!response.ok) {
+      error.value = "资料未保存，请检查填写内容。";
+      return;
+    }
+    const data = await jsonOrUndefined<ProfileResponse>(response);
+    if (!data?.matchCriteria) {
+      error.value = "资料未保存，请稍后重试。";
+      return;
+    }
     version.value = data.matchCriteria.version;
     success.value = `已保存，择偶条件版本 v${version.value}`;
-  } catch (caught) {
-    error.value = caught instanceof Error ? caught.message : "资料未保存，请稍后重试。";
+  } catch {
+    error.value = "资料未保存，请稍后重试。";
   } finally {
     saving.value = false;
   }
@@ -233,6 +261,10 @@ async function save() {
     </section>
 
     <p v-if="loading" class="loading-state">正在读取资料…</p>
+    <section v-else-if="!profileLoaded" class="load-failure" role="alert">
+      <p>{{ error }}</p>
+      <button class="load-retry" type="button" @click="loadProfile">重试</button>
+    </section>
     <form v-else class="profile-form" @submit.prevent="save">
       <fieldset class="form-section">
         <legend>基础档案</legend>

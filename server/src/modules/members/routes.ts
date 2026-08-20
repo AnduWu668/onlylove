@@ -105,7 +105,6 @@ const profileUpdateSchema = {
         acceptableCities: {
           type: "array",
           minItems: 1,
-          maxItems: 10,
           uniqueItems: true,
           items: { type: "string", minLength: 1, maxLength: 60 },
         },

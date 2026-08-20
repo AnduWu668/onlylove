@@ -169,6 +169,7 @@ describe("OnlyLove UI seam", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2024-02-29T12:00:00"));
     let version = 0;
+    let saveFailsWithHtml = false;
     let storedProfile: {
       profile: object;
       matchCriteria: object | null;
@@ -194,6 +195,15 @@ describe("OnlyLove UI seam", () => {
         };
       }
       if (options?.method === "PUT") {
+        if (saveFailsWithHtml) {
+          return {
+            ok: false,
+            status: 502,
+            json: async () => {
+              throw new SyntaxError("Unexpected token '<'");
+            },
+          };
+        }
         version += 1;
         const body = JSON.parse(String(options.body));
         storedProfile = {
@@ -274,5 +284,61 @@ describe("OnlyLove UI seam", () => {
     await wrapper.get("form.profile-form").trigger("submit");
     await flushPromises();
     expect(wrapper.get('[role="status"]').text()).toContain("v2");
+
+    saveFailsWithHtml = true;
+    await wrapper.get("form.profile-form").trigger("submit");
+    await flushPromises();
+    expect(wrapper.get('[role="alert"]').text()).toBe(
+      "资料未保存，请检查填写内容。",
+    );
+  });
+
+  it("keeps the profile form hidden until a failed load is retried", async () => {
+    let profileAttempts = 0;
+    const request = vi.fn(async (url: string) => {
+      if (url === "/api/session") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            member: { email: "member@example.com", role: "member" },
+          }),
+        };
+      }
+      profileAttempts += 1;
+      if (profileAttempts === 1) {
+        return { ok: false, status: 500, json: async () => ({}) };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          profile: {
+            nickname: "已保存成员",
+            birthDate: "1990-01-01",
+            gender: "female",
+            heightCm: 165,
+            city: "上海",
+            occupation: "设计师",
+          },
+          matchCriteria: null,
+        }),
+      };
+    });
+    vi.stubGlobal("fetch", request);
+    const router = createRouter({ history: createMemoryHistory(), routes });
+    const wrapper = mount(App, { global: { plugins: [router] } });
+    await router.push("/app");
+    await router.isReady();
+    await flushPromises();
+
+    expect(wrapper.find("form.profile-form").exists()).toBe(false);
+    expect(wrapper.get('[role="alert"]').text()).toContain("无法读取资料");
+    await wrapper.get("button.load-retry").trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get<HTMLInputElement>("#nickname").element.value).toBe(
+      "已保存成员",
+    );
   });
 });

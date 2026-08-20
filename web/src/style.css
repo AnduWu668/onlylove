@@ -262,6 +262,27 @@ button:disabled {
   text-align: center;
 }
 
+.load-failure {
+  display: grid;
+  gap: 16px;
+  justify-items: center;
+  padding: 28px;
+  border: 1px solid rgb(91 52 57 / 11%);
+  border-radius: 20px;
+  background: #eee5da;
+  color: #806f6d;
+  text-align: center;
+}
+
+.load-failure p {
+  margin: 0;
+}
+
+.load-retry {
+  min-height: 42px;
+  padding: 0 22px;
+}
+
 .profile-form {
   display: grid;
   gap: 16px;

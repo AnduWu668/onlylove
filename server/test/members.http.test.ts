@@ -602,6 +602,10 @@ describe("Members HTTP seam", () => {
           heightMinimumCm: 100,
           heightMaximumCm: 250,
           heightMode: "required",
+          acceptableCities: Array.from(
+            { length: 11 },
+            (_, index) => `城市${index + 1}`,
+          ),
         },
       },
     });
