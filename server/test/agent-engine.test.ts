@@ -1,3 +1,4 @@
+import { createServer } from "node:http";
 import { describe, expect, it } from "vitest";
 import { Type } from "@earendil-works/pi-ai";
 import {
@@ -22,6 +23,67 @@ function interviewContext(recentMessages: InterviewHistoryMessage[] = []) {
 }
 
 describe("Agent Engine continueInterview seam", () => {
+  it("explicitly disables Ark deep thinking", async () => {
+    let requestBody: unknown;
+    const server = createServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on("data", (chunk: Buffer) => chunks.push(chunk));
+      request.on("end", () => {
+        requestBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.write(
+          `data: ${JSON.stringify({
+            id: "test-response",
+            model: "ark-test-v1",
+            choices: [
+              { index: 0, delta: { content: "请继续说说。" }, finish_reason: null },
+            ],
+          })}\n\n`,
+        );
+        response.write(
+          `data: ${JSON.stringify({
+            id: "test-response",
+            model: "ark-test-v1",
+            choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+            usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+          })}\n\n`,
+        );
+        response.end("data: [DONE]\n\n");
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Test server unavailable");
+    }
+    const engine = new AgentEngine({
+      provider: "volcengine-ark",
+      apiKey: "test-only-key",
+      model: "ark-test-v1",
+      baseUrl: `http://127.0.0.1:${address.port}`,
+      pricing: {
+        effectiveDate: "2026-08-20",
+        inputCostCnyPerMillionTokens: 0,
+        outputCostCnyPerMillionTokens: 0,
+      },
+    });
+
+    try {
+      await engine.continueInterview(
+        interviewContext(),
+        "继续",
+        () => undefined,
+        async () => undefined,
+      );
+      expect(requestBody).toMatchObject({ thinking: { type: "disabled" } });
+    } finally {
+      engine.close();
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+
   it("retries before output and switches the whole request to the backup model", async () => {
     const engine = new AgentEngine({
       provider: "deterministic-fake",
@@ -45,8 +107,14 @@ describe("Agent Engine continueInterview seam", () => {
     expect(chunks.join("")).toBe("备用模型给出了完整回答。");
     expect(result.actualModel).toBe("backup-v1");
     expect(result.attempts).toMatchObject([
-      { requestedModel: "primary-v1", error: "MODEL_REQUEST_FAILED" },
-      { requestedModel: "primary-v1", error: "MODEL_REQUEST_FAILED" },
+      {
+        requestedModel: "primary-v1",
+        error: "MODEL_REQUEST_FAILED: primary unavailable",
+      },
+      {
+        requestedModel: "primary-v1",
+        error: "MODEL_REQUEST_FAILED: primary unavailable",
+      },
       { requestedModel: "backup-v1", error: null },
     ]);
     expect(result.retryCount).toBe(2);

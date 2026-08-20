@@ -50,6 +50,9 @@ const interviewMessages = ref<
   { id: string; role: "member" | "agent"; content: string }[]
 >([]);
 let interviewEvents: EventSource | undefined;
+let interviewRetry:
+  | { clientMessageId: string; content: string }
+  | undefined;
 const form = reactive({
   nickname: "",
   birthDate: "",
@@ -298,9 +301,11 @@ function showTab(
 }
 
 function streamError(code?: string) {
-  return code === "MODEL_NOT_CONFIGURED"
-    ? "画像访谈模型尚未配置，请联系管理员。"
-    : "这次回答生成失败，消息额度已退回，请稍后重试。";
+  if (code === "MODEL_NOT_CONFIGURED") {
+    return "画像访谈模型尚未配置，请联系管理员。";
+  }
+  if (code === "INTERVIEW_IN_PROGRESS") return "上一条回答仍在生成中。";
+  return "这次回答生成失败，消息额度已退回，请稍后重试。";
 }
 
 async function sendInterview() {
@@ -309,18 +314,28 @@ async function sendInterview() {
   interviewSending.value = true;
   interviewError.value = "";
   interviewInput.value = "";
-  const clientMessageId = crypto.randomUUID();
+  const clientMessageId =
+    interviewRetry?.content === content
+      ? interviewRetry.clientMessageId
+      : crypto.randomUUID();
+  interviewRetry = undefined;
   interviewMessages.value.push({
     id: clientMessageId,
     role: "member",
     content,
   });
-  const answer = {
+  const answer = reactive({
     id: `pending-${clientMessageId}`,
     role: "agent" as const,
     content: "",
-  };
+  });
   interviewMessages.value.push(answer);
+  const rollback = () => {
+    interviewMessages.value = interviewMessages.value.filter(
+      (message) => message.id !== clientMessageId && message.id !== answer.id,
+    );
+    if (!interviewInput.value) interviewInput.value = content;
+  };
 
   try {
     const response = await fetch("/api/member/interview/messages", {
@@ -335,9 +350,7 @@ async function sendInterview() {
     }>(response);
     if (!response.ok || !data?.eventsUrl) {
       interviewError.value = streamError(data?.code);
-      interviewMessages.value = interviewMessages.value.filter(
-        (message) => message.id !== answer.id,
-      );
+      rollback();
       interviewSending.value = false;
       return;
     }
@@ -356,20 +369,20 @@ async function sendInterview() {
       interviewSending.value = false;
     });
     interviewEvents.addEventListener("error", (event) => {
-      let code: string | undefined;
-      if (event instanceof MessageEvent && event.data) {
-        code = (JSON.parse(event.data) as { code?: string }).code;
-      }
+      if (!(event instanceof MessageEvent) || !event.data) return;
+      const code = (JSON.parse(event.data) as { code?: string }).code;
       interviewError.value = streamError(code);
+      interviewMessages.value = interviewMessages.value.filter(
+        (message) => message.id !== answer.id,
+      );
       interviewEvents?.close();
       interviewEvents = undefined;
       interviewSending.value = false;
     });
   } catch {
-    interviewError.value = streamError();
-    interviewMessages.value = interviewMessages.value.filter(
-      (message) => message.id !== answer.id,
-    );
+    interviewError.value = "网络中断，消息已恢复，请再次发送。";
+    interviewRetry = { clientMessageId, content };
+    rollback();
     interviewSending.value = false;
   }
 }

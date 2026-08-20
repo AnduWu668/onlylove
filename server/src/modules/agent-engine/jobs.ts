@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lte, or } from "drizzle-orm";
 import type { Database, DatabaseTransaction } from "../../db.js";
 import type { AgentAttemptResult } from "./engine.js";
 import { agentJobs, agentRuns } from "./schema.js";
@@ -38,14 +38,65 @@ export class AgentJobs {
     )[0];
   }
 
-  async claim(id: string, startedAt: Date) {
+  async findActiveForConversation(
+    transaction: DatabaseTransaction,
+    conversationId: string,
+  ) {
+    return (
+      await transaction
+        .select()
+        .from(agentJobs)
+        .where(
+          and(
+            eq(agentJobs.conversationId, conversationId),
+            inArray(agentJobs.status, ["pending", "running"]),
+          ),
+        )
+        .limit(1)
+    )[0];
+  }
+
+  async claim(id: string, startedAt: Date, leaseExpiresAt: Date) {
+    const leaseToken = randomUUID();
     return (
       await this.db
         .update(agentJobs)
-        .set({ status: "running", startedAt })
-        .where(and(eq(agentJobs.id, id), eq(agentJobs.status, "pending")))
+        .set({ status: "running", startedAt, leaseToken, leaseExpiresAt })
+        .where(
+          and(
+            eq(agentJobs.id, id),
+            or(
+              eq(agentJobs.status, "pending"),
+              and(
+                eq(agentJobs.status, "running"),
+                or(
+                  isNull(agentJobs.leaseExpiresAt),
+                  lte(agentJobs.leaseExpiresAt, startedAt),
+                ),
+              ),
+            ),
+          ),
+        )
         .returning()
     )[0];
+  }
+
+  async heartbeat(job: AgentJob, leaseExpiresAt: Date) {
+    return Boolean(
+      (
+        await this.db
+          .update(agentJobs)
+          .set({ leaseExpiresAt })
+          .where(
+            and(
+              eq(agentJobs.id, job.id),
+              eq(agentJobs.status, "running"),
+              eq(agentJobs.leaseToken, job.leaseToken!),
+            ),
+          )
+          .returning({ id: agentJobs.id })
+      )[0],
+    );
   }
 
   async get(id: string) {
@@ -79,14 +130,34 @@ export class AgentJobs {
   async complete(
     transaction: DatabaseTransaction,
     job: AgentJob,
+    outputMessageId: string,
     retryCount: number,
     switchedModel: boolean,
     completedAt: Date,
   ) {
-    await transaction
-      .update(agentJobs)
-      .set({ status: "completed", retryCount, switchedModel, completedAt })
-      .where(eq(agentJobs.id, job.id));
+    return Boolean(
+      (
+        await transaction
+          .update(agentJobs)
+          .set({
+            status: "completed",
+            outputMessageId,
+            retryCount,
+            switchedModel,
+            leaseToken: null,
+            leaseExpiresAt: null,
+            completedAt,
+          })
+          .where(
+            and(
+              eq(agentJobs.id, job.id),
+              eq(agentJobs.status, "running"),
+              eq(agentJobs.leaseToken, job.leaseToken!),
+            ),
+          )
+          .returning({ id: agentJobs.id })
+      )[0],
+    );
   }
 
   async fail(
@@ -97,17 +168,30 @@ export class AgentJobs {
     switchedModel: boolean,
     failedAt: Date,
   ) {
-    await transaction
-      .update(agentJobs)
-      .set({
-        status: "failed",
-        error: code,
-        retryCount,
-        switchedModel,
-        quotaRefunded: true,
-        completedAt: failedAt,
-      })
-      .where(eq(agentJobs.id, job.id));
+    return Boolean(
+      (
+        await transaction
+          .update(agentJobs)
+          .set({
+            status: "failed",
+            error: code,
+            retryCount,
+            switchedModel,
+            quotaRefunded: true,
+            leaseToken: null,
+            leaseExpiresAt: null,
+            completedAt: failedAt,
+          })
+          .where(
+            and(
+              eq(agentJobs.id, job.id),
+              eq(agentJobs.status, "running"),
+              eq(agentJobs.leaseToken, job.leaseToken!),
+            ),
+          )
+          .returning({ id: agentJobs.id })
+      )[0],
+    );
   }
 
   listRuns() {

@@ -17,6 +17,8 @@ import {
 } from "./schema.js";
 
 const OWN_AGENT_DAILY_LIMIT = 100;
+const JOB_LEASE_MS = 2 * 60 * 1_000;
+const JOB_HEARTBEAT_MS = 30 * 1_000;
 
 export interface ConversationsOptions {
   db: Database;
@@ -55,31 +57,21 @@ async function processInterviewJob(
 ) {
   const { agentEngine, agentJobs, db, now } = options;
   const startedAt = now();
-  const claimed = await agentJobs.claim(job.id, startedAt);
+  const claimed = await agentJobs.claim(
+    job.id,
+    startedAt,
+    new Date(startedAt.getTime() + JOB_LEASE_MS),
+  );
 
   if (!claimed) {
     const current = await agentJobs.get(job.id);
     if (current?.status === "completed") {
-      const input = (
-        await db
-          .select({ sequence: conversationMessages.sequence })
-          .from(conversationMessages)
-          .where(eq(conversationMessages.id, current.inputMessageId))
-          .limit(1)
-      )[0];
-      const answer = input
+      const answer = current.outputMessageId
         ? (
             await db
               .select()
               .from(conversationMessages)
-              .where(
-                and(
-                  eq(conversationMessages.conversationId, current.conversationId),
-                  eq(conversationMessages.role, "agent"),
-                  lt(sql`${input.sequence}`, conversationMessages.sequence),
-                ),
-              )
-              .orderBy(asc(conversationMessages.sequence))
+              .where(eq(conversationMessages.id, current.outputMessageId))
               .limit(1)
           )[0]
         : undefined;
@@ -87,37 +79,50 @@ async function processInterviewJob(
       stream.end(sse("done", { messageId: answer?.id }));
       return;
     }
-    stream.end(sse("error", { code: current?.error ?? "JOB_NOT_AVAILABLE" }));
+    if (current?.status === "failed") {
+      stream.end(sse("error", { code: current.error ?? "AGENT_JOB_FAILED" }));
+      return;
+    }
+    stream.end("retry: 1000\n\n");
     return;
   }
 
-  const input = (
-    await db
-      .select()
-      .from(conversationMessages)
-      .where(eq(conversationMessages.id, claimed.inputMessageId))
-      .limit(1)
-  )[0]!;
-  const recentHistory = await db
-    .select({
-      role: conversationMessages.role,
-      content: conversationMessages.content,
-    })
-    .from(conversationMessages)
-    .where(
-      and(
-        eq(conversationMessages.conversationId, claimed.conversationId),
-        lt(conversationMessages.sequence, input.sequence),
-      ),
-    )
-    .orderBy(desc(conversationMessages.sequence))
-    .limit(200);
-  const history = recentHistory.reverse();
+  const heartbeat = setInterval(() => {
+    const at = now();
+    void agentJobs.heartbeat(
+      claimed,
+      new Date(at.getTime() + JOB_LEASE_MS),
+    ).catch(() => undefined);
+  }, JOB_HEARTBEAT_MS);
+  heartbeat.unref();
+
   let retryCount = 0;
   let switchedModel = false;
   let modelCompleted = false;
 
   try {
+    const input = (
+      await db
+        .select()
+        .from(conversationMessages)
+        .where(eq(conversationMessages.id, claimed.inputMessageId))
+        .limit(1)
+    )[0]!;
+    const recentHistory = await db
+      .select({
+        role: conversationMessages.role,
+        content: conversationMessages.content,
+      })
+      .from(conversationMessages)
+      .where(
+        and(
+          eq(conversationMessages.conversationId, claimed.conversationId),
+          lt(conversationMessages.sequence, input.sequence),
+        ),
+      )
+      .orderBy(desc(conversationMessages.sequence))
+      .limit(200);
+    const history = recentHistory.reverse();
     const result = await agentEngine.continueInterview(
       { ...memberContext, recentMessages: history },
       input.content,
@@ -138,11 +143,12 @@ async function processInterviewJob(
           .from(conversationMessages)
           .where(eq(conversationMessages.conversationId, claimed.conversationId))
       )[0]?.value;
+      const answerId = randomUUID();
       const saved = (
         await transaction
           .insert(conversationMessages)
           .values({
-            id: randomUUID(),
+            id: answerId,
             conversationId: claimed.conversationId,
             role: "agent",
             content: result.text,
@@ -151,13 +157,15 @@ async function processInterviewJob(
           })
           .returning()
       )[0]!;
-      await agentJobs.complete(
+      const completed = await agentJobs.complete(
         transaction,
         claimed,
+        answerId,
         result.retryCount,
         result.switchedModel,
         completedAt,
       );
+      if (!completed) throw new Error("AGENT_JOB_LEASE_LOST");
       return saved;
     });
     stream.end(sse("done", { messageId: answer.id }));
@@ -174,16 +182,7 @@ async function processInterviewJob(
     }
     const failedAt = now();
     await db.transaction(async (transaction) => {
-      await transaction
-        .update(ownAgentDailyQuotas)
-        .set({ used: sql`${ownAgentDailyQuotas.used} - 1`, updatedAt: failedAt })
-        .where(
-          and(
-            eq(ownAgentDailyQuotas.memberId, claimed.memberId),
-            eq(ownAgentDailyQuotas.quotaDate, beijingDate(claimed.createdAt)),
-          ),
-        );
-      await agentJobs.fail(
+      const failed = await agentJobs.fail(
         transaction,
         claimed,
         code,
@@ -191,8 +190,21 @@ async function processInterviewJob(
         switchedModel,
         failedAt,
       );
+      if (failed) {
+        await transaction
+          .update(ownAgentDailyQuotas)
+          .set({ used: sql`${ownAgentDailyQuotas.used} - 1`, updatedAt: failedAt })
+          .where(
+            and(
+              eq(ownAgentDailyQuotas.memberId, claimed.memberId),
+              eq(ownAgentDailyQuotas.quotaDate, beijingDate(claimed.createdAt)),
+            ),
+          );
+      }
     });
     stream.end(sse("error", { code }));
+  } finally {
+    clearInterval(heartbeat);
   }
 }
 
@@ -318,6 +330,11 @@ export function registerConversationsRoutes(
             quotaRemaining: OWN_AGENT_DAILY_LIMIT - (quota?.used ?? 0),
           };
         }
+        if (
+          await agentJobs.findActiveForConversation(transaction, conversation.id)
+        ) {
+          return { inProgress: true as const };
+        }
         if ((quota?.used ?? 0) >= OWN_AGENT_DAILY_LIMIT) return undefined;
         if (quota) {
           await transaction
@@ -382,6 +399,9 @@ export function registerConversationsRoutes(
       });
 
       if (!result) return reply.code(429).send({ code: "OWN_AGENT_QUOTA_USED" });
+      if ("inProgress" in result) {
+        return reply.code(409).send({ code: "INTERVIEW_IN_PROGRESS" });
+      }
       return reply.code(202).send({
         conversationId: result.conversation.id,
         jobId: result.job.id,
