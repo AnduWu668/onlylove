@@ -71,4 +71,3 @@ export const sessions = pgTable(
     index("sessions_member_index").on(table.memberId),
   ],
 );
-

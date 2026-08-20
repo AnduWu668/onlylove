@@ -30,4 +30,3 @@ describe("Mailer environment selection", () => {
     ).toBeInstanceOf(SmtpMailer);
   });
 });
-

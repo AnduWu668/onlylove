@@ -7,4 +7,3 @@ const { databaseUrl } = readConfig();
 const { db, pool } = openDatabase(databaseUrl);
 await migrateDatabase(db);
 await pool.end();
-

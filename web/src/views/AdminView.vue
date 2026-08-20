@@ -56,7 +56,7 @@ async function issue() {
       body: JSON.stringify({ email: email.value }),
     });
     if (!response.ok) throw new Error("邀请签发失败，请检查邮箱后重试。");
-    invitations.value.unshift(await response.json());
+    await loadInvitations();
     email.value = "";
   } catch (caught) {
     error.value = caught instanceof Error ? caught.message : "邀请签发失败。";
@@ -74,11 +74,7 @@ async function changeInvitation(invitation: Invitation, action: "revoke" | "reis
       { method: "POST" },
     );
     if (!response.ok) throw new Error("邀请状态已变化，请刷新后重试。");
-    const changed: Invitation = await response.json();
-    if (action === "reissue") invitations.value.unshift(changed);
-    else invitations.value = invitations.value.map((item) =>
-      item.id === changed.id ? changed : item,
-    );
+    await loadInvitations();
   } catch (caught) {
     error.value = caught instanceof Error ? caught.message : "操作失败。";
   } finally {
@@ -163,4 +159,3 @@ function formatDate(value: string) {
     </section>
   </main>
 </template>
-

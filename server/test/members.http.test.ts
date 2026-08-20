@@ -13,7 +13,7 @@ describe("Members HTTP seam", () => {
   let mailer: MemoryMailer;
   let currentTime: Date;
 
-  async function invite(email: string) {
+  async function signInAdmin() {
     const challenge = await app.inject({
       method: "POST",
       url: "/api/auth/otp",
@@ -28,7 +28,11 @@ describe("Members HTTP seam", () => {
         code: mailer.lastCodeFor("admin@onlylove.test"),
       },
     });
-    const cookie = signIn.cookies[0]?.name + "=" + signIn.cookies[0]?.value;
+    return signIn.cookies[0]?.name + "=" + signIn.cookies[0]?.value;
+  }
+
+  async function invite(email: string) {
+    const cookie = await signInAdmin();
     return app.inject({
       method: "POST",
       url: "/api/admin/invitations",
@@ -110,28 +114,7 @@ describe("Members HTTP seam", () => {
   });
 
   it("registers an invited adult once and exposes the member through the session", async () => {
-    const adminChallenge = await app.inject({
-      method: "POST",
-      url: "/api/auth/otp",
-      payload: { email: "admin@onlylove.test" },
-    });
-    const adminSignIn = await app.inject({
-      method: "POST",
-      url: "/api/auth/verify",
-      payload: {
-        email: "admin@onlylove.test",
-        challengeId: adminChallenge.json().challengeId,
-        code: mailer.lastCodeFor("admin@onlylove.test"),
-      },
-    });
-    const adminCookie =
-      adminSignIn.cookies[0]?.name + "=" + adminSignIn.cookies[0]?.value;
-    await app.inject({
-      method: "POST",
-      url: "/api/admin/invitations",
-      headers: { cookie: adminCookie },
-      payload: { email: "adult@onlylove.test" },
-    });
+    await invite("adult@onlylove.test");
 
     const requestCode = await app.inject({
       method: "POST",
@@ -211,21 +194,7 @@ describe("Members HTTP seam", () => {
     });
     expect(forbidden.statusCode).toBe(403);
 
-    const challenge = await app.inject({
-      method: "POST",
-      url: "/api/auth/otp",
-      payload: { email: "admin@onlylove.test" },
-    });
-    const signIn = await app.inject({
-      method: "POST",
-      url: "/api/auth/verify",
-      payload: {
-        email: "admin@onlylove.test",
-        challengeId: challenge.json().challengeId,
-        code: mailer.lastCodeFor("admin@onlylove.test"),
-      },
-    });
-    const cookie = signIn.cookies[0]?.name + "=" + signIn.cookies[0]?.value;
+    const cookie = await signInAdmin();
     const issued = await app.inject({
       method: "POST",
       url: "/api/admin/invitations",

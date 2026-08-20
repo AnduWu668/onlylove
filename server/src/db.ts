@@ -17,4 +17,3 @@ export async function migrateDatabase(db: Database) {
     migrationsFolder: fileURLToPath(new URL("../drizzle", import.meta.url)),
   });
 }
-

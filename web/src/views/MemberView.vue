@@ -57,4 +57,3 @@ async function signOut() {
     </nav>
   </main>
 </template>
-

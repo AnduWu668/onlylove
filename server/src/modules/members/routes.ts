@@ -26,7 +26,7 @@ function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
 }
 
-function hash(value: string) {
+function hashSessionToken(value: string) {
   return createHash("sha256").update(value).digest("hex");
 }
 
@@ -127,10 +127,7 @@ export async function bootstrapSuperAdmin(
       role: "super_admin",
       createdAt: now,
     })
-    .onConflictDoUpdate({
-      target: members.email,
-      set: { role: "super_admin", deletedAt: null },
-    });
+    .onConflictDoNothing({ target: members.email });
 }
 
 async function memberForRequest(
@@ -147,13 +144,22 @@ async function memberForRequest(
     .innerJoin(members, eq(sessions.memberId, members.id))
     .where(
       and(
-        eq(sessions.tokenHash, hash(token)),
+        eq(sessions.tokenHash, hashSessionToken(token)),
         gt(sessions.expiresAt, now),
         isNull(members.deletedAt),
       ),
     )
     .limit(1);
   return rows[0]?.member;
+}
+
+async function superAdminForRequest(
+  request: FastifyRequest,
+  db: Database,
+  now: Date,
+) {
+  const member = await memberForRequest(request, db, now);
+  return member?.role === "super_admin" ? member : undefined;
 }
 
 export function registerMembersRoutes(
@@ -355,7 +361,7 @@ export function registerMembersRoutes(
         await transaction.insert(sessions).values({
           id: randomUUID(),
           memberId: signedInMember.id,
-          tokenHash: hash(sessionToken),
+          tokenHash: hashSessionToken(sessionToken),
           createdAt: signedInAt,
           expiresAt: new Date(signedInAt.getTime() + 30 * 24 * 60 * 60_000),
         });
@@ -392,7 +398,9 @@ export function registerMembersRoutes(
   app.delete("/api/session", async (request, reply) => {
     const token = request.cookies.onlylove_session;
     if (token) {
-      await db.delete(sessions).where(eq(sessions.tokenHash, hash(token)));
+      await db
+        .delete(sessions)
+        .where(eq(sessions.tokenHash, hashSessionToken(token)));
     }
     reply.clearCookie("onlylove_session", { path: "/" });
     return reply.code(204).send();
@@ -400,8 +408,8 @@ export function registerMembersRoutes(
 
   app.get("/api/admin/invitations", async (request, reply) => {
     const requestedAt = now();
-    const actor = await memberForRequest(request, db, requestedAt);
-    if (actor?.role !== "super_admin") {
+    const actor = await superAdminForRequest(request, db, requestedAt);
+    if (!actor) {
       return reply.code(403).send({ code: "FORBIDDEN" });
     }
     const rows = await db
@@ -419,8 +427,8 @@ export function registerMembersRoutes(
     "/api/admin/invitations",
     { schema: { body: emailSchema } },
     async (request, reply) => {
-      const actor = await memberForRequest(request, db, now());
-      if (actor?.role !== "super_admin") {
+      const actor = await superAdminForRequest(request, db, now());
+      if (!actor) {
         return reply.code(403).send({ code: "FORBIDDEN" });
       }
 
@@ -445,8 +453,8 @@ export function registerMembersRoutes(
     },
     async (request, reply) => {
       const changedAt = now();
-      const actor = await memberForRequest(request, db, changedAt);
-      if (actor?.role !== "super_admin") {
+      const actor = await superAdminForRequest(request, db, changedAt);
+      if (!actor) {
         return reply.code(403).send({ code: "FORBIDDEN" });
       }
       const invitation = (
@@ -482,8 +490,8 @@ export function registerMembersRoutes(
     },
     async (request, reply) => {
       const changedAt = now();
-      const actor = await memberForRequest(request, db, changedAt);
-      if (actor?.role !== "super_admin") {
+      const actor = await superAdminForRequest(request, db, changedAt);
+      if (!actor) {
         return reply.code(403).send({ code: "FORBIDDEN" });
       }
       const original = (

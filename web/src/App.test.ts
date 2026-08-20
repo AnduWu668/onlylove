@@ -103,7 +103,14 @@ describe("OnlyLove UI seam", () => {
   });
 
   it("shows the independent invitation-management entry to a super administrator", async () => {
-    const request = vi.fn(async (url: string) => {
+    const original = {
+      id: "1dc8b163-2270-42b6-a90a-dbb3b887501e",
+      email: "invited@example.com",
+      status: "active",
+      expiresAt: "2026-08-27T08:00:00.000Z",
+    };
+    let invitationState = [original];
+    const request = vi.fn(async (url: string, options?: RequestInit) => {
       if (url === "/api/session") {
         return {
           ok: true,
@@ -113,19 +120,21 @@ describe("OnlyLove UI seam", () => {
           }),
         };
       }
+      if (options?.method === "POST" && url.endsWith("/reissue")) {
+        invitationState = [
+          {
+            ...original,
+            id: "f52654ef-daad-46f6-8860-e27a867b17d4",
+            expiresAt: "2026-09-03T08:00:00.000Z",
+          },
+          { ...original, status: "revoked" },
+        ];
+        return { ok: true, status: 201, json: async () => invitationState[0] };
+      }
       return {
         ok: true,
         status: 200,
-        json: async () => ({
-          invitations: [
-            {
-              id: "1dc8b163-2270-42b6-a90a-dbb3b887501e",
-              email: "invited@example.com",
-              status: "active",
-              expiresAt: "2026-08-27T08:00:00.000Z",
-            },
-          ],
-        }),
+        json: async () => ({ invitations: invitationState }),
       };
     });
     vi.stubGlobal("fetch", request);
@@ -139,5 +148,17 @@ describe("OnlyLove UI seam", () => {
     expect(wrapper.get('input[type="email"]')).toBeTruthy();
     expect(wrapper.text()).toContain("invited@example.com");
     expect(wrapper.get("button.invitation-action").text()).toContain("撤销");
+
+    const reissue = wrapper
+      .findAll("button.invitation-action")
+      .find((button) => button.text().includes("重新签发"))!;
+    await reissue.trigger("click");
+    await flushPromises();
+    expect(request).toHaveBeenCalledWith(
+      `/api/admin/invitations/${original.id}/reissue`,
+      { method: "POST" },
+    );
+    expect(wrapper.findAll(".invitation-list article")).toHaveLength(2);
+    expect(wrapper.text()).toContain("已撤销");
   });
 });
