@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from "vue";
+import { onMounted, onUnmounted, reactive, ref } from "vue";
 import { useRouter } from "vue-router";
 
 type Gender = "female" | "male" | "";
@@ -37,6 +37,19 @@ const saving = ref(false);
 const error = ref("");
 const success = ref("");
 const version = ref<number>();
+const activeTab = ref<"twin" | "recommendations" | "connections" | "profile">(
+  "profile",
+);
+const interviewLoaded = ref(false);
+const interviewLoading = ref(false);
+const interviewSending = ref(false);
+const interviewError = ref("");
+const interviewInput = ref("");
+const quotaRemaining = ref<number>();
+const interviewMessages = ref<
+  { id: string; role: "member" | "agent"; content: string }[]
+>([]);
+let interviewEvents: EventSource | undefined;
 const form = reactive({
   nickname: "",
   birthDate: "",
@@ -137,6 +150,7 @@ async function loadProfile() {
 }
 
 onMounted(loadProfile);
+onUnmounted(() => interviewEvents?.close());
 
 async function signOut() {
   await fetch("/api/session", { method: "DELETE" });
@@ -242,6 +256,115 @@ async function save() {
     saving.value = false;
   }
 }
+
+async function loadInterview() {
+  if (interviewLoaded.value || interviewLoading.value) return;
+  interviewLoading.value = true;
+  interviewError.value = "";
+  try {
+    const response = await fetch("/api/member/interview");
+    const data = response.ok
+      ? await jsonOrUndefined<{
+          messages: {
+            id: string;
+            role: "member" | "agent";
+            content: string;
+          }[];
+        }>(response)
+      : undefined;
+    if (!data) throw new Error();
+    interviewMessages.value = data.messages;
+    interviewLoaded.value = true;
+  } catch {
+    interviewError.value = "暂时无法读取访谈记录，请稍后重试。";
+  } finally {
+    interviewLoading.value = false;
+  }
+}
+
+function showTab(
+  tab: "twin" | "recommendations" | "connections" | "profile",
+) {
+  activeTab.value = tab;
+  if (tab === "twin") void loadInterview();
+}
+
+function streamError(code?: string) {
+  return code === "MODEL_NOT_CONFIGURED"
+    ? "画像访谈模型尚未配置，请联系管理员。"
+    : "这次回答生成失败，消息额度已退回，请稍后重试。";
+}
+
+async function sendInterview() {
+  const content = interviewInput.value.trim();
+  if (!content || interviewSending.value) return;
+  interviewSending.value = true;
+  interviewError.value = "";
+  interviewInput.value = "";
+  const clientMessageId = crypto.randomUUID();
+  interviewMessages.value.push({
+    id: clientMessageId,
+    role: "member",
+    content,
+  });
+  const answer = {
+    id: `pending-${clientMessageId}`,
+    role: "agent" as const,
+    content: "",
+  };
+  interviewMessages.value.push(answer);
+
+  try {
+    const response = await fetch("/api/member/interview/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ clientMessageId, content }),
+    });
+    const data = await jsonOrUndefined<{
+      eventsUrl?: string;
+      quotaRemaining?: number;
+      code?: string;
+    }>(response);
+    if (!response.ok || !data?.eventsUrl) {
+      interviewError.value = streamError(data?.code);
+      interviewMessages.value = interviewMessages.value.filter(
+        (message) => message.id !== answer.id,
+      );
+      interviewSending.value = false;
+      return;
+    }
+    quotaRemaining.value = data.quotaRemaining;
+    interviewEvents?.close();
+    interviewEvents = new EventSource(data.eventsUrl);
+    interviewEvents.addEventListener("delta", (event) => {
+      const payload = JSON.parse((event as MessageEvent).data) as {
+        text: string;
+      };
+      answer.content += payload.text;
+    });
+    interviewEvents.addEventListener("done", () => {
+      interviewEvents?.close();
+      interviewEvents = undefined;
+      interviewSending.value = false;
+    });
+    interviewEvents.addEventListener("error", (event) => {
+      let code: string | undefined;
+      if (event instanceof MessageEvent && event.data) {
+        code = (JSON.parse(event.data) as { code?: string }).code;
+      }
+      interviewError.value = streamError(code);
+      interviewEvents?.close();
+      interviewEvents = undefined;
+      interviewSending.value = false;
+    });
+  } catch {
+    interviewError.value = streamError();
+    interviewMessages.value = interviewMessages.value.filter(
+      (message) => message.id !== answer.id,
+    );
+    interviewSending.value = false;
+  }
+}
 </script>
 
 <template>
@@ -254,6 +377,58 @@ async function save() {
       <button class="quiet-action" type="button" @click="signOut">退出</button>
     </header>
 
+    <template v-if="activeTab === 'twin'">
+      <section class="interview-intro">
+        <div>
+          <p class="step-label">我的分身</p>
+          <h1>私有画像访谈员</h1>
+        </div>
+        <span class="ai-badge">AI</span>
+        <p>它只与你交流，通过追问逐步理解你；它不是公开恋爱分身，也不会替你作出承诺。</p>
+      </section>
+
+      <p v-if="interviewLoading" class="loading-state">正在读取访谈…</p>
+      <section v-else class="interview-panel" aria-live="polite">
+        <div v-if="interviewMessages.length" class="message-list">
+          <article
+            v-for="message in interviewMessages"
+            :key="message.id"
+            class="chat-message"
+            :data-role="message.role"
+          >
+            <span>{{ message.role === "member" ? "我" : "画像访谈员 · AI" }}</span>
+            <p>{{ message.content || "正在思考…" }}</p>
+          </article>
+        </div>
+        <div v-else class="interview-empty">
+          <strong>从一件你愿意讲的小事开始</strong>
+          <p>例如：在关系里遇到分歧时，你通常会先做什么？</p>
+        </div>
+        <p v-if="interviewError" class="form-error" role="alert">
+          {{ interviewError }}
+        </p>
+        <p v-if="quotaRemaining !== undefined" class="quota-note">
+          今日还可发送 {{ quotaRemaining }} 条
+        </p>
+        <form class="interview-composer" @submit.prevent="sendInterview">
+          <label class="sr-only" for="interview-message">访谈消息</label>
+          <textarea
+            id="interview-message"
+            v-model="interviewInput"
+            maxlength="4000"
+            rows="3"
+            placeholder="写下你的真实想法…"
+            :disabled="interviewSending"
+            required
+          ></textarea>
+          <button type="submit" :disabled="interviewSending || !interviewInput.trim()">
+            {{ interviewSending ? "回答生成中…" : "发送" }}
+          </button>
+        </form>
+      </section>
+    </template>
+
+    <template v-else-if="activeTab === 'profile'">
     <section class="profile-intro">
       <p class="step-label">成员资料</p>
       <h1>先把真实的你，说清楚</h1>
@@ -421,12 +596,35 @@ async function save() {
         {{ saving ? "保存中…" : version ? "保存新版本" : "保存资料" }}
       </button>
     </form>
+    </template>
+
+    <section v-else class="coming-soon">
+      <p class="step-label">ONLYLOVE</p>
+      <h1>{{ activeTab === "recommendations" ? "候选推荐" : "联系" }}</h1>
+      <p>这部分会在后续 MVP 切片中开放。</p>
+    </section>
 
     <nav class="member-nav" aria-label="成员导航">
-      <button type="button"><i></i>我的分身</button>
-      <button type="button"><i></i>候选推荐</button>
-      <button type="button"><i></i>联系</button>
-      <button type="button" aria-current="page"><i></i>我的</button>
+      <button
+        type="button"
+        :aria-current="activeTab === 'twin' ? 'page' : undefined"
+        @click="showTab('twin')"
+      ><i></i>我的分身</button>
+      <button
+        type="button"
+        :aria-current="activeTab === 'recommendations' ? 'page' : undefined"
+        @click="showTab('recommendations')"
+      ><i></i>候选推荐</button>
+      <button
+        type="button"
+        :aria-current="activeTab === 'connections' ? 'page' : undefined"
+        @click="showTab('connections')"
+      ><i></i>联系</button>
+      <button
+        type="button"
+        :aria-current="activeTab === 'profile' ? 'page' : undefined"
+        @click="showTab('profile')"
+      ><i></i>我的</button>
     </nav>
   </main>
 </template>

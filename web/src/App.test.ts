@@ -341,4 +341,113 @@ describe("OnlyLove UI seam", () => {
       "已保存成员",
     );
   });
+
+  it("sends the first interview message and renders the streamed Agent answer", async () => {
+    class FakeEventSource {
+      static current: FakeEventSource;
+      readonly listeners = new Map<string, (event: MessageEvent) => void>();
+      readonly url: string;
+
+      constructor(url: string) {
+        this.url = url;
+        FakeEventSource.current = this;
+      }
+
+      addEventListener(type: string, listener: (event: MessageEvent) => void) {
+        this.listeners.set(type, listener);
+      }
+
+      close() {}
+
+      emit(type: string, data: object) {
+        this.listeners.get(type)?.({ data: JSON.stringify(data) } as MessageEvent);
+      }
+    }
+    vi.stubGlobal("EventSource", FakeEventSource);
+    vi.stubGlobal("crypto", {
+      randomUUID: () => "e49f9560-17f8-4929-8da8-554a93d25b31",
+    });
+    const request = vi.fn(async (url: string, options?: RequestInit) => {
+      if (url === "/api/session") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            member: { email: "member@example.com", role: "member" },
+          }),
+        };
+      }
+      if (url === "/api/member/profile") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            profile: {
+              nickname: "林夏",
+              birthDate: "1990-01-01",
+              gender: "female",
+              heightCm: 165,
+              city: "上海",
+              occupation: "设计师",
+            },
+            matchCriteria: null,
+          }),
+        };
+      }
+      if (options?.method === "POST") {
+        return {
+          ok: true,
+          status: 202,
+          json: async () => ({
+            conversationId: "55b584a9-dcfa-479f-baf7-fc8a285b255d",
+            jobId: "d762e0e4-8ca1-4fd8-a2a4-e219fef3a6de",
+            eventsUrl:
+              "/api/member/interview/jobs/d762e0e4-8ca1-4fd8-a2a4-e219fef3a6de/events",
+            quotaRemaining: 99,
+          }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ conversationId: null, messages: [] }),
+      };
+    });
+    vi.stubGlobal("fetch", request);
+    const router = createRouter({ history: createMemoryHistory(), routes });
+    const wrapper = mount(App, { global: { plugins: [router] } });
+    await router.push("/app");
+    await router.isReady();
+    await flushPromises();
+
+    const twinTab = wrapper
+      .findAll("nav button")
+      .find((button) => button.text().includes("我的分身"))!;
+    await twinTab.trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("私有画像访谈员");
+    expect(wrapper.text()).toContain("AI");
+
+    await wrapper
+      .get("textarea")
+      .setValue("我在冲突时通常需要先冷静一下。");
+    await wrapper.get("form.interview-composer").trigger("submit");
+    await flushPromises();
+    expect(request).toHaveBeenCalledWith(
+      "/api/member/interview/messages",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining("我在冲突时通常需要先冷静一下。"),
+      }),
+    );
+    expect(FakeEventSource.current.url).toContain("/events");
+
+    FakeEventSource.current.emit("delta", {
+      text: "什么信号会让你愿意重新开始沟通？",
+    });
+    FakeEventSource.current.emit("done", {});
+    await flushPromises();
+    expect(wrapper.text()).toContain("什么信号会让你愿意重新开始沟通？");
+    expect(wrapper.text()).toContain("今日还可发送 99 条");
+  });
 });

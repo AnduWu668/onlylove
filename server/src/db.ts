@@ -2,7 +2,15 @@ import { fileURLToPath } from "node:url";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Pool } from "pg";
-import * as schema from "./modules/members/schema.js";
+import * as agentEngineSchema from "./modules/agent-engine/schema.js";
+import * as conversationsSchema from "./modules/conversations/schema.js";
+import * as membersSchema from "./modules/members/schema.js";
+
+const schema = {
+  ...membersSchema,
+  ...conversationsSchema,
+  ...agentEngineSchema,
+};
 
 export function openDatabase(databaseUrl: string) {
   const pool = new Pool({ connectionString: databaseUrl });
@@ -11,6 +19,9 @@ export function openDatabase(databaseUrl: string) {
 }
 
 export type Database = ReturnType<typeof openDatabase>["db"];
+export type DatabaseTransaction = Parameters<
+  Parameters<Database["transaction"]>[0]
+>[0];
 
 export async function migrateDatabase(db: Database) {
   await migrate(db, {

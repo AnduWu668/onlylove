@@ -7,16 +7,20 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
+    "test:ark": "RUN_ARK_INTEGRATION=1 vitest run test/ark.integration.test.ts",
     "test:prepare": "tsx src/prepare-test-db.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/migrate.ts"
   },
   "dependencies": {
+    "@earendil-works/pi-agent-core": "^0.74.2",
+    "@earendil-works/pi-ai": "^0.74.2",
     "@fastify/cookie": "11.0.2",
     "drizzle-orm": "0.45.2",
     "fastify": "5.12.1",
     "nodemailer": "9.0.5",
-    "pg": "8.23.0"
+    "pg": "8.23.0",
+    "typebox": "^1.1.24"
   },
   "devDependencies": {
     "@types/node": "24.13.3",

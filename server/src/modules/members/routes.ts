@@ -352,7 +352,7 @@ export async function bootstrapSuperAdmin(
     .onConflictDoNothing({ target: members.email });
 }
 
-async function memberForRequest(
+export async function memberForRequest(
   request: FastifyRequest,
   db: Database,
   now: Date,
@@ -375,7 +375,22 @@ async function memberForRequest(
   return rows[0]?.member;
 }
 
-async function superAdminForRequest(
+export async function interviewContextForMember(member: Member, db: Database) {
+  const criteria = (
+    await db
+      .select()
+      .from(matchCriteriaVersions)
+      .where(eq(matchCriteriaVersions.memberId, member.id))
+      .orderBy(desc(matchCriteriaVersions.version))
+      .limit(1)
+  )[0];
+  return {
+    memberProfile: publicProfile(member),
+    matchCriteria: criteria ? publicMatchCriteria(criteria) : null,
+  };
+}
+
+export async function superAdminForRequest(
   request: FastifyRequest,
   db: Database,
   now: Date,

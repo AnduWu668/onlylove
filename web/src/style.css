@@ -22,7 +22,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -143,6 +144,22 @@ select {
 }
 
 select:focus {
+  border-color: #6f1831;
+  box-shadow: 0 0 0 3px rgb(111 24 49 / 11%);
+}
+
+textarea {
+  width: 100%;
+  padding: 13px 15px;
+  border: 1px solid #cfc0b5;
+  border-radius: 13px;
+  color: #35292b;
+  background: #fffaf3;
+  outline: none;
+  resize: vertical;
+}
+
+textarea:focus {
   border-color: #6f1831;
   box-shadow: 0 0 0 3px rgb(111 24 49 / 11%);
 }
@@ -388,6 +405,138 @@ button:disabled {
 
 .save-profile {
   box-shadow: 0 12px 28px rgb(87 25 42 / 15%);
+}
+
+.interview-intro {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: start;
+  gap: 8px 14px;
+  padding: 34px 4px 22px;
+}
+
+.interview-intro h1 {
+  max-width: none;
+  margin-bottom: 0;
+  font-size: clamp(30px, 8vw, 40px);
+}
+
+.interview-intro > p:last-child {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: #796b69;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.ai-badge {
+  padding: 6px 9px;
+  border: 1px solid rgb(111 24 49 / 20%);
+  border-radius: 999px;
+  color: #6f1831;
+  background: #eee5da;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.interview-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.message-list {
+  display: grid;
+  gap: 12px;
+}
+
+.chat-message {
+  max-width: 88%;
+  padding: 14px 16px;
+  border: 1px solid rgb(91 52 57 / 10%);
+  border-radius: 18px 18px 18px 5px;
+  background: #eee5da;
+}
+
+.chat-message[data-role="member"] {
+  justify-self: end;
+  border-radius: 18px 18px 5px;
+  color: #fffaf3;
+  background: #6f1831;
+}
+
+.chat-message span {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 10px;
+  font-weight: 800;
+  opacity: 0.68;
+}
+
+.chat-message p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.interview-empty,
+.coming-soon {
+  padding: 28px 22px;
+  border: 1px solid rgb(91 52 57 / 11%);
+  border-radius: 22px;
+  background: #eee5da;
+  text-align: center;
+}
+
+.interview-empty p,
+.coming-soon p {
+  margin: 8px 0 0;
+  color: #806f6d;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.interview-composer {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid rgb(91 52 57 / 11%);
+  border-radius: 18px;
+  background: rgb(238 229 218 / 88%);
+}
+
+.interview-composer button {
+  justify-self: end;
+  min-height: 42px;
+  padding: 0 24px;
+}
+
+.quota-note {
+  margin: 0;
+  color: #887876;
+  font-size: 12px;
+  text-align: right;
+}
+
+.coming-soon {
+  margin-top: 34px;
+}
+
+.coming-soon h1 {
+  max-width: none;
+  margin-bottom: 0;
+  font-size: 34px;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .member-nav {
