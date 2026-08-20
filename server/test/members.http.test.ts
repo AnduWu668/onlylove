@@ -2,11 +2,18 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { Pool } from "pg";
 import { createApp } from "../src/app.js";
+import { loadRootEnv } from "../src/env.js";
 import { MemoryMailer } from "../src/modules/members/mailer.js";
 
-const databaseUrl =
-  process.env.TEST_DATABASE_URL ??
-  "postgres://onlylove:onlylove@localhost:5433/onlylove";
+loadRootEnv();
+const configuredTestUrl = process.env.TEST_DATABASE_URL;
+const testDatabaseUrl = new URL(
+  configuredTestUrl ??
+    process.env.DATABASE_URL ??
+    "postgres://onlylove:onlylove@localhost:5433/onlylove",
+);
+if (!configuredTestUrl) testDatabaseUrl.pathname = "/onlylove_test";
+const databaseUrl = testDatabaseUrl.toString();
 
 describe("Members HTTP seam", () => {
   let app: FastifyInstance;
