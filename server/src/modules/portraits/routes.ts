@@ -54,19 +54,17 @@ export function registerPortraitsRoutes(
         const result = await options.portraits.submitFixedAnswer(
           member.id,
           request.body,
+          {
+            agentJobs: options.agentJobs,
+            definition: options.agentEngine.interviewerDefinition,
+          },
         );
-        if (!result.completion) return result.state;
-        const job = await options.agentJobs.enqueueInterview({
-          memberId: member.id,
-          ...result.completion,
-          definition: options.agentEngine.interviewerDefinition,
-          createdAt: options.now(),
-        });
+        if (!result.followupJob) return result.state;
         return {
           ...result.state,
           autoFollowup: {
-            jobId: job.id,
-            eventsUrl: `/api/member/interview/jobs/${job.id}/events`,
+            jobId: result.followupJob.id,
+            eventsUrl: `/api/member/interview/jobs/${result.followupJob.id}/events`,
           },
         };
       } catch (error) {

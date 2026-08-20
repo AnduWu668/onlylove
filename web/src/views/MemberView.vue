@@ -308,6 +308,7 @@ async function loadInterview() {
           }[];
           fixedInterview?: PortraitInterviewState["fixedInterview"];
           progress?: PortraitInterviewState["progress"];
+          autoFollowup?: { jobId: string; eventsUrl: string };
         }>(response)
       : undefined;
     if (!data) throw new Error();
@@ -323,6 +324,16 @@ async function loadInterview() {
       },
       progress: data.progress ?? { completed: 0, total: 8 },
     };
+    if (data.autoFollowup) {
+      const answer = reactive<InterviewMessage>({
+        id: `pending-${data.autoFollowup.jobId}`,
+        role: "agent",
+        content: "",
+      });
+      interviewMessages.value.push(answer);
+      interviewSending.value = true;
+      listenForInterview(data.autoFollowup.eventsUrl, answer, false);
+    }
     interviewLoaded.value = true;
   } catch {
     interviewError.value = "暂时无法读取访谈记录，请稍后重试。";

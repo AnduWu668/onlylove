@@ -62,7 +62,7 @@ describe("first portrait interview HTTP and Agent Engine seam", () => {
     };
   }
 
-  async function completeFixedInterview(cookie: string) {
+  async function completeFixedInterview(cookie: string, consumeFollowup = true) {
     for (;;) {
       const state = await app.inject({
         method: "GET",
@@ -91,6 +91,7 @@ describe("first portrait interview HTTP and Agent Engine seam", () => {
       expect(response.statusCode).toBe(200);
       const data = response.json();
       if (data.autoFollowup) {
+        if (!consumeFollowup) return data;
         const events = await app.inject({
           method: "GET",
           url: data.autoFollowup.eventsUrl,
@@ -196,7 +197,7 @@ describe("first portrait interview HTTP and Agent Engine seam", () => {
     });
     expect(combined.json().fixedInterview.answered).toBe(1);
 
-    const completed = await completeFixedInterview(cookie);
+    const completed = await completeFixedInterview(cookie, false);
     expect(completed).toMatchObject({
       fixedInterview: {
         answered: 10,
@@ -206,6 +207,19 @@ describe("first portrait interview HTTP and Agent Engine seam", () => {
       },
       progress: { completed: 0, total: 8 },
     });
+    expect(completed.autoFollowup.eventsUrl).toContain("/events");
+    const pending = await app.inject({
+      method: "GET",
+      url: "/api/member/interview",
+      headers: { cookie },
+    });
+    expect(pending.json().autoFollowup).toEqual(completed.autoFollowup);
+    const followup = await app.inject({
+      method: "GET",
+      url: pending.json().autoFollowup.eventsUrl,
+      headers: { cookie },
+    });
+    expect(followup.body).toContain("event: done");
     const messages = await app.inject({
       method: "GET",
       url: "/api/member/interview",

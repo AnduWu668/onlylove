@@ -44,9 +44,13 @@ assert.equal(
   "contradiction:values",
 );
 confidentDraft.values.contradictions = [];
-assert.match(
-  interviewPlanningPriority(confidentDraft, "继续", 8),
-  /^published_common_weakness:/,
+assert.equal(
+  new Set(
+    [0, 1, 2].map((index) =>
+      interviewPlanningPriority(confidentDraft, "继续", index),
+    ),
+  ).size,
+  3,
 );
 
 const extracted = emptyPortraitDraft();

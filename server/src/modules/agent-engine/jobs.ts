@@ -29,6 +29,7 @@ export class AgentJobs {
   }
 
   async enqueueInterview(values: {
+    transaction: DatabaseTransaction;
     memberId: string;
     conversationId: string;
     inputMessageId: string;
@@ -41,28 +42,26 @@ export class AgentJobs {
     };
     createdAt: Date;
   }) {
-    return this.db.transaction(async (transaction) => {
-      const existing = await this.findByInput(
-        transaction,
-        values.inputMessageId,
-      );
-      if (existing) return existing;
-      return this.create(transaction, {
-        id: randomUUID(),
-        role: values.definition.role,
-        task: values.definition.task,
-        definitionVersion: values.definition.version,
-        promptVersion: values.definition.promptVersion,
-        schemaVersion: values.definition.schemaVersion,
-        memberId: values.memberId,
-        conversationId: values.conversationId,
-        inputMessageId: values.inputMessageId,
-        status: "pending",
-        retryCount: 0,
-        switchedModel: false,
-        quotaRefunded: false,
-        createdAt: values.createdAt,
-      });
+    const existing = await this.findByInput(
+      values.transaction,
+      values.inputMessageId,
+    );
+    if (existing) return existing;
+    return this.create(values.transaction, {
+      id: randomUUID(),
+      role: values.definition.role,
+      task: values.definition.task,
+      definitionVersion: values.definition.version,
+      promptVersion: values.definition.promptVersion,
+      schemaVersion: values.definition.schemaVersion,
+      memberId: values.memberId,
+      conversationId: values.conversationId,
+      inputMessageId: values.inputMessageId,
+      status: "pending",
+      retryCount: 0,
+      switchedModel: false,
+      quotaRefunded: false,
+      createdAt: values.createdAt,
     });
   }
 
@@ -82,6 +81,21 @@ export class AgentJobs {
   ) {
     return (
       await transaction
+        .select()
+        .from(agentJobs)
+        .where(
+          and(
+            eq(agentJobs.conversationId, conversationId),
+            inArray(agentJobs.status, ["pending", "running"]),
+          ),
+        )
+        .limit(1)
+    )[0];
+  }
+
+  async findActiveForConversationId(conversationId: string) {
+    return (
+      await this.db
         .select()
         .from(agentJobs)
         .where(

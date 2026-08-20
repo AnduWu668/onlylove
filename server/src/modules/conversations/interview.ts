@@ -75,4 +75,17 @@ export class InterviewConversations {
       )
       .orderBy(asc(conversationMessages.sequence));
   }
+
+  async conversationForMessage(
+    transaction: DatabaseTransaction,
+    messageId: string,
+  ) {
+    return (
+      await transaction
+        .select({ conversationId: conversationMessages.conversationId })
+        .from(conversationMessages)
+        .where(eq(conversationMessages.id, messageId))
+        .limit(1)
+    )[0];
+  }
 }

@@ -6,6 +6,7 @@ import {
   AgentRunError,
   type AgentAttemptResult,
 } from "../agent-engine/engine.js";
+import type { AgentJobs } from "../agent-engine/jobs.js";
 import type { InterviewConversations } from "../conversations/interview.js";
 import {
   FIXED_INTERVIEW_QUESTIONS,
@@ -83,6 +84,11 @@ export interface FixedAnswerInput {
   freeText: string;
 }
 
+interface AutoFollowupOptions {
+  agentJobs: AgentJobs;
+  definition: AgentEngine["interviewerDefinition"];
+}
+
 function completedDimensions(content: PortraitDraftContent) {
   return PORTRAIT_DIMENSIONS.filter((dimension) =>
     ["medium", "high"].includes(content[dimension].confidence),
@@ -117,7 +123,7 @@ export function assessPortraitDraft(
 export function interviewPlanningPriority(
   content: PortraitDraftContent,
   latestMessage: string,
-  completed: number,
+  commonWeaknessIndex: number,
 ) {
   if (/不像我|不是我|理解错|不准确|纠正/.test(latestMessage)) {
     return "member_correction";
@@ -132,7 +138,7 @@ export function interviewPlanningPriority(
   if (contradiction) return `contradiction:${contradiction}`;
   const commonWeakness =
     QUESTION_PLANNING_RULE.commonWeaknesses[
-      completed % QUESTION_PLANNING_RULE.commonWeaknesses.length
+      commonWeaknessIndex % QUESTION_PLANNING_RULE.commonWeaknesses.length
     ]!;
   return `published_common_weakness:${commonWeakness}`;
 }
@@ -180,7 +186,11 @@ export class Portraits {
     return state.fixedInterview.completed;
   }
 
-  async submitFixedAnswer(memberId: string, input: FixedAnswerInput) {
+  async submitFixedAnswer(
+    memberId: string,
+    input: FixedAnswerInput,
+    autoFollowup: AutoFollowupOptions,
+  ) {
     const question = FIXED_INTERVIEW_QUESTIONS.find(
       (candidate) => candidate.id === input.questionId,
     );
@@ -197,8 +207,8 @@ export class Portraits {
       throw new PortraitInputError("INVALID_FIXED_ANSWER");
     }
 
-    let completion:
-      | { conversationId: string; inputMessageId: string }
+    let followupJob:
+      | Awaited<ReturnType<AgentJobs["enqueueInterview"]>>
       | undefined;
     await this.db.transaction(async (transaction) => {
       await transaction.execute(
@@ -206,7 +216,10 @@ export class Portraits {
       );
       const existing = (
         await transaction
-          .select({ questionId: portraitFixedAnswers.questionId })
+          .select({
+            questionId: portraitFixedAnswers.questionId,
+            messageId: portraitFixedAnswers.messageId,
+          })
           .from(portraitFixedAnswers)
           .where(
             and(
@@ -216,7 +229,28 @@ export class Portraits {
           )
           .limit(1)
       )[0];
-      if (existing) return;
+      if (existing) {
+        if (
+          input.questionId ===
+          FIXED_INTERVIEW_QUESTIONS.at(-1)!.id
+        ) {
+          const message = await this.interviewConversations.conversationForMessage(
+            transaction,
+            existing.messageId,
+          );
+          if (message) {
+            followupJob = await autoFollowup.agentJobs.enqueueInterview({
+              transaction,
+              memberId,
+              conversationId: message.conversationId,
+              inputMessageId: existing.messageId,
+              definition: autoFollowup.definition,
+              createdAt: this.now(),
+            });
+          }
+        }
+        return;
+      }
 
       const answers = await transaction
         .select({ questionId: portraitFixedAnswers.questionId })
@@ -254,14 +288,18 @@ export class Portraits {
         createdAt: savedAt,
       });
       if (answers.length + 1 === FIXED_INTERVIEW_QUESTIONS.length) {
-        completion = {
+        followupJob = await autoFollowup.agentJobs.enqueueInterview({
+          transaction,
+          memberId,
           conversationId: message.conversationId,
           inputMessageId: message.id,
-        };
+          definition: autoFollowup.definition,
+          createdAt: savedAt,
+        });
       }
     });
 
-    return { state: await this.interviewState(memberId), completion };
+    return { state: await this.interviewState(memberId), followupJob };
   }
 
   async draftForInterviewer(memberId: string, latestMessage: string) {
@@ -273,13 +311,17 @@ export class Portraits {
         .limit(1)
     )[0];
     const content = draft?.content ?? emptyPortraitDraft();
+    const commonWeaknessIndex = [...memberId].reduce(
+      (sum, character) => sum + character.codePointAt(0)!,
+      0,
+    );
     return {
       portraitDraft: content,
       questionPlannerVersion: QUESTION_PLANNER_VERSION,
       planningPriority: interviewPlanningPriority(
         content,
         latestMessage,
-        draft?.completedDimensions ?? 0,
+        commonWeaknessIndex,
       ),
     };
   }
@@ -308,7 +350,6 @@ export class Portraits {
     );
     if (!newEvidence.length) {
       return {
-        previousCompleted: current?.completedDimensions ?? 0,
         completed: current?.completedDimensions ?? 0,
         newlyConfident: false,
       };
@@ -370,7 +411,6 @@ export class Portraits {
           },
         });
       return {
-        previousCompleted: current?.completedDimensions ?? 0,
         completed,
         newlyConfident: assessment.newlyConfident,
       };

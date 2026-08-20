@@ -268,10 +268,19 @@ export function registerConversationsRoutes(
       .from(conversationMessages)
       .where(eq(conversationMessages.conversationId, conversation.id))
       .orderBy(asc(conversationMessages.sequence));
+    const activeJob = portraitState.fixedInterview.completed
+      ? await agentJobs.findActiveForConversationId(conversation.id)
+      : undefined;
     return {
       conversationId: conversation.id,
       messages: messages.map(publicMessage),
       ...portraitState,
+      autoFollowup: activeJob
+        ? {
+            jobId: activeJob.id,
+            eventsUrl: `/api/member/interview/jobs/${activeJob.id}/events`,
+          }
+        : undefined,
     };
   });
 
