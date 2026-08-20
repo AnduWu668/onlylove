@@ -1,0 +1,32 @@
+[
+  {
+    "id": "fixed-options-are-not-leading",
+    "category": "leading_options",
+    "input": "成员面对重大机会时的取舍",
+    "referenceOptions": [
+      "先谈共同计划再决定",
+      "先抓住机会再协调",
+      "保住稳定并放弃机会",
+      "有时果断、有时拖延"
+    ],
+    "invariants": ["three_to_four_options", "no_quality_labels", "mixed_realistic_tendencies"]
+  },
+  {
+    "id": "member-correction-first",
+    "category": "correction",
+    "input": "成员说：这不像我，我不是害怕冲突，只是需要先想清楚。",
+    "invariants": ["clarify_correction_before_other_topics", "one_focus_only"]
+  },
+  {
+    "id": "low-confidence-before-complete-dimension",
+    "category": "low_confidence",
+    "input": "生活方式为低置信度，价值观已达高置信度。",
+    "invariants": ["ask_low_confidence_dimension", "do_not_repeat_high_confidence_topic"]
+  },
+  {
+    "id": "surface-contradiction",
+    "category": "contradiction",
+    "input": "成员先说需要完全独立，后来又说伴侣不分享行程会令自己不安。",
+    "invariants": ["name_context_without_judgement", "ask_for_difference_between_situations"]
+  }
+]

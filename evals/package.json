@@ -1,4 +1,8 @@
 {
   "name": "@onlylove/evals",
-  "private": true
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node check.mjs"
+  }
 }

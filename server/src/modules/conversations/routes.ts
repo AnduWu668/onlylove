@@ -15,6 +15,7 @@ import {
   conversations,
   ownAgentDailyQuotas,
 } from "./schema.js";
+import type { Portraits } from "../portraits/service.js";
 
 const OWN_AGENT_DAILY_LIMIT = 100;
 const JOB_LEASE_MS = 2 * 60 * 1_000;
@@ -25,6 +26,7 @@ export interface ConversationsOptions {
   agentEngine: AgentEngine;
   agentJobs: AgentJobs;
   now: () => Date;
+  portraits: Portraits;
 }
 
 function beijingDate(date: Date) {
@@ -55,7 +57,7 @@ async function processInterviewJob(
   memberContext: Awaited<ReturnType<typeof interviewContextForMember>>,
   options: ConversationsOptions,
 ) {
-  const { agentEngine, agentJobs, db, now } = options;
+  const { agentEngine, agentJobs, db, now, portraits } = options;
   const startedAt = now();
   const claimed = await agentJobs.claim(
     job.id,
@@ -123,8 +125,34 @@ async function processInterviewJob(
       .orderBy(desc(conversationMessages.sequence))
       .limit(200);
     const history = recentHistory.reverse();
+    const extraction = await portraits.extractDraft(
+      claimed.memberId,
+      claimed.conversationId,
+      input.sequence,
+      agentEngine,
+      (attempts) =>
+        agentJobs.recordAttempts(
+          claimed,
+          attempts,
+          now(),
+          agentEngine.extractorDefinition,
+        ),
+    );
+    if (extraction.completed > extraction.previousCompleted) {
+      stream.write(
+        sse("progress", {
+          completed: extraction.completed,
+          total: 8,
+          feedback: "我对你的理解又清楚了一些",
+        }),
+      );
+    }
+    const portraitContext = await portraits.draftForInterviewer(
+      claimed.memberId,
+      input.content,
+    );
     const result = await agentEngine.continueInterview(
-      { ...memberContext, recentMessages: history },
+      { ...memberContext, ...portraitContext, recentMessages: history },
       input.content,
       (text) => stream.write(sse("delta", { text })),
       (attempts) => agentJobs.recordAttempts(claimed, attempts, now()),
@@ -217,6 +245,7 @@ export function registerConversationsRoutes(
   app.get("/api/member/interview", async (request, reply) => {
     const member = await memberForRequest(request, db, now());
     if (!member) return reply.code(401).send({ code: "UNAUTHENTICATED" });
+    const portraitState = await options.portraits.interviewState(member.id);
     const conversation = (
       await db
         .select()
@@ -229,7 +258,9 @@ export function registerConversationsRoutes(
         )
         .limit(1)
     )[0];
-    if (!conversation) return { conversationId: null, messages: [] };
+    if (!conversation) {
+      return { conversationId: null, messages: [], ...portraitState };
+    }
     const messages = await db
       .select()
       .from(conversationMessages)
@@ -238,6 +269,7 @@ export function registerConversationsRoutes(
     return {
       conversationId: conversation.id,
       messages: messages.map(publicMessage),
+      ...portraitState,
     };
   });
 
@@ -262,6 +294,9 @@ export function registerConversationsRoutes(
       const submittedAt = now();
       const member = await memberForRequest(request, db, submittedAt);
       if (!member) return reply.code(401).send({ code: "UNAUTHENTICATED" });
+      if (!(await options.portraits.fixedInterviewComplete(member.id))) {
+        return reply.code(409).send({ code: "FIXED_INTERVIEW_REQUIRED" });
+      }
       const content = request.body.content.trim();
       if (!content) return reply.code(400).send({ code: "EMPTY_MESSAGE" });
       const quotaDate = beijingDate(submittedAt);

@@ -5,11 +5,13 @@ import { Pool } from "pg";
 import * as agentEngineSchema from "./modules/agent-engine/schema.js";
 import * as conversationsSchema from "./modules/conversations/schema.js";
 import * as membersSchema from "./modules/members/schema.js";
+import * as portraitsSchema from "./modules/portraits/schema.js";
 
 const schema = {
   ...membersSchema,
   ...conversationsSchema,
   ...agentEngineSchema,
+  ...portraitsSchema,
 };
 
 export function openDatabase(databaseUrl: string) {

@@ -105,7 +105,18 @@ export class AgentJobs {
     )[0];
   }
 
-  async recordAttempts(job: AgentJob, attempts: AgentAttemptResult[], at: Date) {
+  async recordAttempts(
+    job: AgentJob,
+    attempts: AgentAttemptResult[],
+    at: Date,
+    definition?: {
+      role: typeof job.role;
+      task: typeof job.task;
+      version: string;
+      promptVersion: string;
+      schemaVersion: string | null;
+    },
+  ) {
     if (!attempts.length) return;
     await this.db
       .insert(agentRuns)
@@ -113,11 +124,11 @@ export class AgentJobs {
         attempts.map((attempt) => ({
           id: randomUUID(),
           jobId: job.id,
-          role: job.role,
-          task: job.task,
-          definitionVersion: job.definitionVersion,
-          promptVersion: job.promptVersion,
-          schemaVersion: job.schemaVersion,
+          role: definition?.role ?? job.role,
+          task: definition?.task ?? job.task,
+          definitionVersion: definition?.version ?? job.definitionVersion,
+          promptVersion: definition?.promptVersion ?? job.promptVersion,
+          schemaVersion: definition?.schemaVersion ?? job.schemaVersion,
           memberId: job.memberId,
           conversationId: job.conversationId,
           ...attempt,
