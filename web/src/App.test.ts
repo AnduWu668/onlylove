@@ -6,7 +6,10 @@ import App from "./App.vue";
 import { routes } from "./router.js";
 
 describe("OnlyLove UI seam", () => {
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
 
   it("shows the mobile email-code sign-in flow", async () => {
     const router = createRouter({ history: createMemoryHistory(), routes });
@@ -160,5 +163,116 @@ describe("OnlyLove UI seam", () => {
     );
     expect(wrapper.findAll(".invitation-list article")).toHaveLength(2);
     expect(wrapper.text()).toContain("已撤销");
+  });
+
+  it("validates, saves, and edits a member profile and match criteria", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2024-02-29T12:00:00"));
+    let version = 0;
+    let storedProfile: {
+      profile: object;
+      matchCriteria: object | null;
+    } = {
+      profile: {
+        nickname: "",
+        birthDate: "1990-01-01",
+        gender: "",
+        heightCm: null,
+        city: "",
+        occupation: "",
+      },
+      matchCriteria: null,
+    };
+    const request = vi.fn(async (url: string, options?: RequestInit) => {
+      if (url === "/api/session") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            member: { email: "member@example.com", role: "member" },
+          }),
+        };
+      }
+      if (options?.method === "PUT") {
+        version += 1;
+        const body = JSON.parse(String(options.body));
+        storedProfile = {
+          ...body,
+          matchCriteria: { ...body.matchCriteria, version },
+        };
+        return {
+          ok: true,
+          status: 200,
+          json: async () => storedProfile,
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => storedProfile,
+      };
+    });
+    vi.stubGlobal("fetch", request);
+    const router = createRouter({ history: createMemoryHistory(), routes });
+    const wrapper = mount(App, { global: { plugins: [router] } });
+    await router.push("/app");
+    await router.isReady();
+    await flushPromises();
+    expect(wrapper.get("#profile-birth-date").attributes("max")).toBe(
+      "2006-02-28",
+    );
+
+    await wrapper.get("#nickname").setValue("林夏");
+    await wrapper.get("#profile-birth-date").setValue("1990-04-12");
+    await wrapper.get("#gender").setValue("female");
+    await wrapper.get("#height-cm").setValue("165");
+    await wrapper.get("#city").setValue("上海");
+    await wrapper.get("#occupation").setValue("产品设计师");
+    await wrapper.get("#desired-gender").setValue("female");
+    await wrapper.get("#acceptable-cities").setValue("上海、杭州");
+
+    await wrapper.get("form.profile-form").trigger("submit");
+    await flushPromises();
+    expect(wrapper.get('[role="alert"]').text()).toContain("异性");
+
+    await wrapper.get("#desired-gender").setValue("male");
+    await wrapper.get("#age-unlimited").setValue(false);
+    await wrapper.get("#age-minimum").setValue("28");
+    await wrapper.get("#age-maximum").setValue("38");
+    await wrapper.get("#age-mode").setValue("required");
+    await wrapper.get("#occupation-unlimited").setValue(false);
+    await wrapper
+      .get("#occupation-requirement")
+      .setValue("稳定的专业工作");
+    await wrapper.get("#occupation-mode").setValue("preferred");
+    await wrapper.get("form.profile-form").trigger("submit");
+    await flushPromises();
+
+    expect(request).toHaveBeenCalledWith(
+      "/api/member/profile",
+      expect.objectContaining({
+        method: "PUT",
+        body: expect.stringContaining('"acceptableCities":["上海","杭州"]'),
+      }),
+    );
+    expect(wrapper.get('[role="status"]').text()).toContain("v1");
+
+    await router.push("/login");
+    await router.push("/app");
+    await flushPromises();
+    expect(wrapper.get<HTMLInputElement>("#nickname").element.value).toBe(
+      "林夏",
+    );
+    expect(wrapper.get<HTMLInputElement>("#age-minimum").element.value).toBe(
+      "28",
+    );
+    expect(
+      wrapper.get<HTMLInputElement>("#acceptable-cities").element.value,
+    ).toBe("上海、杭州");
+
+    await wrapper.get("#nickname").setValue("林夏夏");
+    await wrapper.get("form.profile-form").trigger("submit");
+    await flushPromises();
+    expect(wrapper.get('[role="status"]').text()).toContain("v2");
   });
 });

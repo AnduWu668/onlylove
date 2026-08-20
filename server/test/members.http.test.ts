@@ -48,6 +48,26 @@ describe("Members HTTP seam", () => {
     });
   }
 
+  async function signInMember(email: string) {
+    await invite(email);
+    const challenge = await app.inject({
+      method: "POST",
+      url: "/api/auth/otp",
+      payload: { email },
+    });
+    const signIn = await app.inject({
+      method: "POST",
+      url: "/api/auth/verify",
+      payload: {
+        email,
+        challengeId: challenge.json().challengeId,
+        code: mailer.lastCodeFor(email),
+        birthDate: "1990-01-01",
+      },
+    });
+    return signIn.cookies[0]?.name + "=" + signIn.cookies[0]?.value;
+  }
+
   beforeAll(async () => {
     const migrationApp = await createApp({
       databaseUrl,
@@ -436,5 +456,161 @@ describe("Members HTTP seam", () => {
     });
     expect(registration.statusCode).toBe(403);
     expect(registration.json().code).toBe("ADULTS_ONLY");
+  });
+
+  it("lets a member save, read, and version only their own profile and match criteria", async () => {
+    const cookie = await signInMember("profile@onlylove.test");
+    currentTime = new Date(currentTime.getTime() + 60_000);
+    const otherCookie = await signInMember("other-profile@onlylove.test");
+    const firstProfile = {
+      nickname: "林夏",
+      birthDate: "1990-04-12",
+      gender: "female",
+      heightCm: 165,
+      city: "上海",
+      occupation: "产品设计师",
+    };
+    const criteria = {
+      desiredGender: "male",
+      ageMinimum: 28,
+      ageMaximum: 38,
+      ageMode: "required",
+      heightMinimumCm: null,
+      heightMaximumCm: null,
+      heightMode: null,
+      acceptableCities: ["上海", "杭州"],
+      occupationRequirement: "稳定的专业工作",
+      occupationMode: "preferred",
+    };
+
+    const firstSave = await app.inject({
+      method: "PUT",
+      url: "/api/member/profile",
+      headers: { cookie },
+      payload: { profile: firstProfile, matchCriteria: criteria },
+    });
+    expect(firstSave.statusCode).toBe(200);
+    expect(firstSave.json()).toMatchObject({
+      profile: firstProfile,
+      matchCriteria: { ...criteria, version: 1 },
+    });
+
+    const ownProfile = await app.inject({
+      method: "GET",
+      url: "/api/member/profile",
+      headers: { cookie },
+    });
+    expect(ownProfile.statusCode).toBe(200);
+    expect(ownProfile.json()).toEqual(firstSave.json());
+
+    const otherProfile = await app.inject({
+      method: "GET",
+      url: "/api/member/profile",
+      headers: { cookie: otherCookie },
+    });
+    expect(otherProfile.statusCode).toBe(200);
+    expect(otherProfile.json().profile.nickname).toBe("");
+    expect(otherProfile.json().matchCriteria).toBeNull();
+
+    const secondSave = await app.inject({
+      method: "PUT",
+      url: "/api/member/profile",
+      headers: { cookie },
+      payload: {
+        profile: { ...firstProfile, nickname: "林夏夏" },
+        matchCriteria: {
+          ...criteria,
+          ageMinimum: null,
+          ageMaximum: null,
+          ageMode: null,
+        },
+      },
+    });
+    expect(secondSave.statusCode).toBe(200);
+    expect(secondSave.json()).toMatchObject({
+      profile: { nickname: "林夏夏" },
+      matchCriteria: { version: 2, ageMinimum: null, ageMode: null },
+    });
+  });
+
+  it("validates the adult heterosexual profile boundary on the server", async () => {
+    const cookie = await signInMember("boundary@onlylove.test");
+    const profile = {
+      nickname: "边界成员",
+      birthDate: "2008-08-21",
+      gender: "female",
+      heightCm: 165,
+      city: "上海",
+      occupation: "教师",
+    };
+    const matchCriteria = {
+      desiredGender: "female",
+      ageMinimum: null,
+      ageMaximum: null,
+      ageMode: null,
+      heightMinimumCm: null,
+      heightMaximumCm: null,
+      heightMode: null,
+      acceptableCities: ["上海"],
+      occupationRequirement: null,
+      occupationMode: null,
+    };
+
+    const minor = await app.inject({
+      method: "PUT",
+      url: "/api/member/profile",
+      headers: { cookie },
+      payload: { profile, matchCriteria },
+    });
+    expect(minor.statusCode).toBe(400);
+    expect(minor.json()).toMatchObject({
+      code: "INVALID_PROFILE",
+      field: "birthDate",
+    });
+
+    const sameGender = await app.inject({
+      method: "PUT",
+      url: "/api/member/profile",
+      headers: { cookie },
+      payload: {
+        profile: { ...profile, birthDate: "1990-01-01" },
+        matchCriteria,
+      },
+    });
+    expect(sameGender.statusCode).toBe(400);
+    expect(sameGender.json()).toMatchObject({
+      code: "INVALID_MATCH_CRITERIA",
+      field: "desiredGender",
+    });
+
+    const uncommonButValidValues = await app.inject({
+      method: "PUT",
+      url: "/api/member/profile",
+      headers: { cookie },
+      payload: {
+        profile: {
+          ...profile,
+          birthDate: "1900-01-01",
+          heightCm: 221,
+        },
+        matchCriteria: {
+          ...matchCriteria,
+          desiredGender: "male",
+          ageMinimum: 100,
+          ageMaximum: 110,
+          ageMode: "preferred",
+          heightMinimumCm: 100,
+          heightMaximumCm: 250,
+          heightMode: "required",
+        },
+      },
+    });
+    expect(uncommonButValidValues.statusCode).toBe(200);
+
+    const unauthenticated = await app.inject({
+      method: "GET",
+      url: "/api/member/profile",
+    });
+    expect(unauthenticated.statusCode).toBe(401);
   });
 });

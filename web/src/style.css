@@ -21,7 +21,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -130,6 +131,22 @@ input:focus {
   box-shadow: 0 0 0 3px rgb(111 24 49 / 11%);
 }
 
+select {
+  width: 100%;
+  min-height: 50px;
+  padding: 0 42px 0 15px;
+  border: 1px solid #cfc0b5;
+  border-radius: 13px;
+  color: #35292b;
+  background: #fffaf3;
+  outline: none;
+}
+
+select:focus {
+  border-color: #6f1831;
+  box-shadow: 0 0 0 3px rgb(111 24 49 / 11%);
+}
+
 button {
   min-height: 50px;
   border: 0;
@@ -200,8 +217,7 @@ button:disabled {
   padding: 26px 20px 112px;
 }
 
-.member-header,
-.progress-card > div {
+.member-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -222,92 +238,135 @@ button:disabled {
   font-size: 13px;
 }
 
-.twin-card {
-  position: relative;
-  overflow: hidden;
-  margin-top: 34px;
-  padding: 34px 28px 28px;
-  border-radius: 28px;
-  color: #fff8ef;
-  background: #65172e;
-  box-shadow: 0 22px 50px rgb(87 25 42 / 18%);
+.profile-intro {
+  padding: 34px 4px 24px;
 }
 
-.twin-card .step-label,
-.twin-card p {
-  color: #e3cbd0;
+.profile-intro h1 {
+  max-width: 10em;
+  margin-bottom: 12px;
+  font-size: clamp(32px, 9vw, 42px);
 }
 
-.twin-card h1 {
-  max-width: none;
-  margin: 0 0 12px;
-  color: #fff8ef;
-  font-size: 34px;
-}
-
-.twin-card > p:not(.step-label) {
-  position: relative;
-  max-width: 23em;
-  margin-bottom: 24px;
+.profile-intro > p:last-child {
+  max-width: 28em;
+  margin: 0;
+  color: #796b69;
   font-size: 14px;
-  line-height: 1.75;
+  line-height: 1.7;
 }
 
-.twin-card button {
-  position: relative;
-  min-height: 46px;
-  padding: 0 18px;
-  color: #5d1228;
-  background: #fff7ed;
+.loading-state {
+  padding: 32px 0;
+  color: #806f6d;
+  text-align: center;
 }
 
-.twin-orbit {
-  position: absolute;
-  top: -70px;
-  right: -54px;
-  width: 180px;
-  height: 180px;
-  border: 1px solid rgb(255 247 237 / 25%);
-  border-radius: 50%;
-  box-shadow:
-    0 0 0 26px rgb(255 247 237 / 4%),
-    0 0 0 54px rgb(255 247 237 / 3%);
+.profile-form {
+  display: grid;
+  gap: 16px;
 }
 
-.progress-card {
+.form-section {
+  min-width: 0;
+  margin: 0;
+  padding: 22px;
+  border: 1px solid rgb(91 52 57 / 11%);
+  border-radius: 22px;
+  background: rgb(238 229 218 / 88%);
+}
+
+.form-section legend {
+  padding: 0 8px;
+  color: #4b393c;
+  font-family: Georgia, "Songti SC", serif;
+  font-size: 21px;
+  font-weight: 700;
+}
+
+.section-note {
+  margin: -2px 0 18px;
+  color: #897978;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.field-grid,
+.range-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px 12px;
+}
+
+.field,
+.field-stack {
+  display: grid;
+  gap: 8px;
+}
+
+.form-section > .field,
+.form-section > .condition-card {
   margin-top: 16px;
-  padding: 20px;
-  border: 1px solid rgb(91 52 57 / 10%);
-  border-radius: 20px;
-  background: #eee5da;
 }
 
-.progress-card strong,
-.progress-card span {
+.field-full {
+  grid-column: 1 / -1;
+}
+
+.field-hint {
+  color: #8a7a78;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.condition-card {
+  padding: 16px;
+  border: 1px solid rgb(91 52 57 / 9%);
+  border-radius: 16px;
+  background: rgb(255 250 243 / 58%);
+}
+
+.condition-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.condition-heading strong {
   color: #58484a;
   font-size: 14px;
 }
 
-.progress-track {
-  overflow: hidden;
-  height: 6px;
+.condition-heading + .range-grid,
+.condition-heading + .field-stack {
   margin-top: 14px;
-  border-radius: 999px;
-  background: #d9ccc0;
 }
 
-.progress-track span {
-  display: block;
-  width: 3%;
-  height: 100%;
-  background: #791d38;
+.check-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #6f1831;
+  cursor: pointer;
 }
 
-.progress-card p {
-  margin: 12px 0 0;
-  color: #867675;
-  font-size: 12px;
-  line-height: 1.55;
+.check-label input {
+  width: 18px;
+  min-height: 18px;
+  margin: 0;
+  accent-color: #6f1831;
+}
+
+.save-success {
+  margin: 0;
+  color: #326246;
+  font-size: 13px;
+  text-align: center;
+}
+
+.save-profile {
+  box-shadow: 0 12px 28px rgb(87 25 42 / 15%);
 }
 
 .member-nav {

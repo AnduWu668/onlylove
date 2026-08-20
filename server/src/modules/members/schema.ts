@@ -10,6 +10,8 @@ import {
 } from "drizzle-orm/pg-core";
 
 export type MemberRole = "member" | "admin" | "super_admin";
+export type Gender = "female" | "male";
+export type RequirementMode = "preferred" | "required";
 
 export const members = pgTable(
   "members",
@@ -18,10 +20,47 @@ export const members = pgTable(
     email: varchar("email", { length: 320 }).notNull(),
     role: varchar("role", { length: 32 }).$type<MemberRole>().notNull(),
     birthDate: date("birth_date"),
+    nickname: varchar("nickname", { length: 40 }),
+    gender: varchar("gender", { length: 16 }).$type<Gender>(),
+    heightCm: integer("height_cm"),
+    city: varchar("city", { length: 60 }),
+    occupation: varchar("occupation", { length: 80 }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
   },
   (table) => [uniqueIndex("members_email_unique").on(table.email)],
+);
+
+export const matchCriteriaVersions = pgTable(
+  "match_criteria_versions",
+  {
+    id: uuid("id").primaryKey(),
+    memberId: uuid("member_id")
+      .notNull()
+      .references(() => members.id),
+    version: integer("version").notNull(),
+    desiredGender: varchar("desired_gender", { length: 16 })
+      .$type<Gender>()
+      .notNull(),
+    ageMinimum: integer("age_minimum"),
+    ageMaximum: integer("age_maximum"),
+    ageMode: varchar("age_mode", { length: 16 }).$type<RequirementMode>(),
+    heightMinimumCm: integer("height_minimum_cm"),
+    heightMaximumCm: integer("height_maximum_cm"),
+    heightMode: varchar("height_mode", { length: 16 }).$type<RequirementMode>(),
+    acceptableCities: varchar("acceptable_cities", { length: 60 })
+      .array()
+      .notNull(),
+    occupationRequirement: varchar("occupation_requirement", { length: 100 }),
+    occupationMode: varchar("occupation_mode", { length: 16 }).$type<RequirementMode>(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    uniqueIndex("match_criteria_member_version_unique").on(
+      table.memberId,
+      table.version,
+    ),
+  ],
 );
 
 export const invitations = pgTable(

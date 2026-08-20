@@ -3,13 +3,117 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
 import type { Database } from "../../db.js";
 import type { Mailer } from "./mailer.js";
-import { invitations, members, otpChallenges, sessions } from "./schema.js";
+import {
+  invitations,
+  matchCriteriaVersions,
+  members,
+  otpChallenges,
+  sessions,
+} from "./schema.js";
+import type { Gender, RequirementMode } from "./schema.js";
+
+const POSTGRES_INTEGER_MAX = 2_147_483_647;
+
+interface ProfileUpdate {
+  profile: {
+    nickname: string;
+    birthDate: string;
+    gender: Gender;
+    heightCm: number;
+    city: string;
+    occupation: string;
+  };
+  matchCriteria: {
+    desiredGender: Gender;
+    ageMinimum: number | null;
+    ageMaximum: number | null;
+    ageMode: RequirementMode | null;
+    heightMinimumCm: number | null;
+    heightMaximumCm: number | null;
+    heightMode: RequirementMode | null;
+    acceptableCities: string[];
+    occupationRequirement: string | null;
+    occupationMode: RequirementMode | null;
+  };
+}
 
 const emailSchema = {
   type: "object",
   additionalProperties: false,
   required: ["email"],
   properties: { email: { type: "string", format: "email", maxLength: 320 } },
+} as const;
+
+const nullableInteger = (minimum: number) => ({
+  type: ["integer", "null"],
+  minimum,
+  maximum: POSTGRES_INTEGER_MAX,
+});
+
+const profileUpdateSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["profile", "matchCriteria"],
+  properties: {
+    profile: {
+      type: "object",
+      additionalProperties: false,
+      required: [
+        "nickname",
+        "birthDate",
+        "gender",
+        "heightCm",
+        "city",
+        "occupation",
+      ],
+      properties: {
+        nickname: { type: "string", minLength: 1, maxLength: 40 },
+        birthDate: { type: "string", pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+        gender: { type: "string", enum: ["female", "male"] },
+        heightCm: {
+          type: "integer",
+          minimum: 1,
+          maximum: POSTGRES_INTEGER_MAX,
+        },
+        city: { type: "string", minLength: 1, maxLength: 60 },
+        occupation: { type: "string", minLength: 1, maxLength: 80 },
+      },
+    },
+    matchCriteria: {
+      type: "object",
+      additionalProperties: false,
+      required: [
+        "desiredGender",
+        "ageMinimum",
+        "ageMaximum",
+        "ageMode",
+        "heightMinimumCm",
+        "heightMaximumCm",
+        "heightMode",
+        "acceptableCities",
+        "occupationRequirement",
+        "occupationMode",
+      ],
+      properties: {
+        desiredGender: { type: "string", enum: ["female", "male"] },
+        ageMinimum: nullableInteger(18),
+        ageMaximum: nullableInteger(18),
+        ageMode: { type: ["string", "null"], enum: ["required", "preferred", null] },
+        heightMinimumCm: nullableInteger(1),
+        heightMaximumCm: nullableInteger(1),
+        heightMode: { type: ["string", "null"], enum: ["required", "preferred", null] },
+        acceptableCities: {
+          type: "array",
+          minItems: 1,
+          maxItems: 10,
+          uniqueItems: true,
+          items: { type: "string", minLength: 1, maxLength: 60 },
+        },
+        occupationRequirement: { type: ["string", "null"], maxLength: 100 },
+        occupationMode: { type: ["string", "null"], enum: ["required", "preferred", null] },
+      },
+    },
+  },
 } as const;
 
 type Member = typeof members.$inferSelect;
@@ -42,6 +146,125 @@ function sameHash(left: string, right: string) {
 
 function publicMember(member: Member) {
   return { email: member.email, role: member.role };
+}
+
+function publicProfile(member: Member) {
+  return {
+    nickname: member.nickname ?? "",
+    birthDate: member.birthDate ?? "",
+    gender: member.gender ?? "",
+    heightCm: member.heightCm,
+    city: member.city ?? "",
+    occupation: member.occupation ?? "",
+  };
+}
+
+function publicMatchCriteria(
+  criteria: typeof matchCriteriaVersions.$inferSelect,
+) {
+  return {
+    version: criteria.version,
+    desiredGender: criteria.desiredGender,
+    ageMinimum: criteria.ageMinimum,
+    ageMaximum: criteria.ageMaximum,
+    ageMode: criteria.ageMode,
+    heightMinimumCm: criteria.heightMinimumCm,
+    heightMaximumCm: criteria.heightMaximumCm,
+    heightMode: criteria.heightMode,
+    acceptableCities: criteria.acceptableCities,
+    occupationRequirement: criteria.occupationRequirement,
+    occupationMode: criteria.occupationMode,
+  };
+}
+
+function normalizeProfileUpdate(body: ProfileUpdate): ProfileUpdate {
+  return {
+    profile: {
+      ...body.profile,
+      nickname: body.profile.nickname.trim(),
+      city: body.profile.city.trim(),
+      occupation: body.profile.occupation.trim(),
+    },
+    matchCriteria: {
+      ...body.matchCriteria,
+      acceptableCities: body.matchCriteria.acceptableCities.map((city) =>
+        city.trim(),
+      ),
+      occupationRequirement:
+        body.matchCriteria.occupationRequirement?.trim() ?? null,
+    },
+  };
+}
+
+function validateRange(
+  minimum: number | null,
+  maximum: number | null,
+  mode: RequirementMode | null,
+) {
+  return minimum === null && maximum === null && mode === null
+    ? true
+    : minimum !== null &&
+        maximum !== null &&
+        minimum <= maximum &&
+        (mode === "required" || mode === "preferred");
+}
+
+function invalidProfileUpdate(body: ProfileUpdate, now: Date) {
+  const { profile, matchCriteria } = body;
+  if (!profile.nickname || profile.nickname.length > 40) {
+    return { code: "INVALID_PROFILE", field: "nickname" };
+  }
+  if (!isAdult(profile.birthDate, now)) {
+    return { code: "INVALID_PROFILE", field: "birthDate" };
+  }
+  if (
+    !Number.isInteger(profile.heightCm) ||
+    profile.heightCm < 1 ||
+    profile.heightCm > POSTGRES_INTEGER_MAX
+  ) {
+    return { code: "INVALID_PROFILE", field: "heightCm" };
+  }
+  if (!profile.city || profile.city.length > 60) {
+    return { code: "INVALID_PROFILE", field: "city" };
+  }
+  if (!profile.occupation || profile.occupation.length > 80) {
+    return { code: "INVALID_PROFILE", field: "occupation" };
+  }
+  if (matchCriteria.desiredGender === profile.gender) {
+    return { code: "INVALID_MATCH_CRITERIA", field: "desiredGender" };
+  }
+  if (!validateRange(
+    matchCriteria.ageMinimum,
+    matchCriteria.ageMaximum,
+    matchCriteria.ageMode,
+  )) {
+    return { code: "INVALID_MATCH_CRITERIA", field: "ageRange" };
+  }
+  if (!validateRange(
+    matchCriteria.heightMinimumCm,
+    matchCriteria.heightMaximumCm,
+    matchCriteria.heightMode,
+  )) {
+    return { code: "INVALID_MATCH_CRITERIA", field: "heightRange" };
+  }
+  if (
+    matchCriteria.acceptableCities.length === 0 ||
+    matchCriteria.acceptableCities.some((city) => !city || city.length > 60) ||
+    new Set(matchCriteria.acceptableCities).size !==
+      matchCriteria.acceptableCities.length
+  ) {
+    return { code: "INVALID_MATCH_CRITERIA", field: "acceptableCities" };
+  }
+  const occupationIsUnlimited =
+    matchCriteria.occupationRequirement === null &&
+    matchCriteria.occupationMode === null;
+  const occupationIsSpecified =
+    Boolean(matchCriteria.occupationRequirement) &&
+    (matchCriteria.occupationMode === "required" ||
+      matchCriteria.occupationMode === "preferred");
+  if (!occupationIsUnlimited && !occupationIsSpecified) {
+    return { code: "INVALID_MATCH_CRITERIA", field: "occupationRequirement" };
+  }
 }
 
 function publicInvitation(
@@ -401,6 +624,72 @@ export function registerMembersRoutes(
     if (!member) return reply.code(401).send({ code: "UNAUTHENTICATED" });
     return { member: publicMember(member) };
   });
+
+  app.get("/api/member/profile", async (request, reply) => {
+    const member = await memberForRequest(request, db, now());
+    if (!member) return reply.code(401).send({ code: "UNAUTHENTICATED" });
+    const currentCriteria = (
+      await db
+        .select()
+        .from(matchCriteriaVersions)
+        .where(eq(matchCriteriaVersions.memberId, member.id))
+        .orderBy(desc(matchCriteriaVersions.version))
+        .limit(1)
+    )[0];
+    return {
+      profile: publicProfile(member),
+      matchCriteria: currentCriteria
+        ? publicMatchCriteria(currentCriteria)
+        : null,
+    };
+  });
+
+  app.put<{ Body: ProfileUpdate }>(
+    "/api/member/profile",
+    { schema: { body: profileUpdateSchema } },
+    async (request, reply) => {
+      const savedAt = now();
+      const member = await memberForRequest(request, db, savedAt);
+      if (!member) return reply.code(401).send({ code: "UNAUTHENTICATED" });
+      const body = normalizeProfileUpdate(request.body);
+      const invalid = invalidProfileUpdate(body, savedAt);
+      if (invalid) return reply.code(400).send(invalid);
+
+      const criteria = await db.transaction(async (transaction) => {
+        await transaction.execute(
+          sql`select pg_advisory_xact_lock(hashtext(${member.id}))`,
+        );
+        const current = (
+          await transaction
+            .select({ version: matchCriteriaVersions.version })
+            .from(matchCriteriaVersions)
+            .where(eq(matchCriteriaVersions.memberId, member.id))
+            .orderBy(desc(matchCriteriaVersions.version))
+            .limit(1)
+        )[0];
+        await transaction
+          .update(members)
+          .set(body.profile)
+          .where(eq(members.id, member.id));
+        return (
+          await transaction
+            .insert(matchCriteriaVersions)
+            .values({
+              id: randomUUID(),
+              memberId: member.id,
+              version: (current?.version ?? 0) + 1,
+              ...body.matchCriteria,
+              createdAt: savedAt,
+            })
+            .returning()
+        )[0]!;
+      });
+      return {
+        profile: body.profile,
+        matchCriteria: publicMatchCriteria(criteria),
+      };
+    },
+  );
 
   app.delete("/api/session", async (request, reply) => {
     const token = request.cookies.onlylove_session;
