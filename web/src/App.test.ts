@@ -11,7 +11,7 @@ describe("OnlyLove UI seam", () => {
     vi.useRealTimers();
   });
 
-  it("shows the mobile email-code sign-in flow", async () => {
+  it("shows the mobile password sign-in flow", async () => {
     const router = createRouter({ history: createMemoryHistory(), routes });
     await router.push("/login");
     await router.isReady();
@@ -21,40 +21,142 @@ describe("OnlyLove UI seam", () => {
     expect(wrapper.get('input[type="email"]').attributes("autocomplete")).toBe(
       "email",
     );
-    expect(wrapper.get("button").text()).toContain("获取验证码");
+    expect(wrapper.get('input[type="password"]').attributes("autocomplete")).toBe(
+      "current-password",
+    );
+    expect(wrapper.get('button[type="submit"]').text()).toContain("登录");
+    expect(wrapper.text()).toContain("首次登录或忘记密码");
   });
 
-  it("moves an invited member from email to the six-digit code step", async () => {
-    const request = vi
-      .fn()
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 202,
-        json: async () => ({
-          challengeId: "1dc8b163-2270-42b6-a90a-dbb3b887501e",
-          requiresBirthDate: true,
-        }),
-      })
-      .mockResolvedValueOnce({
+  it("logs in with an existing password", async () => {
+    const request = vi.fn(async (url: string) => {
+      if (url === "/api/auth/login") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            member: { email: "member@example.com", role: "member" },
+            requiresPasswordSetup: false,
+          }),
+        };
+      }
+      if (url === "/api/session") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            member: { email: "member@example.com", role: "member" },
+            requiresPasswordSetup: false,
+          }),
+        };
+      }
+      return {
         ok: true,
         status: 200,
         json: async () => ({
-          member: { email: "member@example.com", role: "member" },
+          profile: {
+            nickname: "",
+            birthDate: "1990-01-01",
+            gender: "",
+            heightCm: null,
+            city: "",
+            occupation: "",
+          },
+          matchCriteria: null,
         }),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: async () => ({
-          member: { email: "member@example.com", role: "member" },
-        }),
-      });
+      };
+    });
     vi.stubGlobal("fetch", request);
     const router = createRouter({ history: createMemoryHistory(), routes });
     await router.push("/login");
     await router.isReady();
     const wrapper = mount(App, { global: { plugins: [router] } });
 
+    await wrapper.get('input[type="email"]').setValue("member@example.com");
+    await wrapper.get('input[type="password"]').setValue("secure password");
+    await wrapper.get("form").trigger("submit");
+    await flushPromises();
+
+    expect(request).toHaveBeenCalledWith(
+      "/api/auth/login",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining('"password":"secure password"'),
+      }),
+    );
+    expect(router.currentRoute.value.fullPath).toBe("/app");
+  });
+
+  it("uses an email code to require password setup for a new member", async () => {
+    let passwordSet = false;
+    const request = vi.fn(async (url: string, options?: RequestInit) => {
+      if (url === "/api/auth/otp") {
+        return {
+        ok: true,
+        status: 202,
+        json: async () => ({
+          challengeId: "1dc8b163-2270-42b6-a90a-dbb3b887501e",
+          requiresBirthDate: true,
+        }),
+        };
+      }
+      if (url === "/api/auth/verify") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            member: { email: "member@example.com", role: "member" },
+            requiresPasswordSetup: true,
+          }),
+        };
+      }
+      if (url === "/api/auth/password" && options?.method === "PUT") {
+        passwordSet = true;
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            member: { email: "member@example.com", role: "member" },
+            requiresPasswordSetup: false,
+          }),
+        };
+      }
+      if (url === "/api/session") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            member: { email: "member@example.com", role: "member" },
+            requiresPasswordSetup: !passwordSet,
+          }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          profile: {
+            nickname: "",
+            birthDate: "1990-01-01",
+            gender: "",
+            heightCm: null,
+            city: "",
+            occupation: "",
+          },
+          matchCriteria: null,
+        }),
+      };
+    });
+    vi.stubGlobal("fetch", request);
+    const router = createRouter({ history: createMemoryHistory(), routes });
+    await router.push("/login");
+    await router.isReady();
+    const wrapper = mount(App, { global: { plugins: [router] } });
+
+    const recovery = wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("首次登录或忘记密码"))!;
+    await recovery.trigger("click");
     await wrapper.get('input[type="email"]').setValue("member@example.com");
     await wrapper.get("form").trigger("submit");
     await flushPromises();
@@ -72,14 +174,49 @@ describe("OnlyLove UI seam", () => {
     await wrapper.get("form").trigger("submit");
     await flushPromises();
 
-    expect(request).toHaveBeenNthCalledWith(
-      2,
+    expect(request).toHaveBeenCalledWith(
       "/api/auth/verify",
       expect.objectContaining({
         body: expect.stringContaining('"birthDate":"1990-01-01"'),
       }),
     );
+    expect(router.currentRoute.value.path).toBe("/set-password");
+
+    await wrapper.get("#new-password").setValue("secure password");
+    await wrapper.get("#confirm-password").setValue("secure password");
+    await wrapper.get("form").trigger("submit");
+    await flushPromises();
+
+    expect(request).toHaveBeenCalledWith(
+      "/api/auth/password",
+      expect.objectContaining({
+        method: "PUT",
+        body: expect.stringContaining('"password":"secure password"'),
+      }),
+    );
     expect(router.currentRoute.value.fullPath).toBe("/app");
+  });
+
+  it("redirects an existing passwordless session to password setup", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          member: { email: "legacy@example.com", role: "member" },
+          requiresPasswordSetup: true,
+        }),
+      })),
+    );
+    const router = createRouter({ history: createMemoryHistory(), routes });
+    const wrapper = mount(App, { global: { plugins: [router] } });
+    await router.push("/app");
+    await router.isReady();
+    await flushPromises();
+
+    expect(router.currentRoute.value.path).toBe("/set-password");
+    expect(wrapper.text()).toContain("设置登录密码");
   });
 
   it("shows the member shell with the four agreed destinations", async () => {

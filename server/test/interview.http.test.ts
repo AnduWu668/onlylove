@@ -35,7 +35,15 @@ describe("first portrait interview HTTP and Agent Engine seam", () => {
         birthDate,
       },
     });
-    return response.cookies[0]?.name + "=" + response.cookies[0]?.value;
+    const cookie = response.cookies[0]?.name + "=" + response.cookies[0]?.value;
+    const password = await app.inject({
+      method: "PUT",
+      url: "/api/auth/password",
+      headers: { cookie },
+      payload: { password: "correct horse battery staple" },
+    });
+    expect(password.statusCode).toBe(200);
+    return cookie;
   }
 
   async function inviteAndSignInMember(email: string) {

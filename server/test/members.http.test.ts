@@ -19,8 +19,19 @@ describe("Members HTTP seam", () => {
   let app: FastifyInstance;
   let mailer: MemoryMailer;
   let currentTime: Date;
+  let adminCookie: string | undefined;
+
+  async function setPassword(cookie: string, password = "correct horse battery staple") {
+    return app.inject({
+      method: "PUT",
+      url: "/api/auth/password",
+      headers: { cookie },
+      payload: { password },
+    });
+  }
 
   async function signInAdmin() {
+    if (adminCookie) return adminCookie;
     const challenge = await app.inject({
       method: "POST",
       url: "/api/auth/otp",
@@ -35,7 +46,9 @@ describe("Members HTTP seam", () => {
         code: mailer.lastCodeFor("admin@onlylove.test"),
       },
     });
-    return signIn.cookies[0]?.name + "=" + signIn.cookies[0]?.value;
+    adminCookie = signIn.cookies[0]?.name + "=" + signIn.cookies[0]?.value;
+    expect((await setPassword(adminCookie)).statusCode).toBe(200);
+    return adminCookie;
   }
 
   async function invite(email: string) {
@@ -65,7 +78,9 @@ describe("Members HTTP seam", () => {
         birthDate: "1990-01-01",
       },
     });
-    return signIn.cookies[0]?.name + "=" + signIn.cookies[0]?.value;
+    const cookie = signIn.cookies[0]?.name + "=" + signIn.cookies[0]?.value;
+    expect((await setPassword(cookie)).statusCode).toBe(200);
+    return cookie;
   }
 
   beforeAll(async () => {
@@ -88,6 +103,7 @@ describe("Members HTTP seam", () => {
 
     currentTime = new Date("2026-08-20T08:00:00.000Z");
     mailer = new MemoryMailer();
+    adminCookie = undefined;
     app = await createApp({
       databaseUrl,
       mailer,
@@ -124,7 +140,17 @@ describe("Members HTTP seam", () => {
 
     expect(signIn.statusCode).toBe(200);
     expect(signIn.json().member).toMatchObject({ role: "super_admin" });
+    expect(signIn.json().requiresPasswordSetup).toBe(true);
     const cookie = signIn.cookies[0]?.name + "=" + signIn.cookies[0]?.value;
+
+    const blockedBeforePassword = await app.inject({
+      method: "POST",
+      url: "/api/admin/invitations",
+      headers: { cookie },
+      payload: { email: "member@onlylove.test" },
+    });
+    expect(blockedBeforePassword.statusCode).toBe(403);
+    expect((await setPassword(cookie)).statusCode).toBe(200);
 
     const invitation = await app.inject({
       method: "POST",
@@ -166,6 +192,7 @@ describe("Members HTTP seam", () => {
       email: "adult@onlylove.test",
       role: "member",
     });
+    expect(register.json().requiresPasswordSetup).toBe(true);
 
     const cookie = register.cookies[0]?.name + "=" + register.cookies[0]?.value;
     const session = await app.inject({
@@ -175,6 +202,32 @@ describe("Members HTTP seam", () => {
     });
     expect(session.statusCode).toBe(200);
     expect(session.json().member.email).toBe("adult@onlylove.test");
+    expect(session.json().requiresPasswordSetup).toBe(true);
+    expect(
+      (
+        await app.inject({
+          method: "GET",
+          url: "/api/member/profile",
+          headers: { cookie },
+        })
+      ).statusCode,
+    ).toBe(401);
+
+    expect(
+      (
+        await setPassword(cookie, "short")
+      ).json().code,
+    ).toBe("INVALID_PASSWORD");
+    expect((await setPassword(cookie)).statusCode).toBe(200);
+    expect(
+      (
+        await app.inject({
+          method: "GET",
+          url: "/api/session",
+          headers: { cookie },
+        })
+      ).json().requiresPasswordSetup,
+    ).toBe(false);
 
     const memberCannotInvite = await app.inject({
       method: "POST",
@@ -211,6 +264,88 @@ describe("Members HTTP seam", () => {
       },
     });
     expect(reuse.statusCode).toBe(400);
+  });
+
+  it("signs in with a password and resets a forgotten password through OTP", async () => {
+    const email = "password@onlylove.test";
+    const oldPassword = "correct horse battery staple";
+    const newPassword = "a different secure password";
+    const oldCookie = await signInMember(email);
+    const pool = new Pool({ connectionString: databaseUrl });
+    const storedPassword = await pool.query(
+      "select password_hash from members where email = $1",
+      [email],
+    );
+    await pool.end();
+    expect(storedPassword.rows[0].password_hash).toMatch(/^scrypt\$/);
+    expect(storedPassword.rows[0].password_hash).not.toContain(oldPassword);
+
+    const wrongPassword = await app.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { email, password: "definitely wrong" },
+    });
+    expect(wrongPassword.statusCode).toBe(401);
+    expect(wrongPassword.json().code).toBe("INVALID_CREDENTIALS");
+
+    const passwordLogin = await app.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { email, password: oldPassword },
+    });
+    expect(passwordLogin.statusCode).toBe(200);
+    expect(passwordLogin.json()).toMatchObject({
+      member: { email },
+      requiresPasswordSetup: false,
+    });
+
+    currentTime = new Date(currentTime.getTime() + 60_000);
+    const challenge = await app.inject({
+      method: "POST",
+      url: "/api/auth/otp",
+      payload: { email },
+    });
+    const reset = await app.inject({
+      method: "POST",
+      url: "/api/auth/verify",
+      payload: {
+        email,
+        challengeId: challenge.json().challengeId,
+        code: mailer.lastCodeFor(email),
+      },
+    });
+    expect(reset.statusCode).toBe(200);
+    expect(reset.json().requiresPasswordSetup).toBe(true);
+    const resetCookie = reset.cookies[0]?.name + "=" + reset.cookies[0]?.value;
+    expect((await setPassword(resetCookie, newPassword)).statusCode).toBe(200);
+
+    expect(
+      (
+        await app.inject({
+          method: "GET",
+          url: "/api/session",
+          headers: { cookie: oldCookie },
+        })
+      ).statusCode,
+    ).toBe(401);
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: "/api/auth/login",
+          payload: { email, password: oldPassword },
+        })
+      ).statusCode,
+    ).toBe(401);
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: "/api/auth/login",
+          payload: { email, password: newPassword },
+        })
+      ).statusCode,
+    ).toBe(200);
   });
 
   it("enforces the invitation role, revocation, reissue, and seven-day expiry", async () => {

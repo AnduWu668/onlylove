@@ -34,7 +34,14 @@ onMounted(async () => {
     await router.replace({ path: "/login", query: { redirect: "/admin" } });
     return;
   }
-  const { member } = await session.json();
+  const { member, requiresPasswordSetup } = await session.json();
+  if (requiresPasswordSetup) {
+    await router.replace({
+      path: "/set-password",
+      query: { redirect: "/admin" },
+    });
+    return;
+  }
   if (member.role !== "super_admin") {
     await router.replace("/app");
     return;

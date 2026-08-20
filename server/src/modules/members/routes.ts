@@ -1,6 +1,14 @@
-import { createHash, createHmac, randomInt, randomUUID, timingSafeEqual } from "node:crypto";
-import type { FastifyInstance, FastifyRequest } from "fastify";
-import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
+import {
+  createHash,
+  createHmac,
+  randomBytes,
+  randomInt,
+  randomUUID,
+  scrypt,
+  timingSafeEqual,
+} from "node:crypto";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { and, desc, eq, gt, isNull, ne, sql } from "drizzle-orm";
 import type { Database } from "../../db.js";
 import type { Mailer } from "./mailer.js";
 import {
@@ -13,6 +21,13 @@ import {
 import type { Gender, RequirementMode } from "./schema.js";
 
 const POSTGRES_INTEGER_MAX = 2_147_483_647;
+const PASSWORD_MIN_LENGTH = 8;
+const PASSWORD_MAX_LENGTH = 128;
+const PASSWORD_KEY_LENGTH = 64;
+const SCRYPT_COST = 16_384;
+const SCRYPT_BLOCK_SIZE = 8;
+const SCRYPT_PARALLELIZATION = 1;
+const DUMMY_PASSWORD_HASH = `scrypt$${SCRYPT_COST}$${SCRYPT_BLOCK_SIZE}$${SCRYPT_PARALLELIZATION}$${"00".repeat(16)}$${"00".repeat(PASSWORD_KEY_LENGTH)}`;
 
 interface ProfileUpdate {
   profile: {
@@ -42,6 +57,25 @@ const emailSchema = {
   additionalProperties: false,
   required: ["email"],
   properties: { email: { type: "string", format: "email", maxLength: 320 } },
+} as const;
+
+const passwordSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["password"],
+  properties: {
+    password: { type: "string", minLength: 1, maxLength: PASSWORD_MAX_LENGTH },
+  },
+} as const;
+
+const passwordLoginSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["email", "password"],
+  properties: {
+    email: { type: "string", format: "email", maxLength: 320 },
+    password: { type: "string", minLength: 1, maxLength: PASSWORD_MAX_LENGTH },
+  },
 } as const;
 
 const nullableInteger = (minimum: number) => ({
@@ -131,6 +165,75 @@ function normalizeEmail(email: string) {
 
 function hashSessionToken(value: string) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function derivePassword(password: string, salt: Buffer) {
+  return new Promise<Buffer>((resolve, reject) => {
+    scrypt(
+      password,
+      salt,
+      PASSWORD_KEY_LENGTH,
+      {
+        N: SCRYPT_COST,
+        r: SCRYPT_BLOCK_SIZE,
+        p: SCRYPT_PARALLELIZATION,
+        maxmem: 64 * 1024 * 1024,
+      },
+      (error, key) => (error ? reject(error) : resolve(key)),
+    );
+  });
+}
+
+async function hashPassword(password: string) {
+  const salt = randomBytes(16);
+  const key = await derivePassword(password, salt);
+  return [
+    "scrypt",
+    SCRYPT_COST,
+    SCRYPT_BLOCK_SIZE,
+    SCRYPT_PARALLELIZATION,
+    salt.toString("hex"),
+    key.toString("hex"),
+  ].join("$");
+}
+
+async function passwordMatches(encoded: string, password: string) {
+  const [algorithm, cost, blockSize, parallelization, saltHex, keyHex] =
+    encoded.split("$");
+  if (
+    algorithm !== "scrypt" ||
+    Number(cost) !== SCRYPT_COST ||
+    Number(blockSize) !== SCRYPT_BLOCK_SIZE ||
+    Number(parallelization) !== SCRYPT_PARALLELIZATION ||
+    !/^[0-9a-f]{32}$/.test(saltHex ?? "") ||
+    !/^[0-9a-f]{128}$/.test(keyHex ?? "")
+  ) {
+    return false;
+  }
+  const actual = await derivePassword(password, Buffer.from(saltHex!, "hex"));
+  const expected = Buffer.from(keyHex!, "hex");
+  return timingSafeEqual(actual, expected);
+}
+
+function validPassword(password: string) {
+  return (
+    password.length >= PASSWORD_MIN_LENGTH &&
+    password.length <= PASSWORD_MAX_LENGTH
+  );
+}
+
+function setSessionCookie(
+  reply: FastifyReply,
+  sessionToken: string,
+  production: boolean,
+) {
+  reply.setCookie("onlylove_session", sessionToken, {
+    path: "/",
+    httpOnly: true,
+    sameSite: "lax",
+    secure: production,
+    maxAge: 30 * 24 * 60 * 60,
+  });
 }
 
 function hashOtp(secret: string, challengeId: string, code: string) {
@@ -352,7 +455,7 @@ export async function bootstrapSuperAdmin(
     .onConflictDoNothing({ target: members.email });
 }
 
-export async function memberForRequest(
+async function sessionForRequest(
   request: FastifyRequest,
   db: Database,
   now: Date,
@@ -361,7 +464,7 @@ export async function memberForRequest(
   if (!token) return undefined;
 
   const rows = await db
-    .select({ member: members })
+    .select({ member: members, session: sessions })
     .from(sessions)
     .innerJoin(members, eq(sessions.memberId, members.id))
     .where(
@@ -372,7 +475,23 @@ export async function memberForRequest(
       ),
     )
     .limit(1);
-  return rows[0]?.member;
+  return rows[0];
+}
+
+export async function memberForRequest(
+  request: FastifyRequest,
+  db: Database,
+  now: Date,
+) {
+  const current = await sessionForRequest(request, db, now);
+  if (
+    !current ||
+    current.session.passwordSetupRequired ||
+    !current.member.passwordHash
+  ) {
+    return undefined;
+  }
+  return current.member;
 }
 
 export async function interviewContextForMember(member: Member, db: Database) {
@@ -403,6 +522,44 @@ export function registerMembersRoutes(
   app: FastifyInstance,
   { db, mailer, now, otpSecret, production }: MembersOptions,
 ) {
+  app.post<{ Body: { email: string; password: string } }>(
+    "/api/auth/login",
+    { schema: { body: passwordLoginSchema } },
+    async (request, reply) => {
+      const email = normalizeEmail(request.body.email);
+      const signedInAt = now();
+      const member = (
+        await db
+          .select()
+          .from(members)
+          .where(and(eq(members.email, email), isNull(members.deletedAt)))
+          .limit(1)
+      )[0];
+      const matches = await passwordMatches(
+        member?.passwordHash ?? DUMMY_PASSWORD_HASH,
+        request.body.password,
+      );
+      if (!member?.passwordHash || !matches) {
+        return reply.code(401).send({ code: "INVALID_CREDENTIALS" });
+      }
+
+      const sessionToken = randomUUID() + randomUUID();
+      await db.insert(sessions).values({
+        id: randomUUID(),
+        memberId: member.id,
+        tokenHash: hashSessionToken(sessionToken),
+        passwordSetupRequired: false,
+        createdAt: signedInAt,
+        expiresAt: new Date(signedInAt.getTime() + 30 * 24 * 60 * 60_000),
+      });
+      setSessionCookie(reply, sessionToken, production);
+      return {
+        member: publicMember(member),
+        requiresPasswordSetup: false,
+      };
+    },
+  );
+
   app.post<{ Body: { email: string } }>(
     "/api/auth/otp",
     { schema: { body: emailSchema } },
@@ -606,6 +763,7 @@ export function registerMembersRoutes(
           id: randomUUID(),
           memberId: signedInMember.id,
           tokenHash: hashSessionToken(sessionToken),
+          passwordSetupRequired: true,
           createdAt: signedInAt,
           expiresAt: new Date(signedInAt.getTime() + 30 * 24 * 60 * 60_000),
         });
@@ -622,21 +780,64 @@ export function registerMembersRoutes(
         return reply.code(status).send({ code: result.error });
       }
 
-      reply.setCookie("onlylove_session", sessionToken, {
-        path: "/",
-        httpOnly: true,
-        sameSite: "lax",
-        secure: production,
-        maxAge: 30 * 24 * 60 * 60,
+      setSessionCookie(reply, sessionToken, production);
+      return {
+        member: publicMember(result.member),
+        requiresPasswordSetup: true,
+      };
+    },
+  );
+
+  app.put<{ Body: { password: string } }>(
+    "/api/auth/password",
+    { schema: { body: passwordSchema } },
+    async (request, reply) => {
+      const current = await sessionForRequest(request, db, now());
+      if (!current) return reply.code(401).send({ code: "UNAUTHENTICATED" });
+      if (
+        !current.session.passwordSetupRequired &&
+        current.member.passwordHash
+      ) {
+        return reply.code(403).send({ code: "PASSWORD_RESET_REQUIRED" });
+      }
+      if (!validPassword(request.body.password)) {
+        return reply.code(400).send({ code: "INVALID_PASSWORD" });
+      }
+
+      const passwordHash = await hashPassword(request.body.password);
+      await db.transaction(async (transaction) => {
+        await transaction
+          .update(members)
+          .set({ passwordHash })
+          .where(eq(members.id, current.member.id));
+        await transaction
+          .delete(sessions)
+          .where(
+            and(
+              eq(sessions.memberId, current.member.id),
+              ne(sessions.id, current.session.id),
+            ),
+          );
+        await transaction
+          .update(sessions)
+          .set({ passwordSetupRequired: false })
+          .where(eq(sessions.id, current.session.id));
       });
-      return { member: publicMember(result.member) };
+      return {
+        member: publicMember(current.member),
+        requiresPasswordSetup: false,
+      };
     },
   );
 
   app.get("/api/session", async (request, reply) => {
-    const member = await memberForRequest(request, db, now());
-    if (!member) return reply.code(401).send({ code: "UNAUTHENTICATED" });
-    return { member: publicMember(member) };
+    const current = await sessionForRequest(request, db, now());
+    if (!current) return reply.code(401).send({ code: "UNAUTHENTICATED" });
+    return {
+      member: publicMember(current.member),
+      requiresPasswordSetup:
+        current.session.passwordSetupRequired || !current.member.passwordHash,
+    };
   });
 
   app.get("/api/member/profile", async (request, reply) => {

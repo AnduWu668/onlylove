@@ -1,4 +1,5 @@
 import {
+  boolean,
   date,
   index,
   integer,
@@ -18,6 +19,7 @@ export const members = pgTable(
   {
     id: uuid("id").primaryKey(),
     email: varchar("email", { length: 320 }).notNull(),
+    passwordHash: varchar("password_hash", { length: 256 }),
     role: varchar("role", { length: 32 }).$type<MemberRole>().notNull(),
     birthDate: date("birth_date"),
     nickname: varchar("nickname", { length: 40 }),
@@ -102,6 +104,9 @@ export const sessions = pgTable(
       .notNull()
       .references(() => members.id),
     tokenHash: varchar("token_hash", { length: 64 }).notNull(),
+    passwordSetupRequired: boolean("password_setup_required")
+      .notNull()
+      .default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   },

@@ -2,14 +2,18 @@
 import { ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
+type Member = { email: string; role: string };
+type Step = "password" | "email" | "code";
+
 const route = useRoute();
 const router = useRouter();
 const email = ref("");
+const password = ref("");
 const code = ref("");
 const birthDate = ref("");
 const challengeId = ref("");
 const needsBirthDate = ref(false);
-const step = ref<"email" | "code">("email");
+const step = ref<Step>("password");
 const busy = ref(false);
 const error = ref("");
 
@@ -20,6 +24,7 @@ const messages: Record<string, string> = {
   OTP_EXPIRED: "验证码已过期，请重新获取。",
   OTP_ATTEMPTS_EXCEEDED: "错误次数过多，请重新获取验证码。",
   ADULTS_ONLY: "OnlyLove 仅面向年满 18 岁的成员。",
+  INVALID_CREDENTIALS: "邮箱或密码不正确。尚未设置或忘记密码时，请使用验证码。",
 };
 
 async function post(path: string, body: object) {
@@ -29,14 +34,41 @@ async function post(path: string, body: object) {
     body: JSON.stringify(body),
   });
   const data = await response.json();
-  if (!response.ok) throw new Error(messages[data.code] ?? "暂时无法完成，请稍后重试。");
+  if (!response.ok) {
+    throw new Error(messages[data.code] ?? "暂时无法完成，请稍后重试。");
+  }
   return data;
+}
+
+function redirectFor(member: Member) {
+  const requested =
+    typeof route.query.redirect === "string" ? route.query.redirect : "";
+  return requested.startsWith("/") && !requested.startsWith("//")
+    ? requested
+    : member.role === "super_admin"
+      ? "/admin"
+      : "/app";
+}
+
+function useEmailCode() {
+  error.value = "";
+  password.value = "";
+  step.value = "email";
 }
 
 async function submit() {
   busy.value = true;
   error.value = "";
   try {
+    if (step.value === "password") {
+      const data = await post("/api/auth/login", {
+        email: email.value,
+        password: password.value,
+      });
+      await router.push(redirectFor(data.member));
+      return;
+    }
+
     if (step.value === "email") {
       const data = await post("/api/auth/otp", { email: email.value });
       challengeId.value = data.challengeId;
@@ -51,15 +83,10 @@ async function submit() {
       code: code.value,
       ...(needsBirthDate.value ? { birthDate: birthDate.value } : {}),
     });
-    const requestedRedirect =
-      typeof route.query.redirect === "string" ? route.query.redirect : "";
-    await router.push(
-      requestedRedirect.startsWith("/")
-        ? requestedRedirect
-        : data.member.role === "super_admin"
-          ? "/admin"
-          : "/app",
-    );
+    await router.push({
+      path: "/set-password",
+      query: { redirect: redirectFor(data.member) },
+    });
   } catch (caught) {
     error.value = caught instanceof Error ? caught.message : "暂时无法完成。";
   } finally {
@@ -79,10 +106,15 @@ async function submit() {
 
     <form class="auth-card" @submit.prevent="submit">
       <div>
-        <p class="step-label">{{ step === "email" ? "成员登录" : "邮箱验证" }}</p>
-        <h2>{{ step === "email" ? "用邮箱继续" : "输入六位验证码" }}</h2>
+        <p class="step-label">
+          {{ step === "password" ? "成员登录" : step === "email" ? "账户验证" : "邮箱验证" }}
+        </p>
+        <h2>
+          {{ step === "password" ? "使用密码登录" : step === "email" ? "首次登录或找回密码" : "输入六位验证码" }}
+        </h2>
       </div>
-      <template v-if="step === 'email'">
+
+      <template v-if="step === 'password' || step === 'email'">
         <label for="email">受邀邮箱</label>
         <input
           id="email"
@@ -94,7 +126,19 @@ async function submit() {
           placeholder="name@example.com"
           required
         />
+        <template v-if="step === 'password'">
+          <label for="password">密码</label>
+          <input
+            id="password"
+            v-model="password"
+            name="password"
+            type="password"
+            autocomplete="current-password"
+            required
+          />
+        </template>
       </template>
+
       <template v-else>
         <p class="sent-to">验证码已发送至 {{ email }}</p>
         <label for="code">邮箱验证码</label>
@@ -122,18 +166,28 @@ async function submit() {
           />
         </template>
       </template>
+
       <p v-if="error" class="form-error" role="alert">{{ error }}</p>
       <button type="submit" :disabled="busy">
-        {{ busy ? "请稍候…" : step === "email" ? "获取验证码" : "进入 OnlyLove" }}
+        {{ busy ? "请稍候…" : step === "password" ? "登录" : step === "email" ? "获取验证码" : "验证邮箱" }}
       </button>
       <button
-        v-if="step === 'code'"
+        v-if="step === 'password'"
         class="text-button"
         type="button"
         :disabled="busy"
-        @click="step = 'email'"
+        @click="useEmailCode"
       >
-        更换邮箱或重新获取
+        首次登录或忘记密码
+      </button>
+      <button
+        v-else
+        class="text-button"
+        type="button"
+        :disabled="busy"
+        @click="step = step === 'code' ? 'email' : 'password'"
+      >
+        {{ step === "code" ? "更换邮箱或重新获取" : "返回密码登录" }}
       </button>
       <p class="form-note">首次注册仅面向已受邀且年满 18 岁的成员。</p>
     </form>

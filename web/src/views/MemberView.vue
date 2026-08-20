@@ -132,8 +132,16 @@ async function loadProfile() {
     }
     const sessionData = await jsonOrUndefined<{
       member: { email: string; role: string };
+      requiresPasswordSetup?: boolean;
     }>(session);
     if (!sessionData) throw new Error();
+    if (sessionData.requiresPasswordSetup) {
+      await router.replace({
+        path: "/set-password",
+        query: { redirect: "/app" },
+      });
+      return;
+    }
     member.value = sessionData.member;
     const response = await fetch("/api/member/profile");
     const data = response.ok
