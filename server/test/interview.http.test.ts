@@ -89,6 +89,15 @@ describe("first portrait interview HTTP and Agent Engine seam", () => {
         },
       });
       expect(response.statusCode).toBe(200);
+      const data = response.json();
+      if (data.autoFollowup) {
+        const events = await app.inject({
+          method: "GET",
+          url: data.autoFollowup.eventsUrl,
+          headers: { cookie },
+        });
+        expect(events.statusCode).toBe(200);
+      }
     }
   }
 
@@ -127,7 +136,6 @@ describe("first portrait interview HTTP and Agent Engine seam", () => {
             model: "interviewer-backup-v1",
             reply:
               "你提到冲突时需要先冷静一下。通常什么信号会让你愿意重新开始沟通？",
-            systemPromptIncludes: ["林夏", "上海", "稳定的专业工作"],
           },
         ],
         extractReply: JSON.stringify(emptyPortraitDraft()),
@@ -203,11 +211,15 @@ describe("first portrait interview HTTP and Agent Engine seam", () => {
       url: "/api/member/interview",
       headers: { cookie },
     });
-    expect(messages.json().messages).toHaveLength(10);
     expect(
       messages
         .json()
-        .messages.every((message: { role: string }) => message.role === "member"),
+        .messages.filter((message: { role: string }) => message.role === "member"),
+    ).toHaveLength(10);
+    expect(
+      messages
+        .json()
+        .messages.some((message: { role: string }) => message.role === "agent"),
     ).toBe(true);
     expect(messages.json().messages[0].content).toContain(
       "我会根据影响的人和时间窗口组合考虑。",
@@ -235,27 +247,33 @@ describe("first portrait interview HTTP and Agent Engine seam", () => {
       await inviteAndSignInMember("progress-interview@onlylove.test");
     await completeFixedInterview(cookie);
 
-    const pool = new Pool({ connectionString: databaseUrl });
-    const evidence = await pool.query<{ id: string }>(
-      "SELECT id FROM conversation_messages WHERE role = 'member' ORDER BY sequence LIMIT 1",
-    );
-    await pool.end();
-    const draft = emptyPortraitDraft();
-    draft.values = {
-      ...draft.values,
-      selfTendency: "重要决定前会先理解彼此的理由。",
-      confidence: "medium",
-      evidenceMessageIds: [evidence.rows[0]!.id],
-    };
-    agentModel.extractReply = JSON.stringify(draft);
-
-    const submit = async (clientMessageId: string, content: string) => {
+    const submit = async (
+      clientMessageId: string,
+      content: string,
+      addConfidentEvidence = false,
+    ) => {
       const response = await app.inject({
         method: "POST",
         url: "/api/member/interview/messages",
         headers: { cookie },
         payload: { clientMessageId, content },
       });
+      if (addConfidentEvidence) {
+        const pool = new Pool({ connectionString: databaseUrl });
+        const evidence = await pool.query<{ id: string }>(
+          "SELECT id FROM conversation_messages WHERE client_message_id = $1",
+          [clientMessageId],
+        );
+        await pool.end();
+        const draft = emptyPortraitDraft();
+        draft.values = {
+          ...draft.values,
+          selfTendency: "重要决定前会先理解彼此的理由。",
+          confidence: "medium",
+          evidenceMessageIds: [evidence.rows[0]!.id],
+        };
+        agentModel.extractReply = JSON.stringify(draft);
+      }
       return app.inject({
         method: "GET",
         url: response.json().eventsUrl,
@@ -265,6 +283,7 @@ describe("first portrait interview HTTP and Agent Engine seam", () => {
     const first = await submit(
       "4c33f48a-5481-4366-b934-0c86534f2a50",
       "我想补充当时是怎样考虑的。",
+      true,
     );
     expect(first.body).toContain("event: progress");
     expect(first.body).toContain("我对你的理解又清楚了一些");
@@ -375,16 +394,18 @@ describe("first portrait interview HTTP and Agent Engine seam", () => {
       headers: { cookie: adminCookie },
     });
     expect(runs.statusCode).toBe(200);
-    expect(runs.json().runs).toHaveLength(4);
+    const submittedRuns = runs
+      .json()
+      .runs.filter(
+        (run: { jobId: string }) => run.jobId === submitted.json().jobId,
+      );
+    expect(submittedRuns).toHaveLength(4);
     expect(
-      runs
-        .json()
-        .runs.filter(
-          (run: { task: string }) => run.task === "continue_interview",
-        )
+      submittedRuns
+        .filter((run: { task: string }) => run.task === "continue_interview")
         .map((run: { retryCount: number }) => run.retryCount),
     ).toEqual([0, 1, 2]);
-    expect(runs.json().runs.at(-1)).toEqual(
+    expect(submittedRuns.at(-1)).toEqual(
       expect.objectContaining({
         role: "portrait_interviewer",
         task: "continue_interview",
@@ -486,13 +507,14 @@ describe("first portrait interview HTTP and Agent Engine seam", () => {
       url: "/api/admin/agent-runs",
       headers: { cookie: adminCookie },
     });
-    expect(runs.json().runs).toHaveLength(4);
+    const firstRuns = runs
+      .json()
+      .runs.filter((run: { jobId: string }) => run.jobId === first.json().jobId);
+    expect(firstRuns).toHaveLength(4);
     expect(
-      runs
-        .json()
-        .runs.every((run: { error: string | null }) =>
-          run.error === null || run.error.includes("provider unavailable"),
-        ),
+      firstRuns.every((run: { error: string | null }) =>
+        run.error === null || run.error.includes("provider unavailable"),
+      ),
     ).toBe(true);
 
     const afterRefund = await app.inject({

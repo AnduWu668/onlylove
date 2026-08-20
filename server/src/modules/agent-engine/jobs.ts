@@ -28,6 +28,44 @@ export class AgentJobs {
     )[0];
   }
 
+  async enqueueInterview(values: {
+    memberId: string;
+    conversationId: string;
+    inputMessageId: string;
+    definition: {
+      role: "portrait_interviewer";
+      task: "continue_interview";
+      version: string;
+      promptVersion: string;
+      schemaVersion: null;
+    };
+    createdAt: Date;
+  }) {
+    return this.db.transaction(async (transaction) => {
+      const existing = await this.findByInput(
+        transaction,
+        values.inputMessageId,
+      );
+      if (existing) return existing;
+      return this.create(transaction, {
+        id: randomUUID(),
+        role: values.definition.role,
+        task: values.definition.task,
+        definitionVersion: values.definition.version,
+        promptVersion: values.definition.promptVersion,
+        schemaVersion: values.definition.schemaVersion,
+        memberId: values.memberId,
+        conversationId: values.conversationId,
+        inputMessageId: values.inputMessageId,
+        status: "pending",
+        retryCount: 0,
+        switchedModel: false,
+        quotaRefunded: false,
+        createdAt: values.createdAt,
+      });
+    });
+  }
+
   async findForMember(id: string, memberId: string) {
     return (
       await this.db
@@ -177,6 +215,7 @@ export class AgentJobs {
     code: string,
     retryCount: number,
     switchedModel: boolean,
+    refundQuota: boolean,
     failedAt: Date,
   ) {
     return Boolean(
@@ -188,7 +227,7 @@ export class AgentJobs {
             error: code,
             retryCount,
             switchedModel,
-            quotaRefunded: true,
+            quotaRefunded: refundQuota,
             leaseToken: null,
             leaseExpiresAt: null,
             completedAt: failedAt,

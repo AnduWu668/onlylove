@@ -488,6 +488,25 @@ describe("OnlyLove UI seam", () => {
   });
 
   it("completes the fixed interview before opening dynamic chat", async () => {
+    class FakeEventSource {
+      static current: FakeEventSource;
+      readonly listeners = new Map<string, (event: MessageEvent) => void>();
+
+      constructor(readonly url: string) {
+        FakeEventSource.current = this;
+      }
+
+      addEventListener(type: string, listener: (event: MessageEvent) => void) {
+        this.listeners.set(type, listener);
+      }
+
+      close() {}
+
+      emit(type: string, data: object) {
+        this.listeners.get(type)?.({ data: JSON.stringify(data) } as MessageEvent);
+      }
+    }
+    vi.stubGlobal("EventSource", FakeEventSource);
     const request = vi.fn(async (url: string, options?: RequestInit) => {
       if (url === "/api/session") {
         return {
@@ -520,6 +539,11 @@ describe("OnlyLove UI seam", () => {
               question: null,
             },
             progress: { completed: 0, total: 8 },
+            autoFollowup: {
+              jobId: "9b1d8d72-bd60-41b2-8ad8-d2cfd0e84e2f",
+              eventsUrl:
+                "/api/member/interview/jobs/9b1d8d72-bd60-41b2-8ad8-d2cfd0e84e2f/events",
+            },
           }),
         };
       }
@@ -578,6 +602,12 @@ describe("OnlyLove UI seam", () => {
     );
     expect(wrapper.find("form.interview-composer").exists()).toBe(true);
     expect(wrapper.text()).toContain("0/8");
+    expect(FakeEventSource.current.url).toContain("/events");
+    FakeEventSource.current.emit("delta", {
+      text: "哪一次具体经历最能说明你的取舍？",
+    });
+    await flushPromises();
+    expect(wrapper.text()).toContain("哪一次具体经历最能说明你的取舍？");
   });
 
   it("sends the first interview message and renders the streamed Agent answer", async () => {

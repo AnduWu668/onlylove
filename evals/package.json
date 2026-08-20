@@ -3,6 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node check.mjs"
+    "test": "tsx check.ts"
+  },
+  "devDependencies": {
+    "tsx": "4.23.12"
   }
 }

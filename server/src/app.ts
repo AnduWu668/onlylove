@@ -7,6 +7,7 @@ import {
 } from "./modules/agent-engine/engine.js";
 import { AgentJobs } from "./modules/agent-engine/jobs.js";
 import { registerConversationsRoutes } from "./modules/conversations/routes.js";
+import { InterviewConversations } from "./modules/conversations/interview.js";
 import type { Mailer } from "./modules/members/mailer.js";
 import {
   bootstrapSuperAdmin,
@@ -35,7 +36,8 @@ export async function createApp(options: AppOptions) {
     options.agentInputTokenBudget,
   );
   const agentJobs = new AgentJobs(db);
-  const portraits = new Portraits(db, now);
+  const interviewConversations = new InterviewConversations(db);
+  const portraits = new Portraits(db, now, interviewConversations);
 
   await migrateDatabase(db);
   await bootstrapSuperAdmin(db, options.superAdminEmail, now());
@@ -48,7 +50,13 @@ export async function createApp(options: AppOptions) {
     otpSecret: options.otpSecret,
     production: options.production ?? false,
   });
-  registerPortraitsRoutes(app, { db, now, portraits });
+  registerPortraitsRoutes(app, {
+    agentEngine,
+    agentJobs,
+    db,
+    now,
+    portraits,
+  });
   registerConversationsRoutes(app, {
     agentEngine,
     agentJobs,

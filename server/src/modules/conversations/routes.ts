@@ -101,9 +101,10 @@ async function processInterviewJob(
   let retryCount = 0;
   let switchedModel = false;
   let modelCompleted = false;
+  let input: typeof conversationMessages.$inferSelect | undefined;
 
   try {
-    const input = (
+    input = (
       await db
         .select()
         .from(conversationMessages)
@@ -138,7 +139,7 @@ async function processInterviewJob(
           agentEngine.extractorDefinition,
         ),
     );
-    if (extraction.completed > extraction.previousCompleted) {
+    if (extraction.newlyConfident) {
       stream.write(
         sse("progress", {
           completed: extraction.completed,
@@ -216,9 +217,10 @@ async function processInterviewJob(
         code,
         retryCount,
         switchedModel,
+        Boolean(input?.clientMessageId),
         failedAt,
       );
-      if (failed) {
+      if (failed && input?.clientMessageId) {
         await transaction
           .update(ownAgentDailyQuotas)
           .set({ used: sql`${ownAgentDailyQuotas.used} - 1`, updatedAt: failedAt })

@@ -44,6 +44,12 @@ interface PortraitInterviewState {
   progress: { completed: number; total: number };
 }
 
+interface InterviewMessage {
+  id: string;
+  role: "member" | "agent";
+  content: string;
+}
+
 const router = useRouter();
 const member = ref<{ email: string; role: string }>();
 const loading = ref(true);
@@ -67,9 +73,7 @@ const fixedFreeText = ref("");
 const fixedSaving = ref(false);
 const progressFeedback = ref("");
 const quotaRemaining = ref<number>();
-const interviewMessages = ref<
-  { id: string; role: "member" | "agent"; content: string }[]
->([]);
+const interviewMessages = ref<InterviewMessage[]>([]);
 let interviewEvents: EventSource | undefined;
 let interviewRetry:
   | { clientMessageId: string; content: string }
@@ -351,13 +355,27 @@ async function submitFixedAnswer() {
       },
     );
     const data = response.ok
-      ? await jsonOrUndefined<PortraitInterviewState>(response)
+      ? await jsonOrUndefined<
+          PortraitInterviewState & {
+            autoFollowup?: { jobId: string; eventsUrl: string };
+          }
+        >(response)
       : undefined;
     if (!data) throw new Error();
     portraitInterview.value = data;
     fixedSelected.value = [];
     fixedNoneApplies.value = false;
     fixedFreeText.value = "";
+    if (data.autoFollowup) {
+      const answer = reactive<InterviewMessage>({
+        id: `pending-${data.autoFollowup.jobId}`,
+        role: "agent",
+        content: "",
+      });
+      interviewMessages.value.push(answer);
+      interviewSending.value = true;
+      listenForInterview(data.autoFollowup.eventsUrl, answer, false);
+    }
   } catch {
     interviewError.value = "这道回答暂时没有保存，请稍后重试。";
   } finally {
@@ -378,6 +396,55 @@ function streamError(code?: string) {
   }
   if (code === "INTERVIEW_IN_PROGRESS") return "上一条回答仍在生成中。";
   return "这次回答生成失败，消息额度已退回，请稍后重试。";
+}
+
+function listenForInterview(
+  eventsUrl: string,
+  answer: InterviewMessage,
+  quotaReserved = true,
+) {
+  interviewEvents?.close();
+  interviewEvents = new EventSource(eventsUrl);
+  interviewEvents.addEventListener("delta", (event) => {
+    const payload = JSON.parse((event as MessageEvent).data) as {
+      text: string;
+    };
+    answer.content += payload.text;
+  });
+  interviewEvents.addEventListener("progress", (event) => {
+    const payload = JSON.parse((event as MessageEvent).data) as {
+      completed: number;
+      total: number;
+      feedback: string;
+    };
+    if (portraitInterview.value) {
+      portraitInterview.value.progress = {
+        completed: payload.completed,
+        total: payload.total,
+      };
+    }
+    progressFeedback.value = payload.feedback;
+  });
+  interviewEvents.addEventListener("done", () => {
+    interviewEvents?.close();
+    interviewEvents = undefined;
+    interviewSending.value = false;
+  });
+  interviewEvents.addEventListener("error", (event) => {
+    if (!(event instanceof MessageEvent) || !event.data) return;
+    const code = (JSON.parse(event.data) as { code?: string }).code;
+    interviewError.value = quotaReserved
+      ? streamError(code)
+      : code === "MODEL_NOT_CONFIGURED"
+        ? streamError(code)
+        : "第一次动态追问生成失败，请稍后发送一条消息继续。";
+    interviewMessages.value = interviewMessages.value.filter(
+      (message) => message.id !== answer.id,
+    );
+    interviewEvents?.close();
+    interviewEvents = undefined;
+    interviewSending.value = false;
+  });
 }
 
 async function sendInterview() {
@@ -427,44 +494,7 @@ async function sendInterview() {
       return;
     }
     quotaRemaining.value = data.quotaRemaining;
-    interviewEvents?.close();
-    interviewEvents = new EventSource(data.eventsUrl);
-    interviewEvents.addEventListener("delta", (event) => {
-      const payload = JSON.parse((event as MessageEvent).data) as {
-        text: string;
-      };
-      answer.content += payload.text;
-    });
-    interviewEvents.addEventListener("progress", (event) => {
-      const payload = JSON.parse((event as MessageEvent).data) as {
-        completed: number;
-        total: number;
-        feedback: string;
-      };
-      if (portraitInterview.value) {
-        portraitInterview.value.progress = {
-          completed: payload.completed,
-          total: payload.total,
-        };
-      }
-      progressFeedback.value = payload.feedback;
-    });
-    interviewEvents.addEventListener("done", () => {
-      interviewEvents?.close();
-      interviewEvents = undefined;
-      interviewSending.value = false;
-    });
-    interviewEvents.addEventListener("error", (event) => {
-      if (!(event instanceof MessageEvent) || !event.data) return;
-      const code = (JSON.parse(event.data) as { code?: string }).code;
-      interviewError.value = streamError(code);
-      interviewMessages.value = interviewMessages.value.filter(
-        (message) => message.id !== answer.id,
-      );
-      interviewEvents?.close();
-      interviewEvents = undefined;
-      interviewSending.value = false;
-    });
+    listenForInterview(data.eventsUrl, answer);
   } catch {
     interviewError.value = "网络中断，消息已恢复，请再次发送。";
     interviewRetry = { clientMessageId, content };

@@ -13,6 +13,15 @@ export const PORTRAIT_DIMENSIONS = [
 
 export type PortraitDimension = (typeof PORTRAIT_DIMENSIONS)[number];
 
+export const QUESTION_PLANNING_RULE = {
+  version: "portrait-question-planner-v1",
+  commonWeaknesses: [
+    "preference_vs_boundary",
+    "expectation_without_example",
+    "importance_without_tradeoff",
+  ],
+} as const;
+
 export const FIXED_INTERVIEW_QUESTIONS = [
   {
     id: "future-change",

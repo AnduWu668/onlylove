@@ -1,19 +1,16 @@
-import { randomUUID } from "node:crypto";
 import { Type } from "@earendil-works/pi-ai";
-import { and, asc, count, eq, gt, lte, max, sql } from "drizzle-orm";
+import { and, asc, count, eq, sql } from "drizzle-orm";
 import type { Database } from "../../db.js";
 import {
   AgentEngine,
   AgentRunError,
   type AgentAttemptResult,
 } from "../agent-engine/engine.js";
-import {
-  conversationMessages,
-  conversations,
-} from "../conversations/schema.js";
+import type { InterviewConversations } from "../conversations/interview.js";
 import {
   FIXED_INTERVIEW_QUESTIONS,
   PORTRAIT_DIMENSIONS,
+  QUESTION_PLANNING_RULE,
   publicQuestion,
   type PortraitDimension,
 } from "./questions.js";
@@ -25,7 +22,7 @@ import {
 } from "./schema.js";
 
 export const PORTRAIT_SCHEMA_VERSION = "portrait-draft-schema-v1";
-export const QUESTION_PLANNER_VERSION = "portrait-question-planner-v1";
+export const QUESTION_PLANNER_VERSION = QUESTION_PLANNING_RULE.version;
 
 const dimensionSchema = Type.Object({
   selfTendency: Type.Union([Type.String(), Type.Null()]),
@@ -92,6 +89,54 @@ function completedDimensions(content: PortraitDraftContent) {
   ).length;
 }
 
+export function assessPortraitDraft(
+  content: PortraitDraftContent,
+  previousContent: PortraitDraftContent,
+  validEvidenceIds: ReadonlySet<string>,
+  newEvidenceIds: ReadonlySet<string>,
+) {
+  const valid = PORTRAIT_DIMENSIONS.every((dimension) => {
+    const value = content[dimension];
+    return (
+      value.evidenceMessageIds.every((id) => validEvidenceIds.has(id)) &&
+      (!["medium", "high"].includes(value.confidence) ||
+        value.evidenceMessageIds.length > 0)
+    );
+  });
+  const newlyConfident = PORTRAIT_DIMENSIONS.some(
+    (dimension) =>
+      previousContent[dimension].confidence === "low" &&
+      ["medium", "high"].includes(content[dimension].confidence) &&
+      content[dimension].evidenceMessageIds.some((id) =>
+        newEvidenceIds.has(id),
+      ),
+  );
+  return { valid, completed: completedDimensions(content), newlyConfident };
+}
+
+export function interviewPlanningPriority(
+  content: PortraitDraftContent,
+  latestMessage: string,
+  completed: number,
+) {
+  if (/不像我|不是我|理解错|不准确|纠正/.test(latestMessage)) {
+    return "member_correction";
+  }
+  const lowConfidence = PORTRAIT_DIMENSIONS.find(
+    (dimension) => content[dimension].confidence === "low",
+  );
+  if (lowConfidence) return `low_confidence:${lowConfidence}`;
+  const contradiction = PORTRAIT_DIMENSIONS.find(
+    (dimension) => content[dimension].contradictions.length > 0,
+  );
+  if (contradiction) return `contradiction:${contradiction}`;
+  const commonWeakness =
+    QUESTION_PLANNING_RULE.commonWeaknesses[
+      completed % QUESTION_PLANNING_RULE.commonWeaknesses.length
+    ]!;
+  return `published_common_weakness:${commonWeakness}`;
+}
+
 function visibleState(memberId: string, answered: number, progress: number) {
   return {
     fixedInterview: {
@@ -108,6 +153,7 @@ export class Portraits {
   constructor(
     private readonly db: Database,
     private readonly now: () => Date,
+    private readonly interviewConversations: InterviewConversations,
   ) {}
 
   async interviewState(memberId: string) {
@@ -151,6 +197,9 @@ export class Portraits {
       throw new PortraitInputError("INVALID_FIXED_ANSWER");
     }
 
+    let completion:
+      | { conversationId: string; inputMessageId: string }
+      | undefined;
     await this.db.transaction(async (transaction) => {
       await transaction.execute(
         sql`select pg_advisory_xact_lock(hashtext(${memberId}))`,
@@ -179,33 +228,6 @@ export class Portraits {
       }
 
       const savedAt = this.now();
-      await transaction
-        .insert(conversations)
-        .values({
-          id: randomUUID(),
-          type: "INTERVIEW",
-          memberId,
-          createdAt: savedAt,
-        })
-        .onConflictDoNothing();
-      const conversation = (
-        await transaction
-          .select({ id: conversations.id })
-          .from(conversations)
-          .where(
-            and(
-              eq(conversations.memberId, memberId),
-              eq(conversations.type, "INTERVIEW"),
-            ),
-          )
-          .limit(1)
-      )[0]!;
-      const lastSequence = (
-        await transaction
-          .select({ value: max(conversationMessages.sequence) })
-          .from(conversationMessages)
-          .where(eq(conversationMessages.conversationId, conversation.id))
-      )[0]?.value;
       const chosen = question.options
         .filter((option) => selected.includes(option.id))
         .map((option) => option.text);
@@ -216,19 +238,12 @@ export class Portraits {
       ]
         .filter(Boolean)
         .join("\n");
-      const message = (
-        await transaction
-          .insert(conversationMessages)
-          .values({
-            id: randomUUID(),
-            conversationId: conversation.id,
-            role: "member",
-            content,
-            sequence: (lastSequence ?? 0) + 1,
-            createdAt: savedAt,
-          })
-          .returning({ id: conversationMessages.id })
-      )[0]!;
+      const message = await this.interviewConversations.appendFixedAnswer(
+        transaction,
+        memberId,
+        content,
+        savedAt,
+      );
       await transaction.insert(portraitFixedAnswers).values({
         memberId,
         questionId: input.questionId,
@@ -238,9 +253,15 @@ export class Portraits {
         messageId: message.id,
         createdAt: savedAt,
       });
+      if (answers.length + 1 === FIXED_INTERVIEW_QUESTIONS.length) {
+        completion = {
+          conversationId: message.conversationId,
+          inputMessageId: message.id,
+        };
+      }
     });
 
-    return this.interviewState(memberId);
+    return { state: await this.interviewState(memberId), completion };
   }
 
   async draftForInterviewer(memberId: string, latestMessage: string) {
@@ -252,23 +273,14 @@ export class Portraits {
         .limit(1)
     )[0];
     const content = draft?.content ?? emptyPortraitDraft();
-    const correction = /不像我|不是我|理解错|不准确|纠正/.test(latestMessage);
-    const lowConfidence = PORTRAIT_DIMENSIONS.find(
-      (dimension) => content[dimension].confidence === "low",
-    );
-    const contradiction = PORTRAIT_DIMENSIONS.find(
-      (dimension) => content[dimension].contradictions.length > 0,
-    );
     return {
       portraitDraft: content,
       questionPlannerVersion: QUESTION_PLANNER_VERSION,
-      planningPriority: correction
-        ? "member_correction"
-        : lowConfidence
-          ? `low_confidence:${lowConfidence}`
-          : contradiction
-            ? `contradiction:${contradiction}`
-            : "published_common_weakness:preference_vs_boundary",
+      planningPriority: interviewPlanningPriority(
+        content,
+        latestMessage,
+        draft?.completedDimensions ?? 0,
+      ),
     };
   }
 
@@ -285,21 +297,10 @@ export class Portraits {
         .from(portraitDrafts)
         .where(eq(portraitDrafts.memberId, memberId))
         .limit(1),
-      this.db
-        .select({
-          id: conversationMessages.id,
-          content: conversationMessages.content,
-          sequence: conversationMessages.sequence,
-        })
-        .from(conversationMessages)
-        .where(
-          and(
-            eq(conversationMessages.conversationId, conversationId),
-            eq(conversationMessages.role, "member"),
-            lte(conversationMessages.sequence, throughSequence),
-          ),
-        )
-        .orderBy(asc(conversationMessages.sequence)),
+      this.interviewConversations.memberEvidence(
+        conversationId,
+        throughSequence,
+      ),
     ]);
     const current = savedDraft[0];
     const newEvidence = messages.filter(
@@ -309,6 +310,7 @@ export class Portraits {
       return {
         previousCompleted: current?.completedDimensions ?? 0,
         completed: current?.completedDimensions ?? 0,
+        newlyConfident: false,
       };
     }
 
@@ -329,19 +331,20 @@ export class Portraits {
       attempts = extracted.attempts;
       const content = extracted.value as PortraitDraftContent;
       const validEvidence = new Set(messages.map((message) => message.id));
-      for (const dimension of PORTRAIT_DIMENSIONS) {
-        const value = content[dimension];
-        if (
-          value.evidenceMessageIds.some((id) => !validEvidence.has(id)) ||
-          (["medium", "high"].includes(value.confidence) &&
-            value.evidenceMessageIds.length === 0)
-        ) {
-          attempts.at(-1)!.error = "PORTRAIT_EVIDENCE_INVALID";
-          throw new AgentRunError("PORTRAIT_EVIDENCE_INVALID", attempts);
-        }
+      const newEvidenceIds = new Set(newEvidence.map((message) => message.id));
+      const previousContent = current?.content ?? emptyPortraitDraft();
+      const assessment = assessPortraitDraft(
+        content,
+        previousContent,
+        validEvidence,
+        newEvidenceIds,
+      );
+      if (!assessment.valid) {
+        attempts.at(-1)!.error = "PORTRAIT_EVIDENCE_INVALID";
+        throw new AgentRunError("PORTRAIT_EVIDENCE_INVALID", attempts);
       }
       await recordAttempts(attempts);
-      const completed = completedDimensions(content);
+      const completed = assessment.completed;
       const savedAt = this.now();
       await this.db
         .insert(portraitDrafts)
@@ -369,6 +372,7 @@ export class Portraits {
       return {
         previousCompleted: current?.completedDimensions ?? 0,
         completed,
+        newlyConfident: assessment.newlyConfident,
       };
     } catch (error) {
       if (error instanceof AgentRunError) attempts = error.attempts;
