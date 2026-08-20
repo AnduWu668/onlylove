@@ -29,6 +29,13 @@
       "when": 1787229302462,
       "tag": "0003_third_lyja",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1787235592006,
+      "tag": "0004_busy_puppet_master",
+      "breakpoints": true
     }
   ]
 }

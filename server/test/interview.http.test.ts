@@ -211,6 +211,30 @@ describe("first portrait interview HTTP and Agent Engine seam", () => {
         pricingEffectiveDate: null,
       }),
     );
+
+    const savedAnswer = conversation.json().messages[1];
+    const pool = new Pool({ connectionString: databaseUrl });
+    await pool.query(
+      "UPDATE conversation_messages SET sequence = 4 WHERE id = $1",
+      [savedAnswer.id],
+    );
+    await pool.query(
+      "INSERT INTO conversation_messages (id, conversation_id, role, content, sequence, created_at) VALUES ($1, $2, 'agent', $3, 2, $4)",
+      [
+        "9f74e1ab-0d63-4d5f-b225-165c9fce7e58",
+        submitted.json().conversationId,
+        "这是另一个任务的回答。",
+        new Date("2026-08-20T08:01:00.000Z"),
+      ],
+    );
+    await pool.end();
+    const replay = await app.inject({
+      method: "GET",
+      url: submitted.json().eventsUrl,
+      headers: { cookie },
+    });
+    expect(replay.body).toContain("重新开始沟通");
+    expect(replay.body).not.toContain("另一个任务的回答");
   });
 
   it("does not double-charge an idempotent message and refunds a final failure", async () => {
@@ -267,7 +291,11 @@ describe("first portrait interview HTTP and Agent Engine seam", () => {
     });
     expect(runs.json().runs).toHaveLength(3);
     expect(
-      runs.json().runs.every((run: { error: string | null }) => run.error),
+      runs
+        .json()
+        .runs.every((run: { error: string | null }) =>
+          run.error?.includes("provider unavailable"),
+        ),
     ).toBe(true);
 
     const afterRefund = await app.inject({
@@ -280,5 +308,75 @@ describe("first portrait interview HTTP and Agent Engine seam", () => {
       },
     });
     expect(afterRefund.json()).toMatchObject({ quotaRemaining: 99 });
+  });
+
+  it("allows only one active interview job per conversation", async () => {
+    const { memberCookie: cookie } =
+      await inviteAndSignInMember("serial-interview@onlylove.test");
+    const first = await app.inject({
+      method: "POST",
+      url: "/api/member/interview/messages",
+      headers: { cookie },
+      payload: {
+        clientMessageId: "0f59e003-3b7f-43ca-adde-752bad364f06",
+        content: "第一条消息。",
+      },
+    });
+    const second = await app.inject({
+      method: "POST",
+      url: "/api/member/interview/messages",
+      headers: { cookie },
+      payload: {
+        clientMessageId: "6c275783-6fa4-47ed-9049-00ef5054138a",
+        content: "第二条消息。",
+      },
+    });
+
+    expect(first.statusCode).toBe(202);
+    expect(second.statusCode).toBe(409);
+    expect(second.json()).toEqual({ code: "INTERVIEW_IN_PROGRESS" });
+  });
+
+  it("reclaims a running job left behind by a stopped process", async () => {
+    await app.close();
+    mailer = new MemoryMailer();
+    app = await createApp({
+      databaseUrl,
+      mailer,
+      otpSecret: "test-only-secret",
+      superAdminEmail: "admin@onlylove.test",
+      now: () => new Date("2026-08-20T08:00:00.000Z"),
+      agentModel: {
+        provider: "deterministic-fake",
+        model: "interviewer-test-v1",
+        reply: "可以再多说一点吗？",
+      },
+    });
+    const { memberCookie: cookie } =
+      await inviteAndSignInMember("stale-interview@onlylove.test");
+    const submitted = await app.inject({
+      method: "POST",
+      url: "/api/member/interview/messages",
+      headers: { cookie },
+      payload: {
+        clientMessageId: "db7c59dd-a4ac-4b71-b70e-58735c2388b2",
+        content: "进程退出前留下的消息。",
+      },
+    });
+    const pool = new Pool({ connectionString: databaseUrl });
+    await pool.query(
+      "UPDATE agent_jobs SET status = 'running', started_at = $1 WHERE id = $2",
+      [new Date("2026-08-20T07:00:00.000Z"), submitted.json().jobId],
+    );
+    await pool.end();
+
+    const events = await app.inject({
+      method: "GET",
+      url: submitted.json().eventsUrl,
+      headers: { cookie },
+    });
+
+    expect(events.body).toContain("event: done");
+    expect(events.body).not.toContain("JOB_NOT_AVAILABLE");
   });
 });

@@ -445,9 +445,120 @@ describe("OnlyLove UI seam", () => {
     FakeEventSource.current.emit("delta", {
       text: "什么信号会让你愿意重新开始沟通？",
     });
+    await flushPromises();
+    expect(wrapper.text()).toContain("什么信号会让你愿意重新开始沟通？");
     FakeEventSource.current.emit("done", {});
     await flushPromises();
     expect(wrapper.text()).toContain("什么信号会让你愿意重新开始沟通？");
     expect(wrapper.text()).toContain("今日还可发送 99 条");
+  });
+
+  it("reconnects SSE transport errors and restores a draft when POST fails", async () => {
+    class FakeEventSource {
+      static current: FakeEventSource;
+      readonly listeners = new Map<string, (event: Event) => void>();
+      close = vi.fn();
+
+      constructor(readonly url: string) {
+        FakeEventSource.current = this;
+      }
+
+      addEventListener(type: string, listener: (event: Event) => void) {
+        this.listeners.set(type, listener);
+      }
+
+      emit(event: Event) {
+        this.listeners.get(event.type)?.(event);
+      }
+    }
+    vi.stubGlobal("EventSource", FakeEventSource);
+    const ids = [
+      "b073ec9c-5c78-4cc1-b109-8720c4d977e8",
+      "f963e260-60fd-4fb4-83d6-98b44df9bd9a",
+    ];
+    vi.stubGlobal("crypto", { randomUUID: () => ids.shift()! });
+    let postCount = 0;
+    const request = vi.fn(async (url: string, options?: RequestInit) => {
+      if (url === "/api/session") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            member: { email: "member@example.com", role: "member" },
+          }),
+        };
+      }
+      if (url === "/api/member/profile") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            profile: {
+              nickname: "林夏",
+              birthDate: "1990-01-01",
+              gender: "female",
+              heightCm: 165,
+              city: "上海",
+              occupation: "设计师",
+            },
+            matchCriteria: null,
+          }),
+        };
+      }
+      if (options?.method === "POST") {
+        postCount += 1;
+        if (postCount === 2) throw new TypeError("network unavailable");
+        return {
+          ok: true,
+          status: 202,
+          json: async () => ({
+            eventsUrl: "/api/member/interview/jobs/job/events",
+            quotaRemaining: 99,
+          }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ conversationId: null, messages: [] }),
+      };
+    });
+    vi.stubGlobal("fetch", request);
+    const router = createRouter({ history: createMemoryHistory(), routes });
+    const wrapper = mount(App, { global: { plugins: [router] } });
+    await router.push("/app");
+    await router.isReady();
+    await flushPromises();
+    await wrapper
+      .findAll("nav button")
+      .find((button) => button.text().includes("我的分身"))!
+      .trigger("click");
+    await flushPromises();
+
+    await wrapper.get("textarea").setValue("第一条会被流式处理。");
+    await wrapper.get("form.interview-composer").trigger("submit");
+    await flushPromises();
+    FakeEventSource.current.emit(new Event("error"));
+    await flushPromises();
+
+    expect(FakeEventSource.current.close).not.toHaveBeenCalled();
+    expect(wrapper.get<HTMLTextAreaElement>("textarea").element.disabled).toBe(
+      true,
+    );
+
+    FakeEventSource.current.emit(
+      new MessageEvent("error", {
+        data: JSON.stringify({ code: "MODEL_REQUEST_FAILED" }),
+      }),
+    );
+    await flushPromises();
+    await wrapper.get("textarea").setValue("第二条发送失败后要恢复。");
+    await wrapper.get("form.interview-composer").trigger("submit");
+    await flushPromises();
+
+    expect(wrapper.get<HTMLTextAreaElement>("textarea").element.value).toBe(
+      "第二条发送失败后要恢复。",
+    );
+    expect(wrapper.text()).not.toContain("第二条发送失败后要恢复。");
   });
 });

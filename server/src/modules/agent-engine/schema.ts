@@ -50,6 +50,9 @@ export const agentJobs = pgTable(
     inputMessageId: uuid("input_message_id")
       .notNull()
       .references(() => conversationMessages.id),
+    outputMessageId: uuid("output_message_id").references(
+      () => conversationMessages.id,
+    ),
     status: varchar("status", { length: 16 })
       .$type<AgentJobStatus>()
       .notNull(),
@@ -59,6 +62,8 @@ export const agentJobs = pgTable(
     error: varchar("error", { length: 80 }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
     startedAt: timestamp("started_at", { withTimezone: true }),
+    leaseToken: uuid("lease_token"),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
   },
   (table) => [

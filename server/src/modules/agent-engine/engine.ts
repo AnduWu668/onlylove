@@ -6,6 +6,7 @@ import {
   type AssistantMessage,
   type Message,
   type Model,
+  type SimpleStreamOptions,
   type Static,
   type TSchema,
 } from "@earendil-works/pi-ai";
@@ -74,6 +75,7 @@ interface AgentModelRuntime {
   ) => void;
   getApiKey?: (provider: string) => string | undefined;
   estimateCostMicroCny?: (inputTokens: number, outputTokens: number) => number;
+  onPayload?: SimpleStreamOptions["onPayload"];
   pricing?: ArkAgentModelOptions["pricing"];
   dispose?: () => void;
 }
@@ -254,6 +256,10 @@ function arkRuntime(options: ArkAgentModelOptions): AgentModelRuntime {
     getApiKey: (provider) =>
       provider === options.provider ? options.apiKey : undefined,
     pricing: options.pricing,
+    onPayload: (payload) => ({
+      ...(payload as Record<string, unknown>),
+      thinking: { type: "disabled" },
+    }),
     estimateCostMicroCny: options.pricing
       ? (inputTokens, outputTokens) =>
           Math.round(
@@ -319,6 +325,25 @@ function textFrom(message: AssistantMessage | undefined) {
   );
 }
 
+function auditError(code: string, detail?: unknown, secret?: string) {
+  let message =
+    detail instanceof Error
+      ? detail.message
+      : typeof detail === "string"
+        ? detail
+        : "";
+  if (secret) message = message.replaceAll(secret, "<REDACTED>");
+  message = message
+    .replace(/Bearer\s+\S+/gi, "Bearer <REDACTED>")
+    .replace(
+      /((?:api[_ -]?key|authorization)\s*[:=]\s*)\S+/gi,
+      "$1<REDACTED>",
+    )
+    .replace(/\s+/g, " ")
+    .trim();
+  return (message ? `${code}: ${message}` : code).slice(0, 80);
+}
+
 function validateStructured<T extends TSchema>(schema: T, text: string) {
   let parsed: unknown;
   try {
@@ -379,6 +404,7 @@ export class AgentEngine {
   ) {
     const started = performance.now();
     let completed: AssistantMessage | undefined;
+    let failure: unknown;
     let emitted = false;
     try {
       this.#runtime.prepareAttempt?.(
@@ -397,6 +423,7 @@ export class AgentEngine {
           messages: historyForModel(history, model),
         },
         getApiKey: this.#runtime.getApiKey,
+        onPayload: this.#runtime.onPayload,
       });
       agent.subscribe((event) => {
         if (
@@ -416,12 +443,13 @@ export class AgentEngine {
       completed ??= agent.state.messages.findLast(
         (message): message is AssistantMessage => message.role === "assistant",
       );
-    } catch {
+    } catch (error) {
+      failure = error;
       completed = undefined;
     }
 
     const text = textFrom(completed);
-    const error =
+    const errorCode =
       !completed || completed.stopReason === "error"
         ? "MODEL_REQUEST_FAILED"
         : text
@@ -436,7 +464,13 @@ export class AgentEngine {
       latencyMs: Math.max(0, Math.round(performance.now() - started)),
       retryCount: attemptIndex,
       switchedModel,
-      error,
+      error: errorCode
+        ? auditError(
+            errorCode,
+            completed?.errorMessage ?? failure,
+            this.#runtime.getApiKey?.(model.provider),
+          )
+        : null,
       estimatedCostMicroCny:
         this.#runtime.estimateCostMicroCny?.(
           completed?.usage.input ?? 0,
@@ -448,7 +482,7 @@ export class AgentEngine {
         this.#runtime.pricing?.outputCostCnyPerMillionTokens ?? null,
       pricingEffectiveDate: this.#runtime.pricing?.effectiveDate ?? null,
     };
-    return { emitted, record, text };
+    return { emitted, errorCode, record, text };
   }
 
   async continueInterview(
@@ -461,6 +495,7 @@ export class AgentEngine {
     if (!primary) throw new AgentRunError("MODEL_NOT_CONFIGURED");
 
     const attempts: AgentAttemptResult[] = [];
+    let lastErrorCode = "MODEL_REQUEST_FAILED";
     const contextData = JSON.stringify({
       memberProfile: context.memberProfile,
       matchCriteria: context.matchCriteria,
@@ -490,7 +525,7 @@ export class AgentEngine {
           systemPrompt,
         );
         attempts.push(attempt.record);
-        if (!attempt.record.error) {
+        if (!attempt.errorCode) {
           await recordAttempts(attempts);
           return {
             text: attempt.text,
@@ -505,14 +540,12 @@ export class AgentEngine {
             switchedModel,
           };
         }
+        lastErrorCode = attempt.errorCode;
         if (attempt.emitted) {
-          throw new AgentRunError(attempt.record.error, attempts);
+          throw new AgentRunError(attempt.errorCode, attempts);
         }
       }
-      throw new AgentRunError(
-        attempts.at(-1)?.error ?? "MODEL_REQUEST_FAILED",
-        attempts,
-      );
+      throw new AgentRunError(lastErrorCode, attempts);
     } catch (error) {
       await recordAttempts(attempts);
       throw error;
@@ -544,15 +577,15 @@ export class AgentEngine {
           portraitExtractorDefinition.systemPrompt,
         );
         attempts.push(attempt.record);
-        if (attempt.record.error) {
-          throw new AgentRunError(attempt.record.error, attempts);
+        if (attempt.errorCode) {
+          throw new AgentRunError(attempt.errorCode, attempts);
         }
         try {
           const value = validateStructured(schema, text);
           await recordAttempts(attempts);
           return { value, attempts };
         } catch (error) {
-          attempt.record.error = "STRUCTURED_OUTPUT_INVALID";
+          attempt.record.error = auditError("STRUCTURED_OUTPUT_INVALID", error);
           if (attemptIndex === 1) {
             throw new AgentRunError("STRUCTURED_OUTPUT_INVALID", attempts);
           }
