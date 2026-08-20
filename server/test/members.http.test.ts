@@ -21,7 +21,7 @@ describe("Members HTTP seam", () => {
   let currentTime: Date;
   let adminCookie: string | undefined;
 
-  async function setPassword(cookie: string, password = "correct horse battery staple") {
+  async function setPassword(cookie: string, password = "secure-pass-123") {
     return app.inject({
       method: "PUT",
       url: "/api/auth/password",
@@ -218,7 +218,8 @@ describe("Members HTTP seam", () => {
         await setPassword(cookie, "short")
       ).json().code,
     ).toBe("INVALID_PASSWORD");
-    expect((await setPassword(cookie)).statusCode).toBe(200);
+    expect((await setPassword(cookie, "x".repeat(21))).statusCode).toBe(400);
+    expect((await setPassword(cookie, "123456")).statusCode).toBe(200);
     expect(
       (
         await app.inject({
@@ -268,8 +269,8 @@ describe("Members HTTP seam", () => {
 
   it("signs in with a password and resets a forgotten password through OTP", async () => {
     const email = "password@onlylove.test";
-    const oldPassword = "correct horse battery staple";
-    const newPassword = "a different secure password";
+    const oldPassword = "secure-pass-123";
+    const newPassword = "new-secure-pass-456";
     const oldCookie = await signInMember(email);
     const pool = new Pool({ connectionString: databaseUrl });
     const storedPassword = await pool.query(

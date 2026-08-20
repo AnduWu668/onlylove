@@ -43,8 +43,8 @@ onMounted(async () => {
 
 async function submit() {
   error.value = "";
-  if (password.value.length < 8) {
-    error.value = "密码至少需要 8 个字符。";
+  if (password.value.length < 6) {
+    error.value = "密码至少需要 6 个字符。";
     return;
   }
   if (password.value !== confirmation.value) {
@@ -63,7 +63,7 @@ async function submit() {
     if (!response.ok) {
       throw new Error(
         data.code === "INVALID_PASSWORD"
-          ? "密码需要为 8 至 128 个字符。"
+          ? "密码需要为 6 至 20 个字符。"
           : "密码未保存，请重新验证邮箱后再试。",
       );
     }
@@ -98,8 +98,8 @@ async function submit() {
         v-model="password"
         type="password"
         autocomplete="new-password"
-        minlength="8"
-        maxlength="128"
+        minlength="6"
+        maxlength="20"
         required
       />
       <label for="confirm-password">确认新密码</label>
@@ -108,15 +108,15 @@ async function submit() {
         v-model="confirmation"
         type="password"
         autocomplete="new-password"
-        minlength="8"
-        maxlength="128"
+        minlength="6"
+        maxlength="20"
         required
       />
       <p v-if="error" class="form-error" role="alert">{{ error }}</p>
       <button type="submit" :disabled="busy">
         {{ busy ? "正在保存…" : "保存密码并继续" }}
       </button>
-      <p class="form-note">使用至少 8 个字符；不要与其他网站共用密码。</p>
+      <p class="form-note">使用 6 至 20 个字符；不要与其他网站共用密码。</p>
     </form>
   </main>
 </template>

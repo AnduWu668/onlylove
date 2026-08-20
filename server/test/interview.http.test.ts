@@ -40,7 +40,7 @@ describe("first portrait interview HTTP and Agent Engine seam", () => {
       method: "PUT",
       url: "/api/auth/password",
       headers: { cookie },
-      payload: { password: "correct horse battery staple" },
+      payload: { password: "secure-pass-123" },
     });
     expect(password.statusCode).toBe(200);
     return cookie;

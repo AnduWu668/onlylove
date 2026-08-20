@@ -21,8 +21,8 @@ import {
 import type { Gender, RequirementMode } from "./schema.js";
 
 const POSTGRES_INTEGER_MAX = 2_147_483_647;
-const PASSWORD_MIN_LENGTH = 8;
-const PASSWORD_MAX_LENGTH = 128;
+const PASSWORD_MIN_LENGTH = 6;
+const PASSWORD_MAX_LENGTH = 20;
 const PASSWORD_KEY_LENGTH = 64;
 const SCRYPT_COST = 16_384;
 const SCRYPT_BLOCK_SIZE = 8;
