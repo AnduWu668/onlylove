@@ -19,6 +19,6 @@
     "test": "npm run db:up && npm run test:prepare -w server && npm run test --workspaces --if-present"
   },
   "devDependencies": {
-    "concurrently": "10.0.5"
+    "concurrently": "9.2.4"
   }
 }

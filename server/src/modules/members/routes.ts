@@ -232,7 +232,14 @@ export function registerMembersRoutes(
       if (!challenge) {
         return reply.code(429).send({ code: "OTP_RESEND_TOO_SOON" });
       }
-      await mailer.sendOtp(email, challenge.code);
+      try {
+        await mailer.sendOtp(email, challenge.code);
+      } catch (error) {
+        await db
+          .delete(otpChallenges)
+          .where(eq(otpChallenges.id, challenge.id));
+        throw error;
+      }
       return reply
         .code(202)
         .send({ challengeId: challenge.id, requiresBirthDate: !member[0] });

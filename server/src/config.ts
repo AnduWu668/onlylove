@@ -21,8 +21,14 @@ export function readConfig(
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(superAdminEmail)) {
     throw new Error("SUPER_ADMIN_EMAIL must be a valid email address");
   }
-  if (production && otpSecret.length < 32) {
-    throw new Error("OTP_SECRET must contain at least 32 characters in production");
+  if (
+    production &&
+    (otpSecret.length < 32 ||
+      otpSecret === "replace-with-a-long-random-value")
+  ) {
+    throw new Error(
+      "OTP_SECRET must contain at least 32 characters and not use the example value in production",
+    );
   }
   if (!Number.isInteger(port) || port < 1 || port > 65_535) {
     throw new Error("PORT must be a valid port");

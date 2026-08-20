@@ -321,6 +321,37 @@ describe("Members HTTP seam", () => {
     expect(oldCode.statusCode).toBe(400);
   });
 
+  it("allows another OTP request immediately when email delivery fails", async () => {
+    await app.close();
+    let deliveryAttempts = 0;
+    app = await createApp({
+      databaseUrl,
+      mailer: {
+        async sendOtp() {
+          deliveryAttempts += 1;
+          if (deliveryAttempts === 1) throw new Error("SMTP unavailable");
+        },
+      },
+      otpSecret: "test-only-secret",
+      superAdminEmail: "admin@onlylove.test",
+      now: () => currentTime,
+    });
+
+    const failed = await app.inject({
+      method: "POST",
+      url: "/api/auth/otp",
+      payload: { email: "admin@onlylove.test" },
+    });
+    expect(failed.statusCode).toBe(500);
+
+    const retry = await app.inject({
+      method: "POST",
+      url: "/api/auth/otp",
+      payload: { email: "admin@onlylove.test" },
+    });
+    expect(retry.statusCode).toBe(202);
+  });
+
   it("expires an OTP after ten minutes", async () => {
     await invite("expiry@onlylove.test");
     const challenge = await app.inject({
