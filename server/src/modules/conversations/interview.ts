@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, lte, max } from "drizzle-orm";
+import { and, asc, eq, inArray, lte, max } from "drizzle-orm";
 import type { Database, DatabaseTransaction } from "../../db.js";
 import { conversationMessages, conversations } from "./schema.js";
 
@@ -12,6 +12,7 @@ export class InterviewConversations {
     type: "INTERVIEW",
     content: string,
     createdAt: Date,
+    clientMessageId?: string,
   ) {
     await transaction
       .insert(conversations)
@@ -34,6 +35,24 @@ export class InterviewConversations {
         )
         .limit(1)
     )[0]!;
+    if (clientMessageId) {
+      const existing = (
+        await transaction
+          .select({
+            id: conversationMessages.id,
+            sequence: conversationMessages.sequence,
+          })
+          .from(conversationMessages)
+          .where(
+            and(
+              eq(conversationMessages.conversationId, conversation.id),
+              eq(conversationMessages.clientMessageId, clientMessageId),
+            ),
+          )
+          .limit(1)
+      )[0];
+      if (existing) return { ...existing, conversationId: conversation.id };
+    }
     const lastSequence = (
       await transaction
         .select({ value: max(conversationMessages.sequence) })
@@ -49,6 +68,7 @@ export class InterviewConversations {
           role: "member",
           content,
           sequence: (lastSequence ?? 0) + 1,
+          clientMessageId,
           createdAt,
         })
         .returning({
@@ -89,8 +109,29 @@ export class InterviewConversations {
     );
   }
 
-  memberEvidence(conversationId: string, throughSequence: number) {
-    return this.db
+  appendSelfTwinEvidence(
+    transaction: DatabaseTransaction,
+    memberId: string,
+    sourceMessageId: string,
+    content: string,
+    createdAt: Date,
+  ) {
+    return this.appendMemberMessage(
+      transaction,
+      memberId,
+      "INTERVIEW",
+      `成员与自己的恋爱分身对话（只有明确自述或纠正可作为画像证据，提问不能视为成员事实）：\n${content}`,
+      createdAt,
+      sourceMessageId,
+    );
+  }
+
+  memberEvidence(
+    conversationId: string,
+    throughSequence: number,
+    database: Database | DatabaseTransaction = this.db,
+  ) {
+    return database
       .select({
         id: conversationMessages.id,
         content: conversationMessages.content,
@@ -124,19 +165,20 @@ export class InterviewConversations {
       );
   }
 
-  async conversationIdForMember(
+  conversationIdsForMember(
     memberId: string,
-    type: "INTERVIEW",
+    types: ("INTERVIEW" | "TWIN")[],
+    database: Database | DatabaseTransaction = this.db,
   ) {
-    return (
-      await this.db
-        .select({ id: conversations.id })
-        .from(conversations)
-        .where(
-          and(eq(conversations.memberId, memberId), eq(conversations.type, type)),
-        )
-        .limit(1)
-    )[0]?.id;
+    return database
+      .select({ id: conversations.id })
+      .from(conversations)
+      .where(
+        and(
+          eq(conversations.memberId, memberId),
+          inArray(conversations.type, types),
+        ),
+      );
   }
 
   async conversationForMessage(

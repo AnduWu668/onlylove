@@ -1073,4 +1073,147 @@ describe("OnlyLove UI seam", () => {
     );
     expect(wrapper.text()).toContain("校准已通过，等待你主动发布");
   });
+
+  it("switches the single twin entry from interviewer to the published AI twin", async () => {
+    class FakeEventSource {
+      static current: FakeEventSource;
+      readonly listeners = new Map<string, (event: MessageEvent) => void>();
+
+      constructor(readonly url: string) {
+        FakeEventSource.current = this;
+      }
+
+      addEventListener(type: string, listener: (event: MessageEvent) => void) {
+        this.listeners.set(type, listener);
+      }
+
+      close() {}
+
+      emit(type: string, data: object) {
+        this.listeners.get(type)?.({ data: JSON.stringify(data) } as MessageEvent);
+      }
+    }
+    vi.stubGlobal("EventSource", FakeEventSource);
+    vi.stubGlobal("crypto", {
+      randomUUID: () => "44b6066a-85a4-4bd1-9fb5-d8feab8e4899",
+    });
+    const published = {
+      id: "4b45d11e-b2b5-4140-bdb5-0ea1b60555ea",
+      version: 1,
+    };
+    const request = vi.fn(async (url: string, options?: RequestInit) => {
+      if (url === "/api/session") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            member: { email: "member@example.com", role: "member" },
+          }),
+        };
+      }
+      if (url === "/api/member/profile") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ profile: {}, matchCriteria: null }),
+        };
+      }
+      if (url === "/api/member/interview") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            messages: [],
+            fixedInterview: {
+              answered: 10,
+              total: 10,
+              completed: true,
+              question: null,
+            },
+            progress: { completed: 8, total: 8 },
+          }),
+        };
+      }
+      if (url === "/api/member/portrait") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            status: "published",
+            submittedVersion: published,
+            publishedVersion: published,
+            calibration: {
+              answered: 10,
+              total: 10,
+              likeCount: 10,
+              criticalFabrication: false,
+              canPublish: true,
+              scenarios: [],
+            },
+          }),
+        };
+      }
+      if (url === "/api/member/twin" && !options?.method) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            conversationId: null,
+            profileVersion: published,
+            messages: [],
+          }),
+        };
+      }
+      if (url === "/api/member/twin/messages" && options?.method === "POST") {
+        return {
+          ok: true,
+          status: 202,
+          json: async () => ({
+            eventsUrl: "/api/member/twin/jobs/twin-job/events",
+            quotaRemaining: 99,
+          }),
+        };
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", request);
+    const router = createRouter({ history: createMemoryHistory(), routes });
+    const wrapper = mount(App, { global: { plugins: [router] } });
+    await router.push("/app");
+    await router.isReady();
+    await flushPromises();
+    await wrapper
+      .findAll("nav button")
+      .find((button) => button.text().includes("我的分身"))!
+      .trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("私有画像访谈员");
+    await wrapper.get('button[data-twin-role="twin"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("我的恋爱分身");
+    expect(wrapper.text()).toContain("恋爱分身 · AI");
+    expect(wrapper.text()).toContain("不会直接修改已发布版本");
+
+    await wrapper
+      .get(".twin-composer textarea")
+      .setValue("这不像我，我会先约定重新沟通的时间。");
+    await wrapper.get("form.twin-composer").trigger("submit");
+    await flushPromises();
+    expect(request).toHaveBeenCalledWith(
+      "/api/member/twin/messages",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining("这不像我"),
+      }),
+    );
+    expect(FakeEventSource.current.url).toContain("/api/member/twin/jobs/");
+    FakeEventSource.current.emit("delta", {
+      text: "我是 AI 恋爱分身。我会先说明需要独处。",
+    });
+    FakeEventSource.current.emit("done", {});
+    await flushPromises();
+    expect(wrapper.text()).toContain("我是 AI 恋爱分身");
+    expect(wrapper.text()).toContain("今日还可发送 99 条");
+  });
 });

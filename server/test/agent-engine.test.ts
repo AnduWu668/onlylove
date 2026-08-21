@@ -166,8 +166,13 @@ describe("Agent Engine continueInterview seam", () => {
     });
 
     const result = await engine.replyAsTwin(
-      "# 恋爱分身上下文\n会先沟通再决定。",
+      {
+        personaContext: "# 恋爱分身上下文\n会先沟通再决定。",
+        publicProfile: null,
+        recentMessages: [],
+      },
       "伴侣想去外地工作，你会怎样回应？",
+      undefined,
       async () => undefined,
     );
 
@@ -272,15 +277,20 @@ describe("Agent Engine continueInterview seam", () => {
         {
           reply: "我会先确认两个人各自不能放弃的部分，再讨论可逆的尝试。",
           promptIncludes: ["伴侣收到外地工作机会"],
-          systemPromptIncludes: ["只允许表达这份分身上下文", "长期计划需要共同决定"],
+          systemPromptIncludes: ["长期计划需要共同决定"],
         },
       ],
     });
 
     let recorded = 0;
     const result = await engine.replyAsTwin(
-      "长期计划需要共同决定",
+      {
+        personaContext: "长期计划需要共同决定",
+        publicProfile: null,
+        recentMessages: [],
+      },
       "伴侣收到外地工作机会，你会怎样一起决定？",
+      undefined,
       async (attempts) => {
         recorded = attempts.length;
       },
@@ -291,8 +301,53 @@ describe("Agent Engine continueInterview seam", () => {
     expect(engine.twinDefinition).toMatchObject({
       role: "public_twin",
       task: "reply_as_twin",
-      version: "public-twin-v1",
+      version: "public-twin-v2",
     });
+    engine.close();
+  });
+
+  it("answers a self-twin message from only its pinned public context and history", async () => {
+    const engine = new AgentEngine({
+      provider: "deterministic-fake",
+      model: "self-twin-v1",
+      attempts: [
+        {
+          reply: "我是 AI 恋爱分身。我会先说明需要独处，再约定重新沟通的时间。",
+          promptIncludes: ["如果这次争执很激烈呢？"],
+          historyMessageCount: 2,
+          systemPromptIncludes: [
+            "冲突后需要独处半小时",
+            "林夏",
+            "上海",
+          ],
+        },
+      ],
+    });
+    const chunks: string[] = [];
+
+    const result = await engine.replyAsTwin(
+      {
+        personaContext: "冲突后需要独处半小时",
+        publicProfile: {
+          nickname: "林夏",
+          birthDate: "1990-04-12",
+          gender: "female",
+          heightCm: 165,
+          city: "上海",
+          occupation: "产品设计师",
+        },
+        recentMessages: [
+          { role: "member", content: "发生分歧时你会怎么做？" },
+          { role: "agent", content: "我通常会先冷静一下。" },
+        ],
+      },
+      "如果这次争执很激烈呢？",
+      (chunk) => chunks.push(chunk),
+      async () => undefined,
+    );
+
+    expect(chunks.join("")).toBe(result.text);
+    expect(result.text).toContain("AI 恋爱分身");
     engine.close();
   });
 });

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Type } from "@earendil-works/pi-ai";
 import { and, asc, count, desc, eq, sql } from "drizzle-orm";
-import type { Database } from "../../db.js";
+import type { Database, DatabaseTransaction } from "../../db.js";
 import {
   AgentEngine,
   AgentRunError,
@@ -716,6 +716,80 @@ export class Portraits {
     };
   }
 
+  async twinContext(
+    memberId: string,
+    profileVersionId?: string,
+    database: Database | DatabaseTransaction = this.db,
+  ) {
+    let versionId = profileVersionId;
+    if (!versionId) {
+      const state = (
+        await database
+          .select({ publishedVersionId: portraitMemberStates.publishedVersionId })
+          .from(portraitMemberStates)
+          .where(eq(portraitMemberStates.memberId, memberId))
+          .limit(1)
+      )[0];
+      versionId = state?.publishedVersionId ?? undefined;
+    }
+    if (!versionId) return undefined;
+    const version = (
+      await database
+        .select({
+          id: portraitVersions.id,
+          version: portraitVersions.version,
+          personaContext: portraitVersions.personaContext,
+          createdAt: portraitVersions.createdAt,
+        })
+        .from(portraitVersions)
+        .where(
+          and(
+            eq(portraitVersions.id, versionId),
+            eq(portraitVersions.memberId, memberId),
+          ),
+        )
+        .limit(1)
+    )[0];
+    return version
+      ? {
+          personaContext: version.personaContext,
+          profileVersion: {
+            id: version.id,
+            version: version.version,
+            createdAt: version.createdAt.toISOString(),
+          },
+        }
+      : undefined;
+  }
+
+  async absorbSelfTwinMessage(
+    memberId: string,
+    sourceMessageId: string,
+    content: string,
+    agentEngine: AgentEngine,
+    recordAttempts: (attempts: AgentAttemptResult[]) => Promise<void>,
+  ) {
+    const message = await this.db.transaction(async (transaction) => {
+      await transaction.execute(
+        sql`select pg_advisory_xact_lock(hashtext(${memberId}))`,
+      );
+      return this.interviewConversations.appendSelfTwinEvidence(
+        transaction,
+        memberId,
+        sourceMessageId,
+        content,
+        this.now(),
+      );
+    });
+    return this.extractDraft(
+      memberId,
+      message.conversationId,
+      message.sequence,
+      agentEngine,
+      recordAttempts,
+    );
+  }
+
   async submitCalibrationAnswer(
     memberId: string,
     scenarioId: string,
@@ -943,8 +1017,13 @@ export class Portraits {
         throw new Error("CALIBRATION_INPUT_MISSING");
       }
       const result = await agentEngine.replyAsTwin(
-        version[0].personaContext,
+        {
+          personaContext: version[0].personaContext,
+          publicProfile: null,
+          recentMessages: [],
+        },
         scenario[0].prompt,
+        undefined,
         (attempts) =>
           this.agentJobs.recordAttempts(
             claimed,
@@ -998,15 +1077,17 @@ export class Portraits {
         await this.interviewConversations.agentQuestionsForMember(memberId)
       ).map((message) => message.content),
     ];
-    const interviewConversationId =
-      await this.interviewConversations.conversationIdForMember(
-        memberId,
-        "INTERVIEW",
-      );
     const result = await this.db.transaction(async (transaction) => {
       await transaction.execute(
         sql`select pg_advisory_xact_lock(hashtext(${memberId}))`,
       );
+      const conversationIds = (
+        await this.interviewConversations.conversationIdsForMember(
+          memberId,
+          ["INTERVIEW", "TWIN"],
+          transaction,
+        )
+      ).map((conversation) => conversation.id);
       const existing = (
         await transaction
           .select()
@@ -1027,17 +1108,16 @@ export class Portraits {
         };
       }
 
-      if (interviewConversationId) {
-        const latestJob = await generation.agentJobs.latestForConversation(
-          interviewConversationId,
-          transaction,
-        );
-        if (latestJob && ["pending", "running"].includes(latestJob.status)) {
-          throw new PortraitInputError("PORTRAIT_DRAFT_UPDATING");
-        }
-        if (latestJob?.status === "failed") {
-          throw new PortraitInputError("PORTRAIT_DRAFT_UPDATE_FAILED");
-        }
+      const latestJobs = await Promise.all(
+        conversationIds.map((conversationId) =>
+          generation.agentJobs.latestForConversation(conversationId, transaction),
+        ),
+      );
+      if (latestJobs.some((job) => job && ["pending", "running"].includes(job.status))) {
+        throw new PortraitInputError("PORTRAIT_DRAFT_UPDATING");
+      }
+      if (latestJobs.some((job) => job?.status === "failed")) {
+        throw new PortraitInputError("PORTRAIT_DRAFT_UPDATE_FAILED");
       }
 
       const state = (
@@ -1329,84 +1409,93 @@ export class Portraits {
     agentEngine: AgentEngine,
     recordAttempts: (attempts: AgentAttemptResult[]) => Promise<void>,
   ) {
-    const [savedDraft, messages] = await Promise.all([
-      this.db
-        .select()
-        .from(portraitDrafts)
-        .where(eq(portraitDrafts.memberId, memberId))
-        .limit(1),
-      this.interviewConversations.memberEvidence(
-        conversationId,
-        throughSequence,
-      ),
-    ]);
-    const current = savedDraft[0];
-    const newEvidence = messages.filter(
-      (message) => message.sequence > (current?.lastMessageSequence ?? 0),
-    );
-    if (!newEvidence.length) {
-      return {
-        completed: current?.completedDimensions ?? 0,
-        newlyConfident: false,
-      };
-    }
-
-    const prompt = portraitExtractionPrompt(
-      current?.content ?? emptyPortraitDraft(),
-      newEvidence,
-    );
     let attempts: AgentAttemptResult[] = [];
     try {
-      const extracted = await agentEngine.extractPortrait(
-        prompt,
-        portraitDraftSchema,
-        async () => undefined,
-      );
-      attempts = extracted.attempts;
-      const content = extracted.value as PortraitDraftContent;
-      const validEvidence = new Set(messages.map((message) => message.id));
-      const newEvidenceIds = new Set(newEvidence.map((message) => message.id));
-      const previousContent = current?.content ?? emptyPortraitDraft();
-      const assessment = assessPortraitDraft(
-        content,
-        previousContent,
-        validEvidence,
-        newEvidenceIds,
-      );
-      if (!assessment.valid) {
-        attempts.at(-1)!.error = "PORTRAIT_EVIDENCE_INVALID";
-        throw new AgentRunError("PORTRAIT_EVIDENCE_INVALID", attempts);
-      }
-      await recordAttempts(attempts);
-      const completed = assessment.completed;
-      const savedAt = this.now();
-      await this.db
-        .insert(portraitDrafts)
-        .values({
-          memberId,
-          schemaVersion: PORTRAIT_SCHEMA_VERSION,
-          plannerVersion: QUESTION_PLANNER_VERSION,
+      // ponytail: one per-member DB lock keeps draft merges lossless; switch to
+      // optimistic retries if model latency limits throughput.
+      const result = await this.db.transaction(async (transaction) => {
+        await transaction.execute(
+          sql`select pg_advisory_xact_lock(hashtext(${memberId}))`,
+        );
+        const [savedDraft, messages] = await Promise.all([
+          transaction
+            .select()
+            .from(portraitDrafts)
+            .where(eq(portraitDrafts.memberId, memberId))
+            .limit(1),
+          this.interviewConversations.memberEvidence(
+            conversationId,
+            throughSequence,
+            transaction,
+          ),
+        ]);
+        const current = savedDraft[0];
+        const newEvidence = messages.filter(
+          (message) => message.sequence > (current?.lastMessageSequence ?? 0),
+        );
+        if (!newEvidence.length) {
+          return {
+            completed: current?.completedDimensions ?? 0,
+            newlyConfident: false,
+          };
+        }
+
+        const extracted = await agentEngine.extractPortrait(
+          portraitExtractionPrompt(
+            current?.content ?? emptyPortraitDraft(),
+            newEvidence,
+          ),
+          portraitDraftSchema,
+          async () => undefined,
+        );
+        attempts = extracted.attempts;
+        const content = extracted.value as PortraitDraftContent;
+        const validEvidence = new Set(messages.map((message) => message.id));
+        const newEvidenceIds = new Set(
+          newEvidence.map((message) => message.id),
+        );
+        const assessment = assessPortraitDraft(
           content,
-          completedDimensions: completed,
-          lastMessageSequence: throughSequence,
-          createdAt: current?.createdAt ?? savedAt,
-          updatedAt: savedAt,
-        })
-        .onConflictDoUpdate({
-          target: portraitDrafts.memberId,
-          set: {
+          current?.content ?? emptyPortraitDraft(),
+          validEvidence,
+          newEvidenceIds,
+        );
+        if (!assessment.valid) {
+          attempts.at(-1)!.error = "PORTRAIT_EVIDENCE_INVALID";
+          throw new AgentRunError("PORTRAIT_EVIDENCE_INVALID", attempts);
+        }
+        const completed = assessment.completed;
+        const savedAt = this.now();
+        await transaction
+          .insert(portraitDrafts)
+          .values({
+            memberId,
             schemaVersion: PORTRAIT_SCHEMA_VERSION,
             plannerVersion: QUESTION_PLANNER_VERSION,
             content,
             completedDimensions: completed,
             lastMessageSequence: throughSequence,
+            createdAt: current?.createdAt ?? savedAt,
             updatedAt: savedAt,
-          },
-        });
-      return {
-        completed,
-        newlyConfident: assessment.newlyConfident,
-      };
+          })
+          .onConflictDoUpdate({
+            target: portraitDrafts.memberId,
+            set: {
+              schemaVersion: PORTRAIT_SCHEMA_VERSION,
+              plannerVersion: QUESTION_PLANNER_VERSION,
+              content,
+              completedDimensions: completed,
+              lastMessageSequence: throughSequence,
+              updatedAt: savedAt,
+            },
+          });
+        return {
+          completed,
+          newlyConfident: assessment.newlyConfident,
+        };
+      });
+      await recordAttempts(attempts);
+      return result;
     } catch (error) {
       if (error instanceof AgentRunError) attempts = error.attempts;
       await recordAttempts(attempts);

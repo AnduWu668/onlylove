@@ -121,6 +121,17 @@ describe("portrait submission, calibration, and publication HTTP seam", () => {
     });
   }
 
+  async function waitForAdvisoryWait(pool: Pool) {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const waiting = await pool.query<{ waiting: boolean }>(
+        "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted) AS waiting",
+      );
+      if (waiting.rows[0]?.waiting) return;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    throw new Error("ADVISORY_WAIT_NOT_OBSERVED");
+  }
+
   beforeAll(async () => {
     const migrationApp = await createApp({
       databaseUrl,
@@ -794,5 +805,211 @@ describe("portrait submission, calibration, and publication HTTP seam", () => {
       headers: { cookie },
     });
     expect(current.json().publishedVersion).toBeNull();
+  });
+
+  it("keeps a self-twin session pinned while corrections update only the draft and share quota", async () => {
+    const { memberCookie: cookie } =
+      await inviteAndSignInMember("self-twin@onlylove.test");
+    await completeFixedInterview(cookie);
+    await app.inject({
+      method: "POST",
+      url: "/api/member/portrait/versions",
+      headers: { cookie },
+      payload: {
+        clientRequestId: "0f44a6f7-c767-4195-a68a-d81446fe1494",
+      },
+    });
+    let lifecycle = (await finishPortraitGeneration(cookie)).json();
+    for (const scenario of lifecycle.calibration.scenarios) {
+      lifecycle = (
+        await app.inject({
+          method: "POST",
+          url: `/api/member/portrait/calibration/${scenario.id}`,
+          headers: { cookie },
+          payload: {
+            rating: "like",
+            correction: "",
+            criticalFabrication: false,
+          },
+        })
+      ).json();
+    }
+    lifecycle = (
+      await app.inject({
+        method: "POST",
+        url: "/api/member/portrait/publish",
+        headers: { cookie },
+        payload: { versionId: lifecycle.submittedVersion.id },
+      })
+    ).json();
+    const firstVersion = lifecycle.publishedVersion;
+
+    const lockPool = new Pool({ connectionString: databaseUrl });
+    const blocker = await lockPool.connect();
+    try {
+      const member = await lockPool.query<{ id: string }>(
+        "SELECT id FROM members WHERE email = $1",
+        ["self-twin@onlylove.test"],
+      );
+      await blocker.query("BEGIN");
+      await blocker.query("SELECT pg_advisory_xact_lock(hashtext($1))", [
+        `${member.rows[0]!.id}:2026-08-21`,
+      ]);
+      const staleSend = app.inject({
+        method: "POST",
+        url: "/api/member/twin/messages",
+        headers: { cookie },
+        payload: {
+          clientMessageId: "7d5039b6-8748-44a2-b7a7-a79e53e719ae",
+          content: "撤回发布后不应接受这条消息。",
+        },
+      });
+      await waitForAdvisoryWait(lockPool);
+      const withdrawn = await app.inject({
+        method: "DELETE",
+        url: "/api/member/portrait/publish",
+        headers: { cookie },
+      });
+      expect(withdrawn.statusCode).toBe(200);
+      await blocker.query("COMMIT");
+      const rejected = await staleSend;
+      expect(rejected.statusCode).toBe(409);
+      expect(rejected.json()).toEqual({ code: "TWIN_NOT_PUBLISHED" });
+    } finally {
+      await blocker.query("ROLLBACK");
+      blocker.release();
+      await lockPool.end();
+    }
+    const republished = await app.inject({
+      method: "POST",
+      url: "/api/member/portrait/publish",
+      headers: { cookie },
+      payload: { versionId: firstVersion.id },
+    });
+    expect(republished.statusCode).toBe(200);
+
+    const interview = await app.inject({
+      method: "POST",
+      url: "/api/member/interview/messages",
+      headers: { cookie },
+      payload: {
+        clientMessageId: "30b57ed8-9909-4fc2-ab5c-3c951ecf4297",
+        content: "我想先补充一条访谈语境。",
+      },
+    });
+    await app.inject({
+      method: "GET",
+      url: interview.json().eventsUrl,
+      headers: { cookie },
+    });
+
+    const emptyTwin = await app.inject({
+      method: "GET",
+      url: "/api/member/twin",
+      headers: { cookie },
+    });
+    expect(emptyTwin.statusCode).toBe(200);
+    expect(emptyTwin.json()).toMatchObject({
+      conversationId: null,
+      profileVersion: firstVersion,
+      messages: [],
+    });
+
+    const submitted = await app.inject({
+      method: "POST",
+      url: "/api/member/twin/messages",
+      headers: { cookie },
+      payload: {
+        clientMessageId: "44b6066a-85a4-4bd1-9fb5-d8feab8e4899",
+        content: "这不像我，我会先说明需要独处，再约好重新沟通的时间。",
+      },
+    });
+    expect(submitted.statusCode).toBe(202);
+    expect(submitted.json()).toMatchObject({ quotaRemaining: 98 });
+    const blockedWhileCorrecting = await app.inject({
+      method: "POST",
+      url: "/api/member/portrait/versions",
+      headers: { cookie },
+      payload: {
+        clientRequestId: "47d44460-e56f-4083-9f39-f1db6fac773a",
+      },
+    });
+    expect(blockedWhileCorrecting.statusCode).toBe(409);
+    expect(blockedWhileCorrecting.json()).toEqual({
+      code: "PORTRAIT_DRAFT_UPDATING",
+    });
+    const events = await app.inject({
+      method: "GET",
+      url: submitted.json().eventsUrl,
+      headers: { cookie },
+    });
+    expect(events.body).toContain("event: done");
+
+    const conversation = await app.inject({
+      method: "GET",
+      url: "/api/member/twin",
+      headers: { cookie },
+    });
+    expect(conversation.json()).toMatchObject({
+      profileVersion: firstVersion,
+      messages: [
+        expect.objectContaining({ role: "member", content: "这不像我，我会先说明需要独处，再约好重新沟通的时间。" }),
+        expect.objectContaining({ role: "agent" }),
+      ],
+    });
+
+    const stillPublished = await app.inject({
+      method: "GET",
+      url: "/api/member/portrait",
+      headers: { cookie },
+    });
+    expect(stillPublished.json()).toMatchObject({
+      status: "published",
+      submittedVersion: firstVersion,
+      publishedVersion: firstVersion,
+    });
+
+    const next = await app.inject({
+      method: "POST",
+      url: "/api/member/portrait/versions",
+      headers: { cookie },
+      payload: {
+        clientRequestId: "e2d0534e-8ff8-401c-9361-012d3d31f29b",
+      },
+    });
+    expect(next.statusCode).toBe(202);
+    expect(next.json()).toMatchObject({
+      submittedVersion: { version: 2 },
+      publishedVersion: firstVersion,
+    });
+
+    lifecycle = (await finishPortraitGeneration(cookie)).json();
+    for (const scenario of lifecycle.calibration.scenarios) {
+      lifecycle = (
+        await app.inject({
+          method: "POST",
+          url: `/api/member/portrait/calibration/${scenario.id}`,
+          headers: { cookie },
+          payload: {
+            rating: "like",
+            correction: "",
+            criticalFabrication: false,
+          },
+        })
+      ).json();
+    }
+    await app.inject({
+      method: "POST",
+      url: "/api/member/portrait/publish",
+      headers: { cookie },
+      payload: { versionId: lifecycle.submittedVersion.id },
+    });
+
+    const pinned = await app.inject({
+      method: "GET",
+      url: "/api/member/twin",
+      headers: { cookie },
+    });
+    expect(pinned.json().profileVersion).toEqual(firstVersion);
   });
 });

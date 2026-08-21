@@ -50,7 +50,14 @@ interface InterviewMessage {
   content: string;
 }
 
+interface TwinConversationState {
+  profileVersion: { id: string; version: number };
+  messages: InterviewMessage[];
+  autoFollowup?: { jobId: string; eventsUrl: string };
+}
+
 type CalibrationRating = "like" | "partial" | "unlike";
+type OwnAgentRole = "interviewer" | "twin";
 
 interface PortraitLifecycleState {
   status:
@@ -100,6 +107,13 @@ const interviewLoading = ref(false);
 const interviewSending = ref(false);
 const interviewError = ref("");
 const interviewInput = ref("");
+const twinRole = ref<"interviewer" | "twin">("interviewer");
+const twinLoaded = ref(false);
+const twinLoading = ref(false);
+const twinSending = ref(false);
+const twinError = ref("");
+const twinInput = ref("");
+const twinConversation = ref<TwinConversationState>();
 const portraitInterview = ref<PortraitInterviewState>();
 const portraitLifecycle = ref<PortraitLifecycleState>();
 const portraitActionPending = ref(false);
@@ -114,11 +128,28 @@ const fixedSaving = ref(false);
 const progressFeedback = ref("");
 const quotaRemaining = ref<number>();
 const interviewMessages = ref<InterviewMessage[]>([]);
-let interviewEvents: EventSource | undefined;
+const twinMessages = ref<InterviewMessage[]>([]);
 let portraitPoll: number | undefined;
-let interviewRetry:
-  | { clientMessageId: string; content: string }
-  | undefined;
+const ownAgentChats = {
+  interviewer: {
+    input: interviewInput,
+    sending: interviewSending,
+    error: interviewError,
+    messages: interviewMessages,
+    endpoint: "/api/member/interview/messages",
+  },
+  twin: {
+    input: twinInput,
+    sending: twinSending,
+    error: twinError,
+    messages: twinMessages,
+    endpoint: "/api/member/twin/messages",
+  },
+};
+const ownAgentEvents: Partial<Record<OwnAgentRole, EventSource>> = {};
+const ownAgentRetries: Partial<
+  Record<OwnAgentRole, { clientMessageId: string; content: string }>
+> = {};
 let portraitSubmitRequestId: string | undefined;
 const activeCalibrationScenario = computed(() =>
   portraitLifecycle.value?.status === "calibrating"
@@ -236,7 +267,7 @@ async function loadProfile() {
 
 onMounted(loadProfile);
 onUnmounted(() => {
-  interviewEvents?.close();
+  Object.values(ownAgentEvents).forEach((events) => events.close());
   if (portraitPoll !== undefined) window.clearTimeout(portraitPoll);
 });
 
@@ -416,7 +447,7 @@ async function loadInterview() {
       });
       interviewMessages.value.push(answer);
       interviewSending.value = true;
-      listenForInterview(data.autoFollowup.eventsUrl, answer, false);
+      listenForOwnAgent("interviewer", data.autoFollowup.eventsUrl, answer, false);
     }
     await loadPortraitLifecycle();
     interviewLoaded.value = true;
@@ -424,6 +455,36 @@ async function loadInterview() {
     interviewError.value = "暂时无法读取访谈记录，请稍后重试。";
   } finally {
     interviewLoading.value = false;
+  }
+}
+
+async function loadTwin() {
+  if (twinLoaded.value || twinLoading.value) return;
+  twinLoading.value = true;
+  twinError.value = "";
+  try {
+    const response = await fetch("/api/member/twin");
+    const data = response.ok
+      ? await jsonOrUndefined<TwinConversationState>(response)
+      : undefined;
+    if (!data) throw new Error();
+    twinConversation.value = data;
+    twinMessages.value = data.messages;
+    if (data.autoFollowup) {
+      const answer = reactive<InterviewMessage>({
+        id: `pending-${data.autoFollowup.jobId}`,
+        role: "agent",
+        content: "",
+      });
+      twinMessages.value.push(answer);
+      twinSending.value = true;
+      listenForOwnAgent("twin", data.autoFollowup.eventsUrl, answer, false);
+    }
+    twinLoaded.value = true;
+  } catch {
+    twinError.value = "暂时无法读取恋爱分身对话，请稍后重试。";
+  } finally {
+    twinLoading.value = false;
   }
 }
 
@@ -470,7 +531,7 @@ async function submitFixedAnswer() {
       });
       interviewMessages.value.push(answer);
       interviewSending.value = true;
-      listenForInterview(data.autoFollowup.eventsUrl, answer, false);
+      listenForOwnAgent("interviewer", data.autoFollowup.eventsUrl, answer, false);
     }
   } catch {
     interviewError.value = "这道回答暂时没有保存，请稍后重试。";
@@ -486,28 +547,54 @@ function showTab(
   if (tab === "twin") void loadInterview();
 }
 
-function streamError(code?: string) {
+function showTwinRole(role: "interviewer" | "twin") {
+  twinRole.value = role;
+  if (role === "twin") void loadTwin();
+}
+
+function ownAgentFailure(
+  role: OwnAgentRole,
+  code: string | undefined,
+  quotaReserved: boolean,
+) {
   if (code === "MODEL_NOT_CONFIGURED") {
-    return "画像访谈模型尚未配置，请联系管理员。";
+    return role === "interviewer"
+      ? "画像访谈模型尚未配置，请联系管理员。"
+      : "恋爱分身模型尚未配置，请联系管理员。";
   }
-  if (code === "INTERVIEW_IN_PROGRESS") return "上一条回答仍在生成中。";
+  if (!quotaReserved) {
+    return role === "interviewer"
+      ? "第一次动态追问生成失败，请稍后发送一条消息继续。"
+      : "上一次恋爱分身回答生成失败，请重新发送。";
+  }
   return "这次回答生成失败，消息额度已退回，请稍后重试。";
 }
 
-function listenForInterview(
+function postFailure(role: OwnAgentRole, code?: string) {
+  if (role === "interviewer") {
+    if (code === "INTERVIEW_IN_PROGRESS") return "上一条回答仍在生成中。";
+    return ownAgentFailure(role, code, true);
+  }
+  return code === "TWIN_IN_PROGRESS"
+    ? "上一条恋爱分身回答仍在生成中。"
+    : "这条消息暂时无法发送，请稍后重试。";
+}
+
+function listenForOwnAgent(
+  role: OwnAgentRole,
   eventsUrl: string,
   answer: InterviewMessage,
   quotaReserved = true,
 ) {
-  interviewEvents?.close();
-  interviewEvents = new EventSource(eventsUrl);
-  interviewEvents.addEventListener("delta", (event) => {
-    const payload = JSON.parse((event as MessageEvent).data) as {
-      text: string;
-    };
+  const chat = ownAgentChats[role];
+  ownAgentEvents[role]?.close();
+  const events = new EventSource(eventsUrl);
+  ownAgentEvents[role] = events;
+  events.addEventListener("delta", (event) => {
+    const payload = JSON.parse((event as MessageEvent).data) as { text: string };
     answer.content += payload.text;
   });
-  interviewEvents.addEventListener("progress", (event) => {
+  events.addEventListener("progress", (event) => {
     const payload = JSON.parse((event as MessageEvent).data) as {
       completed: number;
       total: number;
@@ -521,59 +608,51 @@ function listenForInterview(
     }
     progressFeedback.value = payload.feedback;
   });
-  interviewEvents.addEventListener("done", () => {
-    interviewEvents?.close();
-    interviewEvents = undefined;
-    interviewSending.value = false;
+  events.addEventListener("done", () => {
+    events.close();
+    delete ownAgentEvents[role];
+    chat.sending.value = false;
   });
-  interviewEvents.addEventListener("error", (event) => {
+  events.addEventListener("error", (event) => {
     if (!(event instanceof MessageEvent) || !event.data) return;
     const code = (JSON.parse(event.data) as { code?: string }).code;
-    interviewError.value = quotaReserved
-      ? streamError(code)
-      : code === "MODEL_NOT_CONFIGURED"
-        ? streamError(code)
-        : "第一次动态追问生成失败，请稍后发送一条消息继续。";
-    interviewMessages.value = interviewMessages.value.filter(
+    chat.error.value = ownAgentFailure(role, code, quotaReserved);
+    chat.messages.value = chat.messages.value.filter(
       (message) => message.id !== answer.id,
     );
-    interviewEvents?.close();
-    interviewEvents = undefined;
-    interviewSending.value = false;
+    events.close();
+    delete ownAgentEvents[role];
+    chat.sending.value = false;
   });
 }
 
-async function sendInterview() {
-  const content = interviewInput.value.trim();
-  if (!content || interviewSending.value) return;
-  interviewSending.value = true;
-  interviewError.value = "";
-  interviewInput.value = "";
+async function sendOwnAgent(role: OwnAgentRole) {
+  const chat = ownAgentChats[role];
+  const content = chat.input.value.trim();
+  if (!content || chat.sending.value) return;
+  chat.sending.value = true;
+  chat.error.value = "";
+  chat.input.value = "";
+  const retry = ownAgentRetries[role];
   const clientMessageId =
-    interviewRetry?.content === content
-      ? interviewRetry.clientMessageId
-      : crypto.randomUUID();
-  interviewRetry = undefined;
-  interviewMessages.value.push({
-    id: clientMessageId,
-    role: "member",
-    content,
-  });
-  const answer = reactive({
+    retry?.content === content ? retry.clientMessageId : crypto.randomUUID();
+  delete ownAgentRetries[role];
+  chat.messages.value.push({ id: clientMessageId, role: "member", content });
+  const answer = reactive<InterviewMessage>({
     id: `pending-${clientMessageId}`,
-    role: "agent" as const,
+    role: "agent",
     content: "",
   });
-  interviewMessages.value.push(answer);
+  chat.messages.value.push(answer);
   const rollback = () => {
-    interviewMessages.value = interviewMessages.value.filter(
+    chat.messages.value = chat.messages.value.filter(
       (message) => message.id !== clientMessageId && message.id !== answer.id,
     );
-    if (!interviewInput.value) interviewInput.value = content;
+    if (!chat.input.value) chat.input.value = content;
   };
 
   try {
-    const response = await fetch("/api/member/interview/messages", {
+    const response = await fetch(chat.endpoint, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ clientMessageId, content }),
@@ -584,18 +663,18 @@ async function sendInterview() {
       code?: string;
     }>(response);
     if (!response.ok || !data?.eventsUrl) {
-      interviewError.value = streamError(data?.code);
+      chat.error.value = postFailure(role, data?.code);
       rollback();
-      interviewSending.value = false;
+      chat.sending.value = false;
       return;
     }
     quotaRemaining.value = data.quotaRemaining;
-    listenForInterview(data.eventsUrl, answer);
+    listenForOwnAgent(role, data.eventsUrl, answer);
   } catch {
-    interviewError.value = "网络中断，消息已恢复，请再次发送。";
-    interviewRetry = { clientMessageId, content };
+    chat.error.value = "网络中断，消息已恢复，请再次发送。";
+    ownAgentRetries[role] = { clientMessageId, content };
     rollback();
-    interviewSending.value = false;
+    chat.sending.value = false;
   }
 }
 
@@ -679,7 +758,12 @@ async function submitCalibrationAnswer() {
       });
       interviewMessages.value.push(answer);
       interviewSending.value = true;
-      listenForInterview(data.correctionFollowup.eventsUrl, answer, false);
+      listenForOwnAgent(
+        "interviewer",
+        data.correctionFollowup.eventsUrl,
+        answer,
+        false,
+      );
     }
     calibrationRating.value = undefined;
     calibrationCorrection.value = "";
@@ -733,6 +817,7 @@ async function withdrawPortrait() {
       return;
     }
     portraitLifecycle.value = data;
+    twinRole.value = "interviewer";
   } catch {
     portraitActionError.value = "暂时无法撤回发布，请稍后重试。";
   } finally {
@@ -755,20 +840,53 @@ async function withdrawPortrait() {
       <section class="interview-intro">
         <div>
           <p class="step-label">我的分身</p>
-          <h1>私有画像访谈员</h1>
+          <h1>{{ twinRole === "interviewer" ? "私有画像访谈员" : "我的恋爱分身" }}</h1>
         </div>
         <div class="interview-status">
           <span class="ai-badge">AI</span>
-          <span v-if="portraitInterview" class="portrait-progress">
+          <span v-if="portraitInterview && twinRole === 'interviewer'" class="portrait-progress">
             {{ portraitInterview.progress.completed }}/{{ portraitInterview.progress.total }}
           </span>
         </div>
-        <p>它只与你交流，通过追问逐步理解你；它不是公开恋爱分身，也不会替你作出承诺。</p>
+        <p v-if="twinRole === 'interviewer'">
+          它只与你交流，通过追问逐步理解你；它不是公开恋爱分身，也不会替你作出承诺。
+        </p>
+        <p v-else>
+          这是明确标注为 AI 的恋爱分身；它会像公开交流时一样表达，但不能替你承诺或确认关系。
+        </p>
+        <div
+          v-if="portraitLifecycle?.publishedVersion && portraitInterview?.fixedInterview.completed"
+          class="twin-role-switch"
+          aria-label="我的分身角色"
+        >
+          <button
+            type="button"
+            data-twin-role="interviewer"
+            :aria-pressed="twinRole === 'interviewer'"
+            @click="showTwinRole('interviewer')"
+          >
+            画像访谈员
+          </button>
+          <button
+            type="button"
+            data-twin-role="twin"
+            :aria-pressed="twinRole === 'twin'"
+            @click="showTwinRole('twin')"
+          >
+            恋爱分身
+          </button>
+        </div>
       </section>
 
-      <p v-if="interviewLoading" class="loading-state">正在读取访谈…</p>
+      <p v-if="interviewLoading || (twinRole === 'twin' && twinLoading)" class="loading-state">
+        {{ twinRole === "interviewer" ? "正在读取访谈…" : "正在读取恋爱分身对话…" }}
+      </p>
       <section
-        v-else-if="portraitInterview && !portraitInterview.fixedInterview.completed"
+        v-else-if="
+          twinRole === 'interviewer' &&
+          portraitInterview &&
+          !portraitInterview.fixedInterview.completed
+        "
         class="fixed-interview-panel"
       >
         <div class="fixed-question-heading">
@@ -822,6 +940,57 @@ async function withdrawPortrait() {
           </button>
         </form>
       </section>
+      <section v-else-if="twinRole === 'twin'" class="interview-panel" aria-live="polite">
+        <div class="twin-session-note">
+          <div>
+            <strong>恋爱分身 · AI</strong>
+            <span v-if="twinConversation">固定使用 v{{ twinConversation.profileVersion.version }}</span>
+          </div>
+          <p>
+            如果回答不像你，直接说“这不像我，我会……”并补充真实语境；纠正会进入画像草稿，不会直接修改已发布版本。
+          </p>
+        </div>
+        <p v-if="progressFeedback" class="portrait-feedback" role="status">
+          {{ progressFeedback }}
+        </p>
+        <div v-if="twinMessages.length" class="message-list">
+          <article
+            v-for="message in twinMessages"
+            :key="message.id"
+            class="chat-message"
+            :data-role="message.role"
+          >
+            <span>{{ message.role === "member" ? "我" : "恋爱分身 · AI" }}</span>
+            <p>{{ message.content || "正在思考…" }}</p>
+          </article>
+        </div>
+        <div v-else class="interview-empty">
+          <strong>像第一次认识自己那样聊聊</strong>
+          <p>可以问一个未见场景，感受分身会怎样判断和表达。</p>
+        </div>
+        <p v-if="twinError" class="form-error" role="alert">{{ twinError }}</p>
+        <p v-if="quotaRemaining !== undefined" class="quota-note">
+          今日还可发送 {{ quotaRemaining }} 条
+        </p>
+        <form
+          class="interview-composer twin-composer"
+          @submit.prevent="sendOwnAgent('twin')"
+        >
+          <label class="sr-only" for="twin-message">恋爱分身消息</label>
+          <textarea
+            id="twin-message"
+            v-model="twinInput"
+            maxlength="4000"
+            rows="3"
+            placeholder="问一个场景，或直接指出哪里不像你…"
+            :disabled="twinSending"
+            required
+          ></textarea>
+          <button type="submit" :disabled="twinSending || !twinInput.trim()">
+            {{ twinSending ? "回答生成中…" : "发送" }}
+          </button>
+        </form>
+      </section>
       <section v-else class="interview-panel" aria-live="polite">
         <section v-if="portraitLifecycle" class="portrait-lifecycle">
           <div class="portrait-version-heading">
@@ -842,7 +1011,7 @@ async function withdrawPortrait() {
             <button
               class="submit-portrait"
               type="button"
-              :disabled="portraitActionPending || interviewSending"
+              :disabled="portraitActionPending || interviewSending || twinSending"
               @click="submitPortraitVersion"
             >
               {{ portraitActionPending ? "提交中…" : "提交本次理解" }}
@@ -941,7 +1110,7 @@ async function withdrawPortrait() {
               <button
                 class="submit-portrait"
                 type="button"
-                :disabled="portraitActionPending || interviewSending"
+                :disabled="portraitActionPending || interviewSending || twinSending"
                 @click="submitPortraitVersion"
               >
                 提交新的理解版本
@@ -969,7 +1138,7 @@ async function withdrawPortrait() {
               <button
                 class="submit-portrait quiet-action"
                 type="button"
-                :disabled="portraitActionPending"
+                :disabled="portraitActionPending || interviewSending || twinSending"
                 @click="submitPortraitVersion"
               >
                 提交新的理解版本
@@ -1014,7 +1183,10 @@ async function withdrawPortrait() {
         <p v-if="quotaRemaining !== undefined" class="quota-note">
           今日还可发送 {{ quotaRemaining }} 条
         </p>
-        <form class="interview-composer" @submit.prevent="sendInterview">
+        <form
+          class="interview-composer"
+          @submit.prevent="sendOwnAgent('interviewer')"
+        >
           <label class="sr-only" for="interview-message">访谈消息</label>
           <textarea
             id="interview-message"

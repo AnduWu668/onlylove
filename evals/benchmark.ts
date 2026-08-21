@@ -20,8 +20,11 @@ import {
 import {
   extractionCases,
   interviewCases,
+  twinCases,
+  twinOutputViolations,
   type ExtractionCase,
   type InterviewCase,
+  type TwinCase,
 } from "./check.js";
 import {
   PORTRAIT_FEATURE_FIELDS,
@@ -244,6 +247,34 @@ async function benchmarkExtraction(engine: AgentEngine, item: ExtractionCase) {
   );
 }
 
+async function benchmarkTwin(engine: AgentEngine, item: TwinCase) {
+  const result = await engine.replyAsTwin(
+    {
+      personaContext: item.personaContext,
+      publicProfile: {
+        nickname: "测试成员",
+        birthDate: "1990-01-01",
+        gender: "female",
+        heightCm: 165,
+        city: "上海",
+        occupation: "设计师",
+      },
+      recentMessages: item.recentMessages,
+    },
+    item.input,
+    undefined,
+    async () => undefined,
+  );
+  assert(result.text.trim(), `${item.id}: empty response`);
+  assert.deepEqual(
+    twinOutputViolations(item, result.text),
+    [],
+    `${item.id}: twin invariant failed`,
+  );
+  collect(result.attempts);
+  console.info(`PASS twin/${item.id} model=${result.actualModel}`);
+}
+
 async function extractPortrait(
   engine: AgentEngine,
   current: ReturnType<typeof emptyPortraitDraft>,
@@ -402,7 +433,9 @@ try {
     assert(engine);
     for (const item of interviewCases) await benchmarkInterview(engine, item);
     for (const item of extractionCases) await benchmarkExtraction(engine, item);
-    caseCount += interviewCases.length + extractionCases.length;
+    for (const item of twinCases) await benchmarkTwin(engine, item);
+    caseCount +=
+      interviewCases.length + extractionCases.length + twinCases.length;
   }
   if (!matchingOnly) {
     assert(engine);
