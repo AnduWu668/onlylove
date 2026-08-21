@@ -1,6 +1,6 @@
 # OnlyLove Agent Benchmark 计划
 
-状态：Grill 已完成；数据集和 runner 尚未实现。
+状态：画像访谈、画像提取与“固定 10 题 → 对话完善”数据集和 runner 已实现；分身与配对数据集待补。
 
 ## 1. 目的
 
@@ -14,10 +14,15 @@ Benchmark 的首要目标是验证恋爱分身准确度和匹配判断是否遵�
 
 - `evals/interview-cases.json`：固定题、动态追问、矛盾信息、低置信度、诱导性选项。
 - `evals/extraction-cases.json`：八个关系维度、伴侣期望、硬边界、重要程度、证据引用和缺失信息。
+- `evals/portrait-learning-cases.json`：同一成员仅固定 10 题与继续对话后的成对画像特征金标。
 - `evals/twin-cases.json`：未知场景、表达风格、事实未知、承诺边界、提示注入和跨会话窃取。
 - `evals/matching-cases.json`：20–30 个双人组合，覆盖结构化硬条件、语义硬边界、互相适合与严重单向、相似、互补、复杂互动和待补充条件。
 
 每个案例固定输入、预期不变量、允许差异和失败理由；不要求模型复述唯一标准文本。
+
+画像学习 benchmark 使用同一模型、生产画像提取 Prompt 与 Schema 做成对消融：先从空草稿提取固定 10 题，再基于该草稿只输入新增对话。两阶段对同一最终金标计算特征槽位 precision、recall、F1 和 slot accuracy；中高置信度特征必须命中独立概念组并引用正确证据，未知证据、无证据高置信结论和预设虚假事实为一票否决。当前 3 个合成案例是先导集，只报告分布和增益，不据此设发布阈值；扩大并人工复核案例后再冻结门槛。
+
+真实方舟完整运行命令为 `npm run benchmark -w evals`，只复测画像学习消融可运行 `npm run benchmark -w evals -- --portrait-learning`；确定性数据和评分器检查为 `npm test -w evals`。
 
 ## 3. 四类角色
 

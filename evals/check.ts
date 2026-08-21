@@ -12,6 +12,11 @@ import {
   emptyPortraitDraft,
   interviewPlanningPriority,
 } from "../server/src/modules/portraits/service.js";
+import {
+  portraitLearningEvidence,
+  portraitLearningSuite,
+  scorePortraitFeatures,
+} from "./portrait-learning.js";
 
 const nonemptyString = Type.String({ minLength: 1 });
 const evidenceMessageSchema = Type.Object(
@@ -194,6 +199,151 @@ for (const category of [
   );
 }
 
+assert.deepEqual(
+  new Set(portraitLearningSuite.cases.map((item) => item.category)),
+  new Set(["consistent", "correction", "context_dependent"]),
+);
+for (const item of portraitLearningSuite.cases) {
+  const evidenceIds = new Set(
+    portraitLearningEvidence(item).map((message) => message.id),
+  );
+  assert.equal(evidenceIds.size, 10 + item.dialogueMessages.length);
+  assert.equal(
+    new Set(
+      item.gold.features.map(
+        (feature) => `${feature.dimension}.${feature.field}`,
+      ),
+    ).size,
+    item.gold.features.length,
+    `${item.id}: duplicate gold slot`,
+  );
+  assert.deepEqual(
+    new Set(
+      item.gold.features
+        .filter((feature) => feature.field === "selfTendency")
+        .map((feature) => feature.dimension),
+    ),
+    new Set(PORTRAIT_DIMENSIONS),
+    `${item.id}: self-tendency gold must cover all dimensions`,
+  );
+  assert(
+    item.gold.features.some((feature) =>
+      feature.evidenceIds.some((id) => id.startsWith("dialogue:")),
+    ),
+    `${item.id}: dialogue must add or correct gold features`,
+  );
+  for (const feature of item.gold.features) {
+    for (const id of feature.evidenceIds) {
+      assert(evidenceIds.has(id), `${item.id}: unknown gold evidence ${id}`);
+    }
+  }
+}
+
+const scoredDraft = emptyPortraitDraft();
+scoredDraft.values = {
+  ...scoredDraft.values,
+  selfTendency: "先理解彼此的理由，再明确自己的边界。",
+  confidence: "medium",
+  evidenceMessageIds: ["score-message-1"],
+};
+const featureScore = scorePortraitFeatures(
+  scoredDraft,
+  {
+    features: [
+      {
+        dimension: "values",
+        field: "selfTendency",
+        concepts: [["理解"], ["边界"]],
+        evidenceIds: ["score-message-1"],
+      },
+    ],
+    forbiddenClaims: ["已经决定移居海外"],
+  },
+  new Set(["score-message-1"]),
+);
+assert.deepEqual(
+  {
+    truePositive: featureScore.truePositive,
+    falsePositive: featureScore.falsePositive,
+    falseNegative: featureScore.falseNegative,
+    trueNegative: featureScore.trueNegative,
+    precision: featureScore.precision,
+    recall: featureScore.recall,
+    f1: featureScore.f1,
+    slotAccuracy: featureScore.slotAccuracy,
+    vetoes: featureScore.vetoes,
+  },
+  {
+    truePositive: 1,
+    falsePositive: 0,
+    falseNegative: 0,
+    trueNegative: 23,
+    precision: 1,
+    recall: 1,
+    f1: 1,
+    slotAccuracy: 1,
+    vetoes: [],
+  },
+);
+
+scoredDraft.values.selfTendency = "会坚持说服对方接受我的判断。";
+const mismatchedFeatureScore = scorePortraitFeatures(
+  scoredDraft,
+  {
+    features: [
+      {
+        dimension: "values",
+        field: "selfTendency",
+        concepts: [["理解"], ["边界"]],
+        evidenceIds: ["score-message-1"],
+      },
+    ],
+    forbiddenClaims: [],
+  },
+  new Set(["score-message-1"]),
+);
+assert.equal(mismatchedFeatureScore.falsePositive, 1);
+assert.equal(mismatchedFeatureScore.falseNegative, 1);
+assert.equal(mismatchedFeatureScore.trueNegative, 23);
+assert.equal(mismatchedFeatureScore.slotAccuracy, 23 / 24);
+assert.deepEqual(mismatchedFeatureScore.missedFeatures, [
+  "values.selfTendency:concept",
+]);
+
+scoredDraft.values.selfTendency = "先理解彼此的理由，再明确自己的边界。";
+const wrongEvidenceScore = scorePortraitFeatures(
+  scoredDraft,
+  {
+    features: [
+      {
+        dimension: "values",
+        field: "selfTendency",
+        concepts: [["理解"], ["边界"]],
+        evidenceIds: ["score-message-2"],
+      },
+    ],
+    forbiddenClaims: [],
+  },
+  new Set(["score-message-1", "score-message-2"]),
+);
+assert.deepEqual(wrongEvidenceScore.missedFeatures, [
+  "values.selfTendency:evidence",
+]);
+
+scoredDraft.values.selfTendency = "会坚持说服对方接受我的判断。";
+scoredDraft.values.evidenceMessageIds = ["unknown-message"];
+assert.deepEqual(
+  scorePortraitFeatures(
+    scoredDraft,
+    {
+      features: [],
+      forbiddenClaims: ["坚持说服对方"],
+    },
+    new Set(),
+  ).vetoes,
+  ["unknown_evidence:unknown-message", "unsupported_claim:坚持说服对方"],
+);
+
 console.info(
-  `portrait eval inputs ok: ${interviewCases.length + extractionCases.length} cases`,
+  `portrait eval inputs ok: ${interviewCases.length + extractionCases.length + portraitLearningSuite.cases.length} cases`,
 );
