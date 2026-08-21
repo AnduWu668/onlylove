@@ -55,6 +55,8 @@ type CalibrationRating = "like" | "partial" | "unlike";
 interface PortraitLifecycleState {
   status:
     | "draft"
+    | "generating"
+    | "generation_failed"
     | "calibrating"
     | "needs_more_understanding"
     | "ready_to_publish"
@@ -72,7 +74,7 @@ interface PortraitLifecycleState {
       id: string;
       number: number;
       prompt: string;
-      prediction: string;
+      prediction: string | null;
       answer: {
         rating: CalibrationRating;
         correction: string;
@@ -113,14 +115,17 @@ const progressFeedback = ref("");
 const quotaRemaining = ref<number>();
 const interviewMessages = ref<InterviewMessage[]>([]);
 let interviewEvents: EventSource | undefined;
+let portraitPoll: number | undefined;
 let interviewRetry:
   | { clientMessageId: string; content: string }
   | undefined;
 let portraitSubmitRequestId: string | undefined;
 const activeCalibrationScenario = computed(() =>
-  portraitLifecycle.value?.calibration?.scenarios.find(
-    (scenario) => !scenario.answer,
-  ),
+  portraitLifecycle.value?.status === "calibrating"
+    ? portraitLifecycle.value.calibration?.scenarios.find(
+        (scenario) => scenario.prediction && !scenario.answer,
+      )
+    : undefined,
 );
 const form = reactive({
   nickname: "",
@@ -230,7 +235,10 @@ async function loadProfile() {
 }
 
 onMounted(loadProfile);
-onUnmounted(() => interviewEvents?.close());
+onUnmounted(() => {
+  interviewEvents?.close();
+  if (portraitPoll !== undefined) window.clearTimeout(portraitPoll);
+});
 
 async function signOut() {
   await fetch("/api/session", { method: "DELETE" });
@@ -347,6 +355,8 @@ async function loadPortraitLifecycle() {
       data &&
       [
         "draft",
+        "generating",
+        "generation_failed",
         "calibrating",
         "needs_more_understanding",
         "ready_to_publish",
@@ -354,6 +364,13 @@ async function loadPortraitLifecycle() {
       ].includes(data.status)
     ) {
       portraitLifecycle.value = data;
+      if (portraitPoll !== undefined) window.clearTimeout(portraitPoll);
+      if (data.status === "generating") {
+        portraitPoll = window.setTimeout(
+          () => void loadPortraitLifecycle(),
+          1_000,
+        );
+      }
     }
   } catch {
     // The interview remains usable when lifecycle state cannot be refreshed.
@@ -602,10 +619,15 @@ async function submitPortraitVersion() {
           ? "先继续聊一会儿，让画像访谈员形成可提交的理解。"
           : data?.code === "PORTRAIT_DRAFT_UPDATING"
             ? "画像访谈员正在吸收你的最新纠正，完成后再提交。"
-          : "这次理解暂时无法提交，请稍后重试。";
+            : data?.code === "PORTRAIT_DRAFT_UPDATE_FAILED"
+              ? "最新纠正还没有成功吸收，请继续聊一句后再提交。"
+              : "这次理解暂时无法提交，请稍后重试。";
       return;
     }
     portraitLifecycle.value = data;
+    if (data.status === "generating") {
+      portraitPoll = window.setTimeout(() => void loadPortraitLifecycle(), 1_000);
+    }
     portraitSubmitRequestId = undefined;
     calibrationRating.value = undefined;
     calibrationCorrection.value = "";
@@ -902,6 +924,16 @@ async function withdrawPortrait() {
                 {{ portraitActionPending ? "保存中…" : "保存并继续" }}
               </button>
             </form>
+
+            <template v-else-if="portraitLifecycle.status === 'generating'">
+              <h2>正在生成 10 道未见场景回答</h2>
+              <p>版本已经保存，可以先离开这里；单 Worker 会继续处理。</p>
+            </template>
+
+            <template v-else-if="portraitLifecycle.status === 'generation_failed'">
+              <h2>{{ portraitLifecycle.message }}</h2>
+              <p>任务已在三次失败后停止，输入没有被修改。</p>
+            </template>
 
             <template v-else-if="portraitLifecycle.status === 'needs_more_understanding'">
               <h2>{{ portraitLifecycle.message }}</h2>

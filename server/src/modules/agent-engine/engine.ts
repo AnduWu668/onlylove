@@ -506,6 +506,7 @@ export class AgentEngine {
     content: string,
     onDelta: (text: string) => void,
     recordAttempts: (attempts: AgentAttemptResult[]) => Promise<void>,
+    stopAfterEmission = true,
   ): Promise<InterviewRunResult> {
     const primary = this.#runtime.primaryModel;
     if (!primary) throw new AgentRunError("MODEL_NOT_CONFIGURED");
@@ -543,7 +544,7 @@ export class AgentEngine {
           };
         }
         lastErrorCode = attempt.errorCode;
-        if (attempt.emitted) {
+        if (stopAfterEmission && attempt.emitted) {
           throw new AgentRunError(attempt.errorCode, attempts);
         }
       }
@@ -598,6 +599,7 @@ export class AgentEngine {
       `请回答这个未见场景：${scenario}`,
       () => undefined,
       recordAttempts,
+      false,
     );
   }
 

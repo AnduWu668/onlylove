@@ -831,6 +831,7 @@ describe("OnlyLove UI seam", () => {
   });
 
   it("submits the portrait and collects focused calibration feedback", async () => {
+    vi.useFakeTimers();
     vi.stubGlobal("crypto", {
       randomUUID: () => "a76d2b06-7d47-4616-a8cd-6ceff86528ef",
     });
@@ -881,11 +882,21 @@ describe("OnlyLove UI seam", () => {
         };
       }
       if (url === "/api/member/portrait" && !options?.method) {
+        if (portrait.status === "generating") {
+          portrait = {
+            ...portrait,
+            status: "calibrating",
+            calibration: {
+              ...portrait.calibration,
+              scenarios: [scenario],
+            },
+          };
+        }
         return { ok: true, status: 200, json: async () => portrait };
       }
       if (url === "/api/member/portrait/versions") {
         portrait = {
-          status: "calibrating",
+          status: "generating",
           submittedVersion: { id: "version-1", version: 1 },
           publishedVersion: null,
           calibration: {
@@ -894,7 +905,7 @@ describe("OnlyLove UI seam", () => {
             likeCount: 0,
             criticalFabrication: false,
             canPublish: false,
-            scenarios: [scenario],
+            scenarios: [{ ...scenario, prediction: null }],
           },
         };
         return { ok: true, status: 201, json: async () => portrait };
@@ -937,6 +948,9 @@ describe("OnlyLove UI seam", () => {
         body: expect.stringContaining("a76d2b06-7d47-4616-a8cd-6ceff86528ef"),
       }),
     );
+    expect(wrapper.text()).toContain("正在生成 10 道未见场景回答");
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushPromises();
     expect(wrapper.text()).toContain(scenario.prompt);
     expect(wrapper.text()).toContain(scenario.prediction);
     expect(wrapper.text()).toContain("像我");

@@ -154,6 +154,27 @@ describe("Agent Engine continueInterview seam", () => {
     engine.close();
   });
 
+  it("retries an unpersisted twin prediction after a partial model failure", async () => {
+    const engine = new AgentEngine({
+      provider: "deterministic-fake",
+      model: "primary-v1",
+      attempts: [
+        { partialText: "未保存的半句话", error: "connection closed" },
+        { reply: "重新生成的完整预测。" },
+      ],
+    });
+
+    const result = await engine.replyAsTwin(
+      "# 恋爱分身上下文\n会先沟通再决定。",
+      "伴侣想去外地工作，你会怎样回应？",
+      async () => undefined,
+    );
+
+    expect(result.text).toBe("重新生成的完整预测。");
+    expect(result.attempts).toHaveLength(2);
+    engine.close();
+  });
+
   it("repairs invalid structured output once with the same model", async () => {
     const engine = new AgentEngine({
       provider: "deterministic-fake",

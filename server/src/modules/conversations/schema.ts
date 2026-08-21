@@ -17,7 +17,7 @@ export const conversations = pgTable(
   {
     id: uuid("id").primaryKey(),
     type: varchar("type", { length: 16 })
-      .$type<"INTERVIEW" | "CALIBRATION">()
+      .$type<"INTERVIEW" | "TWIN" | "HUMAN">()
       .notNull(),
     memberId: uuid("member_id")
       .notNull()

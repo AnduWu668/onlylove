@@ -44,14 +44,13 @@ export const agentJobs = pgTable(
     memberId: uuid("member_id")
       .notNull()
       .references(() => members.id),
-    conversationId: uuid("conversation_id")
-      .notNull()
-      .references(() => conversations.id),
-    inputMessageId: uuid("input_message_id")
-      .notNull()
-      .references(() => conversationMessages.id),
+    conversationId: uuid("conversation_id").references(() => conversations.id),
+    inputMessageId: uuid("input_message_id").references(
+      () => conversationMessages.id,
+    ),
     profileVersionId: uuid("profile_version_id"),
     calibrationScenarioId: uuid("calibration_scenario_id"),
+    assignedAdminId: uuid("assigned_admin_id").references(() => members.id),
     outputMessageId: uuid("output_message_id").references(
       () => conversationMessages.id,
     ),
@@ -93,9 +92,7 @@ export const agentRuns = pgTable(
     memberId: uuid("member_id")
       .notNull()
       .references(() => members.id),
-    conversationId: uuid("conversation_id")
-      .notNull()
-      .references(() => conversations.id),
+    conversationId: uuid("conversation_id").references(() => conversations.id),
     provider: varchar("provider", { length: 80 }).notNull(),
     requestedModel: varchar("requested_model", { length: 160 }).notNull(),
     actualModel: varchar("actual_model", { length: 160 }).notNull(),
@@ -115,12 +112,5 @@ export const agentRuns = pgTable(
     pricingEffectiveDate: date("pricing_effective_date"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
-  (table) => [
-    index("agent_runs_job_index").on(table.jobId),
-    uniqueIndex("agent_runs_job_task_retry_unique").on(
-      table.jobId,
-      table.task,
-      table.retryCount,
-    ),
-  ],
+  (table) => [index("agent_runs_job_index").on(table.jobId)],
 );

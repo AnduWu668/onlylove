@@ -5,6 +5,7 @@ import { createApp } from "../src/app.js";
 import { loadRootEnv } from "../src/env.js";
 import { MemoryMailer } from "../src/modules/members/mailer.js";
 import { emptyPortraitDraft } from "../src/modules/portraits/service.js";
+import { createPortraitWorker } from "../src/portrait-worker.js";
 
 loadRootEnv();
 const configuredTestUrl = process.env.TEST_DATABASE_URL;
@@ -15,10 +16,13 @@ const testDatabaseUrl = new URL(
 );
 if (!configuredTestUrl) testDatabaseUrl.pathname = "/onlylove_test";
 const databaseUrl = testDatabaseUrl.toString();
+const DYNAMIC_COLLISION_PROMPT =
+  "你已接受本地长期项目，伴侣突然需要在两个月内决定是否去海外定居，你会怎样一起决定？";
 
 describe("portrait submission, calibration, and publication HTTP seam", () => {
   let app: FastifyInstance;
   let mailer: MemoryMailer;
+  let worker: Awaited<ReturnType<typeof createPortraitWorker>>;
 
   async function signIn(email: string, birthDate?: string) {
     const challenge = await app.inject({
@@ -60,6 +64,16 @@ describe("portrait submission, calibration, and publication HTTP seam", () => {
     };
   }
 
+  async function promoteToAdmin(email: string) {
+    const pool = new Pool({ connectionString: databaseUrl });
+    const result = await pool.query(
+      "UPDATE members SET role = 'admin' WHERE email = $1 RETURNING id",
+      [email],
+    );
+    await pool.end();
+    return result.rows[0].id as string;
+  }
+
   async function completeFixedInterview(cookie: string) {
     const prompts: string[] = [];
     for (;;) {
@@ -98,6 +112,15 @@ describe("portrait submission, calibration, and publication HTTP seam", () => {
     }
   }
 
+  async function finishPortraitGeneration(cookie: string) {
+    await worker.drain();
+    return app.inject({
+      method: "GET",
+      url: "/api/member/portrait",
+      headers: { cookie },
+    });
+  }
+
   beforeAll(async () => {
     const migrationApp = await createApp({
       databaseUrl,
@@ -109,6 +132,7 @@ describe("portrait submission, calibration, and publication HTTP seam", () => {
   });
 
   beforeEach(async () => {
+    if (worker) await worker.close();
     if (app) await app.close();
     const pool = new Pool({ connectionString: databaseUrl });
     await pool.query(
@@ -130,13 +154,23 @@ describe("portrait submission, calibration, and publication HTTP seam", () => {
       agentModel: {
         provider: "deterministic-fake",
         model: "portrait-test-v1",
-        reply: "你愿意再说一个具体例子吗？",
+        reply: DYNAMIC_COLLISION_PROMPT,
         extractReply: JSON.stringify(draft),
+      },
+    });
+    worker = await createPortraitWorker({
+      databaseUrl,
+      now: () => new Date("2026-08-21T08:00:00.000Z"),
+      agentModel: {
+        provider: "deterministic-fake",
+        model: "portrait-test-v1",
+        reply: "你愿意再说一个具体例子吗？",
       },
     });
   });
 
   afterAll(async () => {
+    if (worker) await worker.close();
     if (app) await app.close();
   });
 
@@ -159,13 +193,19 @@ describe("portrait submission, calibration, and publication HTTP seam", () => {
     const payload = {
       clientRequestId: "f6148226-ef5d-496c-9c9e-fe9e9aebac8a",
     };
-    const submitted = await app.inject({
+    const accepted = await app.inject({
       method: "POST",
       url: "/api/member/portrait/versions",
       headers: { cookie },
       payload,
     });
-    expect(submitted.statusCode).toBe(201);
+    expect(accepted.statusCode).toBe(202);
+    expect(accepted.json()).toMatchObject({
+      status: "generating",
+      submittedVersion: { version: 1 },
+    });
+    const submitted = await finishPortraitGeneration(cookie);
+    expect(submitted.statusCode).toBe(200);
     expect(submitted.json()).toMatchObject({
       status: "calibrating",
       submittedVersion: { version: 1 },
@@ -178,6 +218,20 @@ describe("portrait submission, calibration, and publication HTTP seam", () => {
         .json()
         .calibration.scenarios.some((scenario: { prompt: string }) =>
           fixedPrompts.includes(scenario.prompt),
+        ),
+    ).toBe(false);
+    expect(
+      submitted
+        .json()
+        .calibration.scenarios.map((scenario: { prompt: string }) => scenario.prompt)
+        .join("\n"),
+    ).not.toMatch(/\b\d{3,}\s*(?:个月|天|万元)/);
+    expect(
+      submitted
+        .json()
+        .calibration.scenarios.some(
+          (scenario: { prompt: string }) =>
+            scenario.prompt === DYNAMIC_COLLISION_PROMPT,
         ),
     ).toBe(false);
     expect(
@@ -239,7 +293,7 @@ describe("portrait submission, calibration, and publication HTTP seam", () => {
     const { adminCookie, memberCookie: cookie } =
       await inviteAndSignInMember("calibrate@onlylove.test");
     await completeFixedInterview(cookie);
-    const submitted = await app.inject({
+    const accepted = await app.inject({
       method: "POST",
       url: "/api/member/portrait/versions",
       headers: { cookie },
@@ -247,7 +301,8 @@ describe("portrait submission, calibration, and publication HTTP seam", () => {
         clientRequestId: "dcb4c812-9230-493b-820d-a2ba4b6871cc",
       },
     });
-    const first = submitted.json();
+    expect(accepted.statusCode).toBe(202);
+    const first = (await finishPortraitGeneration(cookie)).json();
     const scenarios = first.calibration.scenarios as {
       id: string;
       kind: "single" | "conflict";
@@ -326,7 +381,7 @@ describe("portrait submission, calibration, and publication HTTP seam", () => {
         .runs.filter((run: { task: string }) => run.task === "extract_portrait"),
     ).toHaveLength(2);
 
-    const next = await app.inject({
+    const nextAccepted = await app.inject({
       method: "POST",
       url: "/api/member/portrait/versions",
       headers: { cookie },
@@ -334,7 +389,9 @@ describe("portrait submission, calibration, and publication HTTP seam", () => {
         clientRequestId: "1d7ca863-eab8-44c5-8e40-4f4957080448",
       },
     });
-    expect(next.statusCode).toBe(201);
+    expect(nextAccepted.statusCode).toBe(202);
+    const next = await finishPortraitGeneration(cookie);
+    expect(next.statusCode).toBe(200);
     expect(next.json().submittedVersion.version).toBe(2);
     expect(
       next
@@ -345,7 +402,7 @@ describe("portrait submission, calibration, and publication HTTP seam", () => {
       .json()
       .calibration.scenarios.map((scenario: { prompt: string }) => scenario.prompt);
     expect(nextPrompts).not.toEqual(scenarios.map((scenario) => scenario.prompt));
-    const third = await app.inject({
+    const thirdAccepted = await app.inject({
       method: "POST",
       url: "/api/member/portrait/versions",
       headers: { cookie },
@@ -353,24 +410,243 @@ describe("portrait submission, calibration, and publication HTTP seam", () => {
         clientRequestId: "36aa79db-0792-49b9-8129-a326d261f62c",
       },
     });
+    expect(thirdAccepted.statusCode).toBe(202);
+    const third = await finishPortraitGeneration(cookie);
+    const thirdPrompts = third
+      .json()
+      .calibration.scenarios.map((scenario: { prompt: string }) => scenario.prompt);
+    expect(thirdPrompts).not.toEqual(nextPrompts);
+    const fourthAccepted = await app.inject({
+      method: "POST",
+      url: "/api/member/portrait/versions",
+      headers: { cookie },
+      payload: {
+        clientRequestId: "16f9c53e-5d52-422e-88a6-8a3d47a417ec",
+      },
+    });
+    expect(fourthAccepted.statusCode).toBe(202);
+    const fourth = await finishPortraitGeneration(cookie);
+    const fourthPrompts = fourth
+      .json()
+      .calibration.scenarios.map((scenario: { prompt: string }) => scenario.prompt);
+    expect(fourthPrompts).not.toEqual(thirdPrompts);
+    const fifthAccepted = await app.inject({
+      method: "POST",
+      url: "/api/member/portrait/versions",
+      headers: { cookie },
+      payload: {
+        clientRequestId: "15a14877-dc35-42aa-935f-2573b38f64d2",
+      },
+    });
+    expect(fifthAccepted.statusCode).toBe(202);
+    const fifthPrompts = (await finishPortraitGeneration(cookie))
+      .json()
+      .calibration.scenarios.map(
+        (scenario: { prompt: string }) => scenario.prompt,
+      );
+    expect(fifthPrompts).not.toEqual(fourthPrompts);
+    const allPrompts = [
+      ...scenarios.map((scenario) => scenario.prompt),
+      ...nextPrompts,
+      ...thirdPrompts,
+      ...fourthPrompts,
+      ...fifthPrompts,
+    ];
+    for (let version = 6; version <= 16; version += 1) {
+      const accepted = await app.inject({
+        method: "POST",
+        url: "/api/member/portrait/versions",
+        headers: { cookie },
+        payload: {
+          clientRequestId: `00000000-0000-4000-8000-${String(version).padStart(12, "0")}`,
+        },
+      });
+      expect(accepted.statusCode).toBe(202);
+      allPrompts.push(
+        ...accepted
+          .json()
+          .calibration.scenarios.map(
+            (scenario: { prompt: string }) => scenario.prompt,
+          ),
+      );
+    }
+    expect(new Set(allPrompts).size).toBe(160);
+  });
+
+  it("blocks a new version when the latest calibration correction was not extracted", async () => {
+    const { memberCookie: cookie } =
+      await inviteAndSignInMember("correction-failure@onlylove.test");
+    await completeFixedInterview(cookie);
+    await app.inject({
+      method: "POST",
+      url: "/api/member/portrait/versions",
+      headers: { cookie },
+      payload: {
+        clientRequestId: "60750d4b-8aaa-47bf-a194-02ff47a0a91b",
+      },
+    });
+    const submitted = (await finishPortraitGeneration(cookie)).json();
+    let failedCalibration = submitted;
+    for (const [index, scenario] of submitted.calibration.scenarios.entries()) {
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/member/portrait/calibration/${scenario.id}`,
+        headers: { cookie },
+        payload: {
+          rating: index < 8 ? "like" : "partial",
+          correction: index < 8 ? "" : `第 ${index + 1} 题需要纠正`,
+          criticalFabrication: index === 9,
+        },
+      });
+      failedCalibration = response.json();
+    }
+
+    await app.close();
+    app = await createApp({
+      databaseUrl,
+      mailer,
+      otpSecret: "test-only-secret",
+      superAdminEmail: "admin@onlylove.test",
+      now: () => new Date("2026-08-21T08:00:00.000Z"),
+      agentModel: {
+        provider: "deterministic-fake",
+        model: "portrait-test-v1",
+        error: "extraction unavailable",
+      },
+    });
+    const correction = await app.inject({
+      method: "GET",
+      url: failedCalibration.correctionFollowup.eventsUrl,
+      headers: { cookie },
+    });
+    expect(correction.body).toContain("event: error");
+
+    const blocked = await app.inject({
+      method: "POST",
+      url: "/api/member/portrait/versions",
+      headers: { cookie },
+      payload: {
+        clientRequestId: "231ad04d-a41f-4628-94c1-1703e39996a9",
+      },
+    });
+    expect(blocked.statusCode).toBe(409);
+    expect(blocked.json()).toEqual({ code: "PORTRAIT_DRAFT_UPDATE_FAILED" });
+  });
+
+  it("runs calibration in the worker, records every retry, and stops after three job attempts", async () => {
+    const { adminCookie, memberCookie: cookie } =
+      await inviteAndSignInMember("worker-failure@onlylove.test");
+    await app.inject({
+      method: "POST",
+      url: "/api/admin/invitations",
+      headers: { cookie: adminCookie },
+      payload: { email: "operator@onlylove.test" },
+    });
+    const operatorCookie = await signIn(
+      "operator@onlylove.test",
+      "1990-01-01",
+    );
+    const operatorId = await promoteToAdmin("operator@onlylove.test");
+    await completeFixedInterview(cookie);
+    await worker.close();
+    worker = await createPortraitWorker({
+      databaseUrl,
+      now: () => new Date("2026-08-21T08:00:00.000Z"),
+      agentModel: {
+        provider: "deterministic-fake",
+        model: "portrait-test-v1",
+        error: "calibration unavailable",
+      },
+    });
+
+    const accepted = await app.inject({
+      method: "POST",
+      url: "/api/member/portrait/versions",
+      headers: { cookie },
+      payload: {
+        clientRequestId: "1666df56-e5ab-4cec-b6b0-e8203f82e05c",
+      },
+    });
+    expect(accepted.statusCode).toBe(202);
+    expect(accepted.json().status).toBe("generating");
+    await worker.drain();
+
+    const state = await app.inject({
+      method: "GET",
+      url: "/api/member/portrait",
+      headers: { cookie },
+    });
+    expect(state.json()).toMatchObject({
+      status: "generation_failed",
+      message: "分身回答生成失败，请联系管理员重试",
+    });
+    const unassigned = await app.inject({
+      method: "GET",
+      url: "/api/admin/agent-jobs/failed",
+      headers: { cookie: operatorCookie },
+    });
+    expect(unassigned.statusCode).toBe(200);
+    expect(unassigned.json().jobs).toEqual([]);
+    const allFailed = await app.inject({
+      method: "GET",
+      url: "/api/admin/agent-jobs/failed",
+      headers: { cookie: adminCookie },
+    });
+    expect(allFailed.json().jobs).toHaveLength(10);
+    for (const job of allFailed.json().jobs) {
+      const assignment = await app.inject({
+        method: "POST",
+        url: `/api/admin/agent-jobs/${job.id}/assignment`,
+        headers: { cookie: adminCookie },
+        payload: { adminId: operatorId },
+      });
+      expect(assignment.statusCode).toBe(200);
+    }
+    const failed = await app.inject({
+      method: "GET",
+      url: "/api/admin/agent-jobs/failed",
+      headers: { cookie: operatorCookie },
+    });
+    expect(failed.statusCode).toBe(200);
+    expect(failed.json().jobs).toHaveLength(10);
     expect(
-      third
+      failed.json().jobs.every((job: { retryCount: number }) => job.retryCount === 3),
+    ).toBe(true);
+
+    const runs = await app.inject({
+      method: "GET",
+      url: "/api/admin/agent-runs",
+      headers: { cookie: operatorCookie },
+    });
+    expect(
+      runs
         .json()
-        .calibration.scenarios.map((scenario: { prompt: string }) => scenario.prompt),
-    ).not.toEqual(nextPrompts);
+        .runs.filter((run: { task: string }) => run.task === "reply_as_twin"),
+    ).toHaveLength(90);
+
+    const retry = await app.inject({
+      method: "POST",
+      url: `/api/admin/agent-jobs/${failed.json().jobs[0].id}/retry`,
+      headers: { cookie: operatorCookie },
+    });
+    expect(retry.statusCode).toBe(202);
+    expect(retry.json()).toMatchObject({ status: "pending" });
   });
 
   it("publishes only a passing version, atomically replaces it, and withdraws it", async () => {
     const { memberCookie: cookie } =
       await inviteAndSignInMember("publish@onlylove.test");
     await completeFixedInterview(cookie);
-    const submit = async (clientRequestId: string) =>
-      app.inject({
+    const submit = async (clientRequestId: string) => {
+      const accepted = await app.inject({
         method: "POST",
         url: "/api/member/portrait/versions",
         headers: { cookie },
         payload: { clientRequestId },
       });
+      expect(accepted.statusCode).toBe(202);
+      return finishPortraitGeneration(cookie);
+    };
     const calibrate = async (state: any) => {
       let current = state;
       for (const [index, scenario] of state.calibration.scenarios.entries()) {

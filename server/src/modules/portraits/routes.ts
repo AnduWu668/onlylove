@@ -58,7 +58,7 @@ export function registerPortraitsRoutes(
             agentJobs: options.agentJobs,
           },
         );
-        return reply.code(result.created ? 201 : 200).send(result.state);
+        return reply.code(result.created ? 202 : 200).send(result.state);
       } catch (error) {
         if (error instanceof PortraitInputError) {
           return reply.code(409).send({ code: error.code });

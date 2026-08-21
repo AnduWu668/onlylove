@@ -8,7 +8,7 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { and, desc, eq, gt, isNull, ne, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, ne, sql } from "drizzle-orm";
 import type { Database } from "../../db.js";
 import type { Mailer } from "./mailer.js";
 import {
@@ -516,6 +516,34 @@ export async function superAdminForRequest(
 ) {
   const member = await memberForRequest(request, db, now);
   return member?.role === "super_admin" ? member : undefined;
+}
+
+export async function adminForRequest(
+  request: FastifyRequest,
+  db: Database,
+  now: Date,
+) {
+  const member = await memberForRequest(request, db, now);
+  if (member?.role !== "admin" && member?.role !== "super_admin") {
+    return undefined;
+  }
+  return { ...member, role: member.role };
+}
+
+export async function activeAdminById(id: string, db: Database) {
+  return (
+    await db
+      .select({ id: members.id, role: members.role })
+      .from(members)
+      .where(
+        and(
+          eq(members.id, id),
+          inArray(members.role, ["admin", "super_admin"]),
+          isNull(members.deletedAt),
+        ),
+      )
+      .limit(1)
+  )[0];
 }
 
 export function registerMembersRoutes(

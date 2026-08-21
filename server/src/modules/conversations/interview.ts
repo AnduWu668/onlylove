@@ -9,17 +9,17 @@ export class InterviewConversations {
   private async appendMemberMessage(
     transaction: DatabaseTransaction,
     memberId: string,
-    type: "INTERVIEW" | "CALIBRATION",
+    type: "INTERVIEW",
     content: string,
     createdAt: Date,
   ) {
     await transaction
       .insert(conversations)
-        .values({
-          id: randomUUID(),
-          type,
-          memberId,
-          createdAt,
+      .values({
+        id: randomUUID(),
+        type,
+        memberId,
+        createdAt,
       })
       .onConflictDoNothing();
     const conversation = (
@@ -74,21 +74,6 @@ export class InterviewConversations {
     );
   }
 
-  appendCalibrationScenario(
-    transaction: DatabaseTransaction,
-    memberId: string,
-    content: string,
-    createdAt: Date,
-  ) {
-    return this.appendMemberMessage(
-      transaction,
-      memberId,
-      "CALIBRATION",
-      content,
-      createdAt,
-    );
-  }
-
   appendCalibrationCorrections(
     transaction: DatabaseTransaction,
     memberId: string,
@@ -122,9 +107,26 @@ export class InterviewConversations {
       .orderBy(asc(conversationMessages.sequence));
   }
 
+  agentQuestionsForMember(memberId: string) {
+    return this.db
+      .select({ content: conversationMessages.content })
+      .from(conversationMessages)
+      .innerJoin(
+        conversations,
+        eq(conversations.id, conversationMessages.conversationId),
+      )
+      .where(
+        and(
+          eq(conversations.memberId, memberId),
+          eq(conversations.type, "INTERVIEW"),
+          eq(conversationMessages.role, "agent"),
+        ),
+      );
+  }
+
   async conversationIdForMember(
     memberId: string,
-    type: "INTERVIEW" | "CALIBRATION",
+    type: "INTERVIEW",
   ) {
     return (
       await this.db
