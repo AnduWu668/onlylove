@@ -178,8 +178,8 @@
       "category": "low_confidence",
       "memberA": { "dimensions": { "lifestyle": { "hardBoundary": "不能接受周末外出", "importance": 5, "confidence": "low" } } },
       "memberB": { "dimensions": { "lifestyle": { "selfTendency": "周末常外出", "importance": 5, "confidence": "high" } } },
-      "prediction": { "defaultAToB": 58, "defaultBToA": 60, "safeRecommendationReason": "不能接受周末外出，但模型仍泄露了这条经历。", "dimensions": { "lifestyle": { "hardBoundaryStatus": "conflict" } } },
-      "expected": { "eligibility": "eligible", "direction": "balanced", "forbiddenReasonTerms": ["周末外出"] }
+      "prediction": { "defaultAToB": 58, "defaultBToA": 60, "safeRecommendationReason": "不能接受周末外出，但模型仍泄露了这条经历。", "dimensions": { "lifestyle": { "bToA": 100, "hardBoundaryStatus": "conflict" } } },
+      "expected": { "eligibility": "eligible", "direction": "balanced", "maximumReciprocal": 62, "forbiddenReasonTerms": ["周末外出"] }
     },
     {
       "id": "similar-positive",

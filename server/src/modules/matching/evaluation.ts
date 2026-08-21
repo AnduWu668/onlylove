@@ -216,9 +216,16 @@ function deterministicStructuredStatus(input: PairEvaluationInput) {
   );
 }
 
-function weight(profile: MatchProfile, dimension: PortraitDimension) {
-  const value = profile.dimensions[dimension];
-  return value.confidence === "low" ? 0 : (value.importance ?? 1);
+function weight(
+  memberProfile: MatchProfile,
+  candidateProfile: MatchProfile,
+  dimension: PortraitDimension,
+) {
+  const member = memberProfile.dimensions[dimension];
+  const candidate = candidateProfile.dimensions[dimension];
+  return member.confidence === "low" || candidate.confidence === "low"
+    ? 0
+    : (member.importance ?? 1);
 }
 
 function rounded(value: number) {
@@ -226,11 +233,14 @@ function rounded(value: number) {
 }
 
 function weightedScore(
-  profile: MatchProfile,
+  memberProfile: MatchProfile,
+  candidateProfile: MatchProfile,
   dimensions: PairEvaluationModelResult["dimensions"],
   direction: "aToB" | "bToA",
 ) {
-  const weights = dimensions.map((item) => weight(profile, item.dimension));
+  const weights = dimensions.map((item) =>
+    weight(memberProfile, candidateProfile, item.dimension),
+  );
   const totalWeight = weights.reduce((total, value) => total + value, 0);
   if (!totalWeight) return 0;
   return rounded(
@@ -324,11 +334,13 @@ export function finalizePairEvaluation(
   );
   const aToBScore = weightedScore(
     input.memberA.matchProfile,
+    input.memberB.matchProfile,
     dimensions,
     "aToB",
   );
   const bToAScore = weightedScore(
     input.memberB.matchProfile,
+    input.memberA.matchProfile,
     dimensions,
     "bToA",
   );
