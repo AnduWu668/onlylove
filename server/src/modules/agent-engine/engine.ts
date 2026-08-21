@@ -12,10 +12,17 @@ import {
 } from "@earendil-works/pi-ai";
 import { Value } from "typebox/value";
 import {
+  matchEvaluatorDefinition,
   portraitExtractorDefinition,
   portraitInterviewerDefinition,
   publicTwinDefinition,
 } from "./definitions.js";
+import {
+  finalizePairEvaluation,
+  modelPairEvaluationSchema,
+  pairEvaluationPrompt,
+  type PairEvaluationInput,
+} from "../matching/evaluation.js";
 
 const DEFAULT_INPUT_TOKEN_BUDGET = 32_768;
 
@@ -34,6 +41,7 @@ export interface DeterministicAttempt {
   error?: string;
   partialText?: string;
   promptIncludes?: string[];
+  promptExcludes?: string[];
   historyMessageCount?: number;
   systemPromptIncludes?: string[];
 }
@@ -202,6 +210,9 @@ function deterministicRuntime(
       }
       if (response.promptIncludes?.some((part) => !content.includes(part))) {
         throw new Error("Deterministic attempt did not receive the expected prompt");
+      }
+      if (response.promptExcludes?.some((part) => content.includes(part))) {
+        throw new Error("Deterministic attempt received forbidden prompt context");
       }
       if (
         response.historyMessageCount !== undefined &&
@@ -380,6 +391,7 @@ export class AgentEngine {
   readonly interviewerDefinition;
   readonly extractorDefinition;
   readonly twinDefinition;
+  readonly matchingDefinition;
 
   constructor(
     options?: AgentModelOptions,
@@ -403,6 +415,11 @@ export class AgentEngine {
     };
     this.twinDefinition = {
       ...publicTwinDefinition,
+      primaryModel: options?.model ?? null,
+      backupModel: options?.backupModel ?? null,
+    };
+    this.matchingDefinition = {
+      ...matchEvaluatorDefinition,
       primaryModel: options?.model ?? null,
       backupModel: options?.backupModel ?? null,
     };
@@ -603,9 +620,11 @@ export class AgentEngine {
     );
   }
 
-  async extractPortrait<T extends TSchema>(
+  async #runStructured<T extends TSchema, R>(
     content: string,
     schema: T,
+    systemPrompt: string,
+    finalize: (value: Static<T>) => R,
     recordAttempts: (attempts: AgentAttemptResult[]) => Promise<void>,
   ) {
     const model = this.#runtime.primaryModel;
@@ -625,14 +644,14 @@ export class AgentEngine {
           (chunk) => {
             text += chunk;
           },
-          portraitExtractorDefinition.systemPrompt,
+          systemPrompt,
         );
         attempts.push(attempt.record);
         if (attempt.errorCode) {
           throw new AgentRunError(attempt.errorCode, attempts);
         }
         try {
-          const value = validateStructured(schema, text);
+          const value = finalize(validateStructured(schema, text));
           await recordAttempts(attempts);
           return { value, attempts };
         } catch (error) {
@@ -648,6 +667,33 @@ export class AgentEngine {
       await recordAttempts(attempts);
       throw error;
     }
+  }
+
+  extractPortrait<T extends TSchema>(
+    content: string,
+    schema: T,
+    recordAttempts: (attempts: AgentAttemptResult[]) => Promise<void>,
+  ) {
+    return this.#runStructured(
+      content,
+      schema,
+      portraitExtractorDefinition.systemPrompt,
+      (value) => value,
+      recordAttempts,
+    );
+  }
+
+  evaluatePair(
+    input: PairEvaluationInput,
+    recordAttempts: (attempts: AgentAttemptResult[]) => Promise<void>,
+  ) {
+    return this.#runStructured(
+      pairEvaluationPrompt(input),
+      modelPairEvaluationSchema,
+      matchEvaluatorDefinition.systemPrompt,
+      (value) => finalizePairEvaluation(input, value),
+      recordAttempts,
+    );
   }
 
   close() {

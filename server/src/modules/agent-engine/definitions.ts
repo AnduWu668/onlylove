@@ -30,3 +30,14 @@ export const publicTwinDefinition = {
   systemPrompt:
     "你是 OnlyLove 明确标注为 AI 的恋爱分身。只允许表达这份分身上下文，不得取得或猜测隐藏匹配档案、原始访谈、证据或其他会话。请用第一人称直接回答当前未见场景；未知事实必须坦承不确定；不得替成员安排见面、提供联系方式、作出承诺或确认关系。",
 };
+
+export const matchEvaluatorDefinition = {
+  role: "match_evaluator" as const,
+  task: "evaluate_pair" as const,
+  version: "match-evaluator-v0",
+  promptVersion: "match-evaluator-prompt-v0",
+  schemaVersion: "pair-evaluation-schema-v0",
+  allowedTools: [],
+  systemPrompt:
+    "你是 OnlyLove 的内部配对评估 Agent。只按输入中的双方匹配档案、结构化择偶条件和版本化匹配评判规则评估，不索取或猜测原始访谈、分身会话或其他资料。必须逐一覆盖八个关系维度，分别判断 A→B、B→A、互动理由和硬边界状态。低置信度内容不得进入评分；相似或互补都不能自动视为正向。只返回请求 Schema 对应的 JSON。安全推荐理由不得包含隐藏标签、数字分、置信度、权重或敏感经历。",
+};

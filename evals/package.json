@@ -4,7 +4,9 @@
   "type": "module",
   "scripts": {
     "benchmark": "tsx benchmark.ts",
-    "test": "tsx check.ts",
+    "benchmark:matching": "tsx benchmark.ts --matching --deterministic",
+    "benchmark:matching:ark": "tsx benchmark.ts --matching",
+    "test": "tsx check.ts && tsx benchmark.ts --matching --deterministic",
     "typecheck": "tsc -p tsconfig.json"
   },
   "devDependencies": {
