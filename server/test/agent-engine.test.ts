@@ -154,6 +154,27 @@ describe("Agent Engine continueInterview seam", () => {
     engine.close();
   });
 
+  it("retries an unpersisted twin prediction after a partial model failure", async () => {
+    const engine = new AgentEngine({
+      provider: "deterministic-fake",
+      model: "primary-v1",
+      attempts: [
+        { partialText: "未保存的半句话", error: "connection closed" },
+        { reply: "重新生成的完整预测。" },
+      ],
+    });
+
+    const result = await engine.replyAsTwin(
+      "# 恋爱分身上下文\n会先沟通再决定。",
+      "伴侣想去外地工作，你会怎样回应？",
+      async () => undefined,
+    );
+
+    expect(result.text).toBe("重新生成的完整预测。");
+    expect(result.attempts).toHaveLength(2);
+    engine.close();
+  });
+
   it("repairs invalid structured output once with the same model", async () => {
     const engine = new AgentEngine({
       provider: "deterministic-fake",
@@ -239,6 +260,38 @@ describe("Agent Engine continueInterview seam", () => {
     );
 
     expect(result.text).toBe("已读取最小上下文。");
+    engine.close();
+  });
+
+  it("answers an unseen scenario from only the published twin context", async () => {
+    const engine = new AgentEngine({
+      provider: "deterministic-fake",
+      model: "twin-v1",
+      attempts: [
+        {
+          reply: "我会先确认两个人各自不能放弃的部分，再讨论可逆的尝试。",
+          promptIncludes: ["伴侣收到外地工作机会"],
+          systemPromptIncludes: ["只允许表达这份分身上下文", "长期计划需要共同决定"],
+        },
+      ],
+    });
+
+    let recorded = 0;
+    const result = await engine.replyAsTwin(
+      "长期计划需要共同决定",
+      "伴侣收到外地工作机会，你会怎样一起决定？",
+      async (attempts) => {
+        recorded = attempts.length;
+      },
+    );
+
+    expect(result.text).toContain("可逆的尝试");
+    expect(recorded).toBe(1);
+    expect(engine.twinDefinition).toMatchObject({
+      role: "public_twin",
+      task: "reply_as_twin",
+      version: "public-twin-v1",
+    });
     engine.close();
   });
 });

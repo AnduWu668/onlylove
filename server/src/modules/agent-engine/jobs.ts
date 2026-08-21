@@ -1,10 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, inArray, isNull, lte, or } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lt, lte, or } from "drizzle-orm";
 import type { Database, DatabaseTransaction } from "../../db.js";
+import { conversationMessages } from "../conversations/schema.js";
 import type { AgentAttemptResult } from "./engine.js";
 import { agentJobs, agentRuns } from "./schema.js";
 
 export type AgentJob = typeof agentJobs.$inferSelect;
+const MAX_JOB_ATTEMPTS = 3;
+type TaskAdmin = { id: string; role: "admin" | "super_admin" };
 
 export class AgentJobs {
   constructor(private readonly db: Database) {}
@@ -65,6 +68,105 @@ export class AgentJobs {
     });
   }
 
+  enqueueTwinCalibration(values: {
+    transaction: DatabaseTransaction;
+    memberId: string;
+    profileVersionId: string;
+    calibrationScenarioId: string;
+    definition: {
+      role: "public_twin";
+      task: "reply_as_twin";
+      version: string;
+      promptVersion: string;
+      schemaVersion: null;
+    };
+    createdAt: Date;
+  }) {
+    return this.create(values.transaction, {
+      id: randomUUID(),
+      role: values.definition.role,
+      task: values.definition.task,
+      definitionVersion: values.definition.version,
+      promptVersion: values.definition.promptVersion,
+      schemaVersion: values.definition.schemaVersion,
+      memberId: values.memberId,
+      profileVersionId: values.profileVersionId,
+      calibrationScenarioId: values.calibrationScenarioId,
+      status: "pending",
+      retryCount: 0,
+      switchedModel: false,
+      quotaRefunded: false,
+      createdAt: values.createdAt,
+    });
+  }
+
+  calibrationJobsForVersion(profileVersionId: string) {
+    return this.db
+      .select()
+      .from(agentJobs)
+      .where(
+        and(
+          eq(agentJobs.profileVersionId, profileVersionId),
+          eq(agentJobs.task, "reply_as_twin"),
+        ),
+      );
+  }
+
+  async retryFailed(id: string, actor: TaskAdmin) {
+    return (
+      await this.db
+        .update(agentJobs)
+        .set({
+          status: "pending",
+          retryCount: 0,
+          error: null,
+          leaseToken: null,
+          leaseExpiresAt: null,
+          completedAt: null,
+        })
+        .where(
+          and(
+            eq(agentJobs.id, id),
+            eq(agentJobs.status, "failed"),
+            eq(agentJobs.retryCount, MAX_JOB_ATTEMPTS),
+            actor.role === "super_admin"
+              ? undefined
+              : eq(agentJobs.assignedAdminId, actor.id),
+          ),
+        )
+        .returning()
+    )[0];
+  }
+
+  async nextCalibrationJob(at: Date) {
+    return (
+      await this.db
+        .select()
+        .from(agentJobs)
+        .where(
+          and(
+            eq(agentJobs.task, "reply_as_twin"),
+            or(
+              eq(agentJobs.status, "pending"),
+              and(
+                eq(agentJobs.status, "failed"),
+                lt(agentJobs.retryCount, MAX_JOB_ATTEMPTS),
+              ),
+              and(
+                eq(agentJobs.status, "running"),
+                or(
+                  isNull(agentJobs.leaseExpiresAt),
+                  lte(agentJobs.leaseExpiresAt, at),
+                ),
+              ),
+            ),
+          ),
+        )
+        .orderBy(asc(agentJobs.createdAt))
+        .limit(1)
+    )[0];
+  }
+
   async findForMember(id: string, memberId: string) {
     return (
       await this.db
@@ -99,7 +201,30 @@ export class AgentJobs {
     );
   }
 
-  async claim(id: string, startedAt: Date, leaseExpiresAt: Date) {
+  async latestForConversation(
+    conversationId: string,
+    database: Database | DatabaseTransaction = this.db,
+  ) {
+    return (
+      await database
+        .select({ job: agentJobs })
+        .from(agentJobs)
+        .innerJoin(
+          conversationMessages,
+          eq(conversationMessages.id, agentJobs.inputMessageId),
+        )
+        .where(eq(agentJobs.conversationId, conversationId))
+        .orderBy(desc(conversationMessages.sequence))
+        .limit(1)
+    )[0]?.job;
+  }
+
+  async claim(
+    id: string,
+    startedAt: Date,
+    leaseExpiresAt: Date,
+    options: { retryFailed?: boolean } = {},
+  ) {
     const leaseToken = randomUUID();
     return (
       await this.db
@@ -110,6 +235,12 @@ export class AgentJobs {
             eq(agentJobs.id, id),
             or(
               eq(agentJobs.status, "pending"),
+              options.retryFailed
+                ? and(
+                    eq(agentJobs.status, "failed"),
+                    lt(agentJobs.retryCount, MAX_JOB_ATTEMPTS),
+                  )
+                : undefined,
               and(
                 eq(agentJobs.status, "running"),
                 or(
@@ -177,14 +308,13 @@ export class AgentJobs {
           ...attempt,
           createdAt: at,
         })),
-      )
-      .onConflictDoNothing();
+      );
   }
 
   async complete(
     transaction: DatabaseTransaction,
     job: AgentJob,
-    outputMessageId: string,
+    outputMessageId: string | null,
     retryCount: number,
     switchedModel: boolean,
     completedAt: Date,
@@ -232,7 +362,7 @@ export class AgentJobs {
             error: code,
             retryCount,
             switchedModel,
-            quotaRefunded: refundQuota,
+            quotaRefunded: job.quotaRefunded || refundQuota,
             leaseToken: null,
             leaseExpiresAt: null,
             completedAt: failedAt,
@@ -249,10 +379,56 @@ export class AgentJobs {
     );
   }
 
-  listRuns() {
+  async listRuns(actor: TaskAdmin) {
+    const rows = await this.db
+      .select({
+        run: agentRuns,
+        profileVersionId: agentJobs.profileVersionId,
+        calibrationScenarioId: agentJobs.calibrationScenarioId,
+      })
+      .from(agentRuns)
+      .innerJoin(agentJobs, eq(agentJobs.id, agentRuns.jobId))
+      .where(
+        actor.role === "super_admin"
+          ? undefined
+          : eq(agentJobs.assignedAdminId, actor.id),
+      )
+      .orderBy(desc(agentRuns.createdAt), asc(agentRuns.retryCount));
+    return rows.map(({ run, ...jobReferences }) => ({
+      ...run,
+      ...jobReferences,
+    }));
+  }
+
+  async listFailed(actor: TaskAdmin) {
     return this.db
       .select()
-      .from(agentRuns)
-      .orderBy(desc(agentRuns.createdAt), asc(agentRuns.retryCount));
+      .from(agentJobs)
+      .where(
+        and(
+          eq(agentJobs.status, "failed"),
+          eq(agentJobs.retryCount, MAX_JOB_ATTEMPTS),
+          actor.role === "super_admin"
+            ? undefined
+            : eq(agentJobs.assignedAdminId, actor.id),
+        ),
+      )
+      .orderBy(desc(agentJobs.completedAt));
+  }
+
+  async assignFailed(id: string, adminId: string) {
+    return (
+      await this.db
+        .update(agentJobs)
+        .set({ assignedAdminId: adminId })
+        .where(
+          and(
+            eq(agentJobs.id, id),
+            eq(agentJobs.status, "failed"),
+            eq(agentJobs.retryCount, MAX_JOB_ATTEMPTS),
+          ),
+        )
+        .returning()
+    )[0];
   }
 }

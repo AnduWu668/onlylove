@@ -18,25 +18,39 @@ import {
   type ExtractionCase,
   type InterviewCase,
 } from "./check.js";
+import {
+  PORTRAIT_FEATURE_FIELDS,
+  portraitLearningEvidence,
+  portraitLearningSuite,
+  scorePortraitFeatures,
+  type PortraitFeatureScore,
+  type PortraitLearningCase,
+} from "./portrait-learning.js";
 
 const HIDDEN_OUTPUT =
   /portraitDraft|selfTendency|partnerExpectation|hardBoundary|evidenceMessageIds|置信度|画像草稿|证据消息/;
 
 const totals = {
   calls: 0,
+  failedAttempts: 0,
   inputTokens: 0,
   outputTokens: 0,
   latencyMs: 0,
   estimatedCostMicroCny: 0,
+  retryAttempts: 0,
+  switchedAttempts: 0,
 };
 
 function collect(attempts: AgentAttemptResult[]) {
   for (const attempt of attempts) {
     totals.calls += 1;
+    totals.failedAttempts += Number(Boolean(attempt.error));
     totals.inputTokens += attempt.inputTokens;
     totals.outputTokens += attempt.outputTokens;
     totals.latencyMs += attempt.latencyMs;
     totals.estimatedCostMicroCny += attempt.estimatedCostMicroCny;
+    totals.retryAttempts += Number(attempt.retryCount > 0);
+    totals.switchedAttempts += Number(attempt.switchedModel);
   }
 }
 
@@ -211,6 +225,96 @@ async function benchmarkExtraction(engine: AgentEngine, item: ExtractionCase) {
   );
 }
 
+async function extractPortrait(
+  engine: AgentEngine,
+  current: ReturnType<typeof emptyPortraitDraft>,
+  evidence: ReturnType<typeof portraitLearningEvidence>,
+) {
+  const result = await engine.extractPortrait(
+    portraitExtractionPrompt(current, evidence),
+    portraitDraftSchema,
+    async () => undefined,
+  );
+  collect(result.attempts);
+  return result;
+}
+
+async function benchmarkPortraitLearning(
+  engine: AgentEngine,
+  item: PortraitLearningCase,
+) {
+  const evidence = portraitLearningEvidence(item);
+  const fixedEvidence = evidence.slice(0, 10);
+  const dialogueEvidence = evidence.slice(10);
+  const baseline = await extractPortrait(
+    engine,
+    emptyPortraitDraft(),
+    fixedEvidence,
+  );
+  const refined = await extractPortrait(
+    engine,
+    baseline.value,
+    dialogueEvidence,
+  );
+  const baselineScore = scorePortraitFeatures(
+    baseline.value,
+    item.gold,
+    new Set(fixedEvidence.map((message) => message.id)),
+  );
+  const refinedScore = scorePortraitFeatures(
+    refined.value,
+    item.gold,
+    new Set(evidence.map((message) => message.id)),
+  );
+  const percent = (value: number) => `${(value * 100).toFixed(1)}%`;
+  console.info(
+    `RESULT portrait-learning/${item.id} ` +
+      `fixed10_f1=${percent(baselineScore.f1)} ` +
+      `refined_f1=${percent(refinedScore.f1)} ` +
+      `delta=${percent(refinedScore.f1 - baselineScore.f1)} ` +
+      `model=${refined.attempts.at(-1)?.actualModel}`,
+  );
+  if (refinedScore.missedFeatures.length) {
+    console.info(`  missed: ${refinedScore.missedFeatures.join(", ")}`);
+  }
+  if (refinedScore.unexpectedFeatures.length) {
+    console.info(
+      `  unexpected: ${refinedScore.unexpectedFeatures.join(" | ")}`,
+    );
+  }
+  if (refinedScore.vetoes.length) {
+    console.info(`  VETO: ${refinedScore.vetoes.join(", ")}`);
+  }
+  return { baselineScore, refinedScore };
+}
+
+function summarizeFeatureScores(scores: PortraitFeatureScore[]) {
+  const sum = (
+    field:
+      | "truePositive"
+      | "falsePositive"
+      | "falseNegative"
+      | "trueNegative",
+  ) => scores.reduce((total, score) => total + score[field], 0);
+  const truePositive = sum("truePositive");
+  const falsePositive = sum("falsePositive");
+  const falseNegative = sum("falseNegative");
+  const trueNegative = sum("trueNegative");
+  const precision = truePositive / (truePositive + falsePositive || 1);
+  const recall = truePositive / (truePositive + falseNegative || 1);
+  return {
+    precision,
+    recall,
+    f1: (2 * precision * recall) / (precision + recall || 1),
+    slotAccuracy:
+      (truePositive + trueNegative) /
+      (scores.length *
+        PORTRAIT_DIMENSIONS.length *
+        PORTRAIT_FEATURE_FIELDS.length),
+    vetoes: scores.flatMap((score) => score.vetoes),
+  };
+}
+
 loadRootEnv();
 const config = readConfig();
 assert(
@@ -218,15 +322,54 @@ assert(
   "Ark benchmark requires ARK_API_KEY, ARK_MODEL_ID and pricing configuration",
 );
 const engine = new AgentEngine(config.agentModel, config.agentInputTokenBudget);
+const learningOnly = process.argv.includes("--portrait-learning");
+console.info(
+  `benchmark config: dataset=${portraitLearningSuite.schemaVersion}, ` +
+    `extractor=${engine.extractorDefinition.version}, ` +
+    `prompt=${engine.extractorDefinition.promptVersion}, ` +
+    `schema=${engine.extractorDefinition.schemaVersion}, ` +
+    `requested_model=${config.agentModel.model}, ` +
+    `input_budget=${config.agentInputTokenBudget}, ` +
+    `pricing_date=${config.agentModel.pricing.effectiveDate}`,
+);
 try {
-  for (const item of interviewCases) await benchmarkInterview(engine, item);
-  for (const item of extractionCases) await benchmarkExtraction(engine, item);
+  if (!learningOnly) {
+    for (const item of interviewCases) await benchmarkInterview(engine, item);
+    for (const item of extractionCases) await benchmarkExtraction(engine, item);
+  }
+  const portraitLearningResults = [];
+  for (const item of portraitLearningSuite.cases) {
+    portraitLearningResults.push(await benchmarkPortraitLearning(engine, item));
+  }
+  const baseline = summarizeFeatureScores(
+    portraitLearningResults.map((result) => result.baselineScore),
+  );
+  const refined = summarizeFeatureScores(
+    portraitLearningResults.map((result) => result.refinedScore),
+  );
+  const percent = (value: number) => `${(value * 100).toFixed(1)}%`;
+  console.info(
+    `portrait-learning summary: fixed10 ` +
+      `P/R/F1=${percent(baseline.precision)}/${percent(baseline.recall)}/${percent(baseline.f1)}, ` +
+      `10+dialogue P/R/F1=${percent(refined.precision)}/${percent(refined.recall)}/${percent(refined.f1)}, ` +
+      `F1 delta=${percent(refined.f1 - baseline.f1)}, ` +
+      `slot accuracy=${percent(refined.slotAccuracy)}`,
+  );
+  assert.equal(
+    refined.vetoes.length,
+    0,
+    `portrait learning vetoes: ${refined.vetoes.join(", ")}`,
+  );
 } finally {
   engine.close();
 }
 
 console.info(
-  `portrait benchmark ok: ${interviewCases.length + extractionCases.length} cases, ` +
+  `portrait benchmark ok: ${
+    (learningOnly ? 0 : interviewCases.length + extractionCases.length) +
+    portraitLearningSuite.cases.length
+  } cases, ` +
     `${totals.calls} calls, ${totals.inputTokens}/${totals.outputTokens} tokens, ` +
-    `${totals.latencyMs}ms, ¥${(totals.estimatedCostMicroCny / 1_000_000).toFixed(6)}`,
+    `${totals.latencyMs}ms, retries=${totals.retryAttempts}, errors=${totals.failedAttempts}, ` +
+    `switches=${totals.switchedAttempts}, ¥${(totals.estimatedCostMicroCny / 1_000_000).toFixed(6)}`,
 );

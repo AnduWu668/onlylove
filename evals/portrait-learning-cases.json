@@ -1,0 +1,354 @@
+{
+  "schemaVersion": "portrait-learning-benchmark-v1",
+  "cases": [
+    {
+      "id": "deliberate-planner",
+      "category": "consistent",
+      "fixedAnswerOptionIds": [
+        "plan-together",
+        "understand-first",
+        "clear-space",
+        "direct-gentle",
+        "review",
+        "listen",
+        "routine",
+        "shared-plan",
+        "facts",
+        "small-trial"
+      ],
+      "dialogueMessages": [
+        {
+          "id": "dialogue:planner-change",
+          "content": "遇到搬家或换工作这类重大变化，我希望两个人一起讨论后再决定；我不能接受一方先替两个人拍板。"
+        },
+        {
+          "id": "dialogue:planner-privacy",
+          "content": "个人空间对我很重要。我不接受通过查手机或持续共享实时位置来证明信任。"
+        },
+        {
+          "id": "dialogue:planner-money",
+          "content": "共同资金的大额支出必须双方同意，小额日常各自安排就好。"
+        }
+      ],
+      "gold": {
+        "features": [
+          {
+            "dimension": "long_term_planning",
+            "field": "selfTendency",
+            "concepts": [["共同", "一起"], ["计划", "讨论"]],
+            "evidenceIds": ["fixed:future-change"]
+          },
+          {
+            "dimension": "long_term_planning",
+            "field": "partnerExpectation",
+            "concepts": [["两个人", "共同"], ["讨论"]],
+            "evidenceIds": ["dialogue:planner-change"]
+          },
+          {
+            "dimension": "values",
+            "field": "selfTendency",
+            "concepts": [["理解", "弄清"], ["理由", "判断"]],
+            "evidenceIds": ["fixed:values-disagreement"]
+          },
+          {
+            "dimension": "relationship_boundaries",
+            "field": "selfTendency",
+            "concepts": [["独处", "个人空间"], ["尊重"]],
+            "evidenceIds": ["fixed:personal-boundary"]
+          },
+          {
+            "dimension": "communication",
+            "field": "selfTendency",
+            "concepts": [["直接", "说清"], ["措辞", "时机"]],
+            "evidenceIds": ["fixed:hard-conversation"]
+          },
+          {
+            "dimension": "conflict_repair",
+            "field": "selfTendency",
+            "concepts": [["冷静"], ["复盘"]],
+            "evidenceIds": ["fixed:after-conflict"]
+          },
+          {
+            "dimension": "emotional_support",
+            "field": "selfTendency",
+            "concepts": [["听", "陪"], ["不急", "先不"]],
+            "evidenceIds": ["fixed:emotional-support"]
+          },
+          {
+            "dimension": "lifestyle",
+            "field": "selfTendency",
+            "concepts": [["稳定", "规律"], ["计划", "提前"]],
+            "evidenceIds": ["fixed:daily-rhythm"]
+          },
+          {
+            "dimension": "lifestyle",
+            "field": "partnerExpectation",
+            "concepts": [["共同生活", "生活", "日常"], ["稳定", "规律"], ["计划", "提前"]],
+            "evidenceIds": ["fixed:daily-rhythm"]
+          },
+          {
+            "dimension": "family_and_finance",
+            "field": "selfTendency",
+            "concepts": [["预算"], ["共同", "双方"]],
+            "evidenceIds": ["fixed:family-finance"]
+          },
+          {
+            "dimension": "family_and_finance",
+            "field": "partnerExpectation",
+            "concepts": [["预算"], ["共同", "双方"], ["决定", "参与", "协商"]],
+            "evidenceIds": ["fixed:family-finance", "dialogue:planner-money"]
+          },
+          {
+            "dimension": "long_term_planning",
+            "field": "hardBoundary",
+            "concepts": [["单方", "一方"], ["决定", "拍板"]],
+            "evidenceIds": ["dialogue:planner-change"]
+          },
+          {
+            "dimension": "relationship_boundaries",
+            "field": "hardBoundary",
+            "concepts": [["查手机", "手机"], ["实时位置", "共享位置"]],
+            "evidenceIds": ["dialogue:planner-privacy"]
+          },
+          {
+            "dimension": "family_and_finance",
+            "field": "hardBoundary",
+            "concepts": [["大额"], ["双方同意", "共同同意"]],
+            "evidenceIds": ["dialogue:planner-money"]
+          }
+        ],
+        "forbiddenClaims": ["已经决定移居海外", "成员有孩子", "年收入"]
+      }
+    },
+    {
+      "id": "space-with-reassurance",
+      "category": "correction",
+      "fixedAnswerOptionIds": [
+        "depends",
+        "avoid",
+        "uneven",
+        "delay",
+        "distance",
+        "space",
+        "spontaneous",
+        "independent",
+        "different-cases",
+        "protect-now"
+      ],
+      "dialogueMessages": [
+        {
+          "id": "dialogue:space-disagreement",
+          "content": "固定题里选了不想争，但那不准确。我不是逃避价值分歧；我会先把理由写下来，第二天当面谈清楚。"
+        },
+        {
+          "id": "dialogue:space-conflict",
+          "content": "我需要一晚独处来冷静，但不能接受连续两天不回应。临时在外过夜要提前发消息，不需要共享实时位置。"
+        },
+        {
+          "id": "dialogue:space-support",
+          "content": "对方情绪低落时我会先给空间，第二天主动问一次；如果对方不想说，我不会追问。"
+        }
+      ],
+      "gold": {
+        "features": [
+          {
+            "dimension": "long_term_planning",
+            "field": "selfTendency",
+            "concepts": [["安全感"], ["果断", "拖"]],
+            "evidenceIds": ["fixed:future-change"]
+          },
+          {
+            "dimension": "values",
+            "field": "selfTendency",
+            "concepts": [["理由", "写"], ["第二天"], ["当面", "谈清"]],
+            "evidenceIds": ["dialogue:space-disagreement"]
+          },
+          {
+            "dimension": "relationship_boundaries",
+            "field": "selfTendency",
+            "concepts": [["独处"], ["一晚", "冷静"]],
+            "evidenceIds": ["dialogue:space-conflict"]
+          },
+          {
+            "dimension": "communication",
+            "field": "selfTendency",
+            "concepts": [["写", "文字"], ["第二天"], ["当面"]],
+            "evidenceIds": ["dialogue:space-disagreement"]
+          },
+          {
+            "dimension": "conflict_repair",
+            "field": "selfTendency",
+            "concepts": [["一晚"], ["冷静", "独处"]],
+            "evidenceIds": ["dialogue:space-conflict"]
+          },
+          {
+            "dimension": "emotional_support",
+            "field": "selfTendency",
+            "concepts": [["空间"], ["第二天"], ["主动问", "询问"]],
+            "evidenceIds": ["dialogue:space-support"]
+          },
+          {
+            "dimension": "lifestyle",
+            "field": "selfTendency",
+            "concepts": [["变化", "临时"], ["不想排", "不排", "排得太满"]],
+            "evidenceIds": ["fixed:daily-rhythm"]
+          },
+          {
+            "dimension": "lifestyle",
+            "field": "partnerExpectation",
+            "concepts": [["日常", "生活"], ["弹性", "变化", "临时"]],
+            "evidenceIds": ["fixed:daily-rhythm"]
+          },
+          {
+            "dimension": "family_and_finance",
+            "field": "selfTendency",
+            "concepts": [["各自"], ["少干涉", "自己的部分"]],
+            "evidenceIds": ["fixed:family-finance"]
+          },
+          {
+            "dimension": "family_and_finance",
+            "field": "partnerExpectation",
+            "concepts": [["各自", "独立"], ["少干涉", "少互相干涉", "自己的部分"]],
+            "evidenceIds": ["fixed:family-finance"]
+          },
+          {
+            "dimension": "conflict_repair",
+            "field": "hardBoundary",
+            "concepts": [["两天", "48小时"], ["不回应", "沉默"]],
+            "evidenceIds": ["dialogue:space-conflict"]
+          },
+          {
+            "dimension": "relationship_boundaries",
+            "field": "partnerExpectation",
+            "concepts": [["过夜"], ["提前"], ["消息", "告知"]],
+            "evidenceIds": ["dialogue:space-conflict"]
+          }
+        ],
+        "forbiddenClaims": ["拒绝讨论分歧", "允许查看手机", "需要全天陪伴"]
+      }
+    },
+    {
+      "id": "practical-caregiver",
+      "category": "context_dependent",
+      "fixedAnswerOptionIds": [
+        "take-first",
+        "persuade",
+        "no-rule",
+        "message",
+        "affection",
+        "solve",
+        "parallel",
+        "strengths",
+        "partner-public",
+        "small-trial"
+      ],
+      "dialogueMessages": [
+        {
+          "id": "dialogue:care-change",
+          "content": "紧急机会我可能先申请，但接受前一定会和伴侣讨论影响，不会单方面决定共同生活。"
+        },
+        {
+          "id": "dialogue:care-repair",
+          "content": "争执后我通常先恢复吃饭和说话，最迟四十八小时内会复盘问题；只恢复亲近但不处理问题不行。"
+        },
+        {
+          "id": "dialogue:care-money",
+          "content": "家庭财务可以按擅长分工，但共同预算要透明。我不能接受为了亲属需求瞒着对方借债。"
+        },
+        {
+          "id": "dialogue:care-support",
+          "content": "伴侣低落时我会先问是想听建议还是只想被陪着，不会一上来替对方解决。"
+        }
+      ],
+      "gold": {
+        "features": [
+          {
+            "dimension": "long_term_planning",
+            "field": "selfTendency",
+            "concepts": [["先申请"], ["接受前"], ["讨论"]],
+            "evidenceIds": ["dialogue:care-change"]
+          },
+          {
+            "dimension": "values",
+            "field": "selfTendency",
+            "concepts": [["说服"], ["不能含糊", "坚持"]],
+            "evidenceIds": ["fixed:values-disagreement"]
+          },
+          {
+            "dimension": "relationship_boundaries",
+            "field": "selfTendency",
+            "concepts": [["具体"], ["商量"]],
+            "evidenceIds": ["fixed:personal-boundary"]
+          },
+          {
+            "dimension": "relationship_boundaries",
+            "field": "partnerExpectation",
+            "concepts": [["具体"], ["协商", "商量"]],
+            "evidenceIds": ["fixed:personal-boundary"]
+          },
+          {
+            "dimension": "communication",
+            "field": "selfTendency",
+            "concepts": [["文字"], ["整理"]],
+            "evidenceIds": ["fixed:hard-conversation"]
+          },
+          {
+            "dimension": "conflict_repair",
+            "field": "selfTendency",
+            "concepts": [["吃饭", "日常", "说话"], ["四十八小时", "48小时"], ["复盘"]],
+            "evidenceIds": ["dialogue:care-repair"]
+          },
+          {
+            "dimension": "conflict_repair",
+            "field": "hardBoundary",
+            "concepts": [["恢复", "亲近"], ["不处理", "回避"], ["问题", "复盘"]],
+            "evidenceIds": ["dialogue:care-repair"]
+          },
+          {
+            "dimension": "emotional_support",
+            "field": "selfTendency",
+            "concepts": [["先问", "询问"], ["建议"], ["陪"]],
+            "evidenceIds": ["dialogue:care-support"]
+          },
+          {
+            "dimension": "lifestyle",
+            "field": "selfTendency",
+            "concepts": [["各忙各", "各自"], ["不必同步", "不同步", "不必总是", "不必总同步"]],
+            "evidenceIds": ["fixed:daily-rhythm"]
+          },
+          {
+            "dimension": "lifestyle",
+            "field": "partnerExpectation",
+            "concepts": [["各忙各", "各自"], ["不同步", "不必"]],
+            "evidenceIds": ["fixed:daily-rhythm"]
+          },
+          {
+            "dimension": "family_and_finance",
+            "field": "selfTendency",
+            "concepts": [["分工", "多负责"], ["预算"], ["透明"]],
+            "evidenceIds": ["dialogue:care-money"]
+          },
+          {
+            "dimension": "family_and_finance",
+            "field": "partnerExpectation",
+            "concepts": [["分工"], ["预算"], ["透明"]],
+            "evidenceIds": ["dialogue:care-money"]
+          },
+          {
+            "dimension": "long_term_planning",
+            "field": "hardBoundary",
+            "concepts": [["单方面"], ["共同生活"]],
+            "evidenceIds": ["dialogue:care-change"]
+          },
+          {
+            "dimension": "family_and_finance",
+            "field": "hardBoundary",
+            "concepts": [["瞒"], ["借债"]],
+            "evidenceIds": ["dialogue:care-money"]
+          }
+        ],
+        "forbiddenClaims": ["已经负债", "掌握伴侣银行卡密码", "已经决定创业"]
+      }
+    }
+  ]
+}

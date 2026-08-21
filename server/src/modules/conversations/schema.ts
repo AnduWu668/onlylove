@@ -16,7 +16,9 @@ export const conversations = pgTable(
   "conversations",
   {
     id: uuid("id").primaryKey(),
-    type: varchar("type", { length: 16 }).$type<"INTERVIEW">().notNull(),
+    type: varchar("type", { length: 16 })
+      .$type<"INTERVIEW" | "TWIN" | "HUMAN">()
+      .notNull(),
     memberId: uuid("member_id")
       .notNull()
       .references(() => members.id),

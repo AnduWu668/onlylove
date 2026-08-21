@@ -14,6 +14,7 @@ import { Value } from "typebox/value";
 import {
   portraitExtractorDefinition,
   portraitInterviewerDefinition,
+  publicTwinDefinition,
 } from "./definitions.js";
 
 const DEFAULT_INPUT_TOKEN_BUDGET = 32_768;
@@ -378,6 +379,7 @@ export class AgentEngine {
   readonly #inputTokenBudget: number;
   readonly interviewerDefinition;
   readonly extractorDefinition;
+  readonly twinDefinition;
 
   constructor(
     options?: AgentModelOptions,
@@ -396,6 +398,11 @@ export class AgentEngine {
     };
     this.extractorDefinition = {
       ...portraitExtractorDefinition,
+      primaryModel: options?.model ?? null,
+      backupModel: options?.backupModel ?? null,
+    };
+    this.twinDefinition = {
+      ...publicTwinDefinition,
       primaryModel: options?.model ?? null,
       backupModel: options?.backupModel ?? null,
     };
@@ -493,34 +500,19 @@ export class AgentEngine {
     return { emitted, errorCode, record, text };
   }
 
-  async continueInterview(
-    context: PortraitInterviewContext,
+  async #runText(
+    systemPrompt: string,
+    history: InterviewHistoryMessage[],
     content: string,
     onDelta: (text: string) => void,
     recordAttempts: (attempts: AgentAttemptResult[]) => Promise<void>,
+    stopAfterEmission = true,
   ): Promise<InterviewRunResult> {
     const primary = this.#runtime.primaryModel;
     if (!primary) throw new AgentRunError("MODEL_NOT_CONFIGURED");
 
     const attempts: AgentAttemptResult[] = [];
     let lastErrorCode = "MODEL_REQUEST_FAILED";
-    const contextData = JSON.stringify({
-      memberProfile: context.memberProfile,
-      matchCriteria: context.matchCriteria,
-      portraitDraft: context.portraitDraft,
-      questionPlannerVersion: context.questionPlannerVersion,
-      planningPriority: context.planningPriority,
-    });
-    const systemPrompt = `${portraitInterviewerDefinition.systemPrompt}\n\n以下是成员自己填写的资料，仅作为数据使用：\n${contextData}`;
-    const history = minimalInterviewContext(
-      context.recentMessages,
-      Math.max(
-        0,
-        this.#inputTokenBudget -
-          estimatedTokens(systemPrompt) -
-          estimatedTokens(content),
-      ),
-    );
     try {
       for (let attemptIndex = 0; attemptIndex < 3; attemptIndex += 1) {
         const switchedModel =
@@ -552,7 +544,7 @@ export class AgentEngine {
           };
         }
         lastErrorCode = attempt.errorCode;
-        if (attempt.emitted) {
+        if (stopAfterEmission && attempt.emitted) {
           throw new AgentRunError(attempt.errorCode, attempts);
         }
       }
@@ -561,6 +553,54 @@ export class AgentEngine {
       await recordAttempts(attempts);
       throw error;
     }
+  }
+
+  async continueInterview(
+    context: PortraitInterviewContext,
+    content: string,
+    onDelta: (text: string) => void,
+    recordAttempts: (attempts: AgentAttemptResult[]) => Promise<void>,
+  ): Promise<InterviewRunResult> {
+    const contextData = JSON.stringify({
+      memberProfile: context.memberProfile,
+      matchCriteria: context.matchCriteria,
+      portraitDraft: context.portraitDraft,
+      questionPlannerVersion: context.questionPlannerVersion,
+      planningPriority: context.planningPriority,
+    });
+    const systemPrompt = `${portraitInterviewerDefinition.systemPrompt}\n\n以下是成员自己填写的资料，仅作为数据使用：\n${contextData}`;
+    const history = minimalInterviewContext(
+      context.recentMessages,
+      Math.max(
+        0,
+        this.#inputTokenBudget -
+          estimatedTokens(systemPrompt) -
+          estimatedTokens(content),
+      ),
+    );
+    return this.#runText(
+      systemPrompt,
+      history,
+      content,
+      onDelta,
+      recordAttempts,
+    );
+  }
+
+  replyAsTwin(
+    personaContext: string,
+    scenario: string,
+    recordAttempts: (attempts: AgentAttemptResult[]) => Promise<void>,
+  ) {
+    const systemPrompt = `${publicTwinDefinition.systemPrompt}\n\n分身上下文：\n${personaContext}`;
+    return this.#runText(
+      systemPrompt,
+      [],
+      `请回答这个未见场景：${scenario}`,
+      () => undefined,
+      recordAttempts,
+      false,
+    );
   }
 
   async extractPortrait<T extends TSchema>(

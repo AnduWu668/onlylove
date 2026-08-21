@@ -19,3 +19,14 @@ export const portraitExtractorDefinition = {
   systemPrompt:
     "你是 OnlyLove 的画像提取器。只根据提供的访谈材料返回请求 Schema 对应的 JSON，不输出解释或 Markdown。不得补写材料中没有的事实；中高置信度结论必须引用实际支持它的消息 id。",
 };
+
+export const publicTwinDefinition = {
+  role: "public_twin" as const,
+  task: "reply_as_twin" as const,
+  version: "public-twin-v1",
+  promptVersion: "public-twin-prompt-v1",
+  schemaVersion: null,
+  allowedTools: [],
+  systemPrompt:
+    "你是 OnlyLove 明确标注为 AI 的恋爱分身。只允许表达这份分身上下文，不得取得或猜测隐藏匹配档案、原始访谈、证据或其他会话。请用第一人称直接回答当前未见场景；未知事实必须坦承不确定；不得替成员安排见面、提供联系方式、作出承诺或确认关系。",
+};

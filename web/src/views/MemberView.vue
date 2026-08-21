@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, reactive, ref } from "vue";
+import { computed, onMounted, onUnmounted, reactive, ref } from "vue";
 import { useRouter } from "vue-router";
 
 type Gender = "female" | "male" | "";
@@ -50,6 +50,40 @@ interface InterviewMessage {
   content: string;
 }
 
+type CalibrationRating = "like" | "partial" | "unlike";
+
+interface PortraitLifecycleState {
+  status:
+    | "draft"
+    | "generating"
+    | "generation_failed"
+    | "calibrating"
+    | "needs_more_understanding"
+    | "ready_to_publish"
+    | "published";
+  message?: string;
+  submittedVersion: { id: string; version: number } | null;
+  publishedVersion: { id: string; version: number } | null;
+  calibration?: {
+    answered: number;
+    total: number;
+    likeCount: number;
+    criticalFabrication: boolean;
+    canPublish: boolean;
+    scenarios: {
+      id: string;
+      number: number;
+      prompt: string;
+      prediction: string | null;
+      answer: {
+        rating: CalibrationRating;
+        correction: string;
+        criticalFabrication: boolean;
+      } | null;
+    }[];
+  };
+}
+
 const router = useRouter();
 const member = ref<{ email: string; role: string }>();
 const loading = ref(true);
@@ -67,6 +101,12 @@ const interviewSending = ref(false);
 const interviewError = ref("");
 const interviewInput = ref("");
 const portraitInterview = ref<PortraitInterviewState>();
+const portraitLifecycle = ref<PortraitLifecycleState>();
+const portraitActionPending = ref(false);
+const portraitActionError = ref("");
+const calibrationRating = ref<CalibrationRating>();
+const calibrationCorrection = ref("");
+const calibrationCriticalFabrication = ref(false);
 const fixedSelected = ref<string[]>([]);
 const fixedNoneApplies = ref(false);
 const fixedFreeText = ref("");
@@ -75,9 +115,18 @@ const progressFeedback = ref("");
 const quotaRemaining = ref<number>();
 const interviewMessages = ref<InterviewMessage[]>([]);
 let interviewEvents: EventSource | undefined;
+let portraitPoll: number | undefined;
 let interviewRetry:
   | { clientMessageId: string; content: string }
   | undefined;
+let portraitSubmitRequestId: string | undefined;
+const activeCalibrationScenario = computed(() =>
+  portraitLifecycle.value?.status === "calibrating"
+    ? portraitLifecycle.value.calibration?.scenarios.find(
+        (scenario) => scenario.prediction && !scenario.answer,
+      )
+    : undefined,
+);
 const form = reactive({
   nickname: "",
   birthDate: "",
@@ -186,7 +235,10 @@ async function loadProfile() {
 }
 
 onMounted(loadProfile);
-onUnmounted(() => interviewEvents?.close());
+onUnmounted(() => {
+  interviewEvents?.close();
+  if (portraitPoll !== undefined) window.clearTimeout(portraitPoll);
+});
 
 async function signOut() {
   await fetch("/api/session", { method: "DELETE" });
@@ -293,6 +345,38 @@ async function save() {
   }
 }
 
+async function loadPortraitLifecycle() {
+  try {
+    const response = await fetch("/api/member/portrait");
+    const data = response.ok
+      ? await jsonOrUndefined<PortraitLifecycleState>(response)
+      : undefined;
+    if (
+      data &&
+      [
+        "draft",
+        "generating",
+        "generation_failed",
+        "calibrating",
+        "needs_more_understanding",
+        "ready_to_publish",
+        "published",
+      ].includes(data.status)
+    ) {
+      portraitLifecycle.value = data;
+      if (portraitPoll !== undefined) window.clearTimeout(portraitPoll);
+      if (data.status === "generating") {
+        portraitPoll = window.setTimeout(
+          () => void loadPortraitLifecycle(),
+          1_000,
+        );
+      }
+    }
+  } catch {
+    // The interview remains usable when lifecycle state cannot be refreshed.
+  }
+}
+
 async function loadInterview() {
   if (interviewLoaded.value || interviewLoading.value) return;
   interviewLoading.value = true;
@@ -334,6 +418,7 @@ async function loadInterview() {
       interviewSending.value = true;
       listenForInterview(data.autoFollowup.eventsUrl, answer, false);
     }
+    await loadPortraitLifecycle();
     interviewLoaded.value = true;
   } catch {
     interviewError.value = "暂时无法读取访谈记录，请稍后重试。";
@@ -513,6 +598,147 @@ async function sendInterview() {
     interviewSending.value = false;
   }
 }
+
+async function submitPortraitVersion() {
+  if (portraitActionPending.value) return;
+  portraitActionPending.value = true;
+  portraitActionError.value = "";
+  portraitSubmitRequestId ??= crypto.randomUUID();
+  try {
+    const response = await fetch("/api/member/portrait/versions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ clientRequestId: portraitSubmitRequestId }),
+    });
+    const data = await jsonOrUndefined<PortraitLifecycleState & { code?: string }>(
+      response,
+    );
+    if (!response.ok || !data?.status) {
+      portraitActionError.value =
+        data?.code === "PORTRAIT_DRAFT_REQUIRED"
+          ? "先继续聊一会儿，让画像访谈员形成可提交的理解。"
+          : data?.code === "PORTRAIT_DRAFT_UPDATING"
+            ? "画像访谈员正在吸收你的最新纠正，完成后再提交。"
+            : data?.code === "PORTRAIT_DRAFT_UPDATE_FAILED"
+              ? "最新纠正还没有成功吸收，请继续聊一句后再提交。"
+              : "这次理解暂时无法提交，请稍后重试。";
+      return;
+    }
+    portraitLifecycle.value = data;
+    if (data.status === "generating") {
+      portraitPoll = window.setTimeout(() => void loadPortraitLifecycle(), 1_000);
+    }
+    portraitSubmitRequestId = undefined;
+    calibrationRating.value = undefined;
+    calibrationCorrection.value = "";
+    calibrationCriticalFabrication.value = false;
+  } catch {
+    portraitActionError.value = "网络中断，请再次提交；不会重复创建版本。";
+  } finally {
+    portraitActionPending.value = false;
+  }
+}
+
+async function submitCalibrationAnswer() {
+  const scenario = activeCalibrationScenario.value;
+  const rating = calibrationRating.value;
+  if (!scenario || !rating || portraitActionPending.value) return;
+  portraitActionPending.value = true;
+  portraitActionError.value = "";
+  try {
+    const response = await fetch(
+      `/api/member/portrait/calibration/${scenario.id}`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          rating,
+          correction: rating === "like" ? "" : calibrationCorrection.value.trim(),
+          criticalFabrication:
+            rating === "like" ? false : calibrationCriticalFabrication.value,
+        }),
+      },
+    );
+    const data = response.ok
+      ? await jsonOrUndefined<
+          PortraitLifecycleState & {
+            correctionFollowup?: { jobId: string; eventsUrl: string };
+          }
+        >(response)
+      : undefined;
+    if (!data) {
+      portraitActionError.value = "这次判断没有保存，请稍后重试。";
+      return;
+    }
+    portraitLifecycle.value = data;
+    if (data.correctionFollowup) {
+      const answer = reactive<InterviewMessage>({
+        id: `pending-${data.correctionFollowup.jobId}`,
+        role: "agent",
+        content: "",
+      });
+      interviewMessages.value.push(answer);
+      interviewSending.value = true;
+      listenForInterview(data.correctionFollowup.eventsUrl, answer, false);
+    }
+    calibrationRating.value = undefined;
+    calibrationCorrection.value = "";
+    calibrationCriticalFabrication.value = false;
+  } catch {
+    portraitActionError.value = "这次判断没有保存，请稍后重试。";
+  } finally {
+    portraitActionPending.value = false;
+  }
+}
+
+async function publishPortrait() {
+  const versionId = portraitLifecycle.value?.submittedVersion?.id;
+  if (!versionId || portraitActionPending.value) return;
+  portraitActionPending.value = true;
+  portraitActionError.value = "";
+  try {
+    const response = await fetch("/api/member/portrait/publish", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ versionId }),
+    });
+    const data = response.ok
+      ? await jsonOrUndefined<PortraitLifecycleState>(response)
+      : undefined;
+    if (!data) {
+      portraitActionError.value = "暂时无法发布，请确认校准已经通过。";
+      return;
+    }
+    portraitLifecycle.value = data;
+  } catch {
+    portraitActionError.value = "暂时无法发布，请稍后重试。";
+  } finally {
+    portraitActionPending.value = false;
+  }
+}
+
+async function withdrawPortrait() {
+  if (portraitActionPending.value) return;
+  portraitActionPending.value = true;
+  portraitActionError.value = "";
+  try {
+    const response = await fetch("/api/member/portrait/publish", {
+      method: "DELETE",
+    });
+    const data = response.ok
+      ? await jsonOrUndefined<PortraitLifecycleState>(response)
+      : undefined;
+    if (!data) {
+      portraitActionError.value = "暂时无法撤回发布，请稍后重试。";
+      return;
+    }
+    portraitLifecycle.value = data;
+  } catch {
+    portraitActionError.value = "暂时无法撤回发布，请稍后重试。";
+  } finally {
+    portraitActionPending.value = false;
+  }
+}
 </script>
 
 <template>
@@ -597,6 +823,173 @@ async function sendInterview() {
         </form>
       </section>
       <section v-else class="interview-panel" aria-live="polite">
+        <section v-if="portraitLifecycle" class="portrait-lifecycle">
+          <div class="portrait-version-heading">
+            <div>
+              <span>恋爱分身版本</span>
+              <strong v-if="portraitLifecycle.submittedVersion">
+                v{{ portraitLifecycle.submittedVersion.version }}
+              </strong>
+            </div>
+            <span v-if="portraitLifecycle.status === 'published'" class="published-badge">
+              已发布
+            </span>
+          </div>
+
+          <template v-if="portraitLifecycle.status === 'draft'">
+            <h2>准备好时，由你形成正式版本</h2>
+            <p>自动访谈只更新画像草稿，只有你主动提交才会创建不可变版本。</p>
+            <button
+              class="submit-portrait"
+              type="button"
+              :disabled="portraitActionPending || interviewSending"
+              @click="submitPortraitVersion"
+            >
+              {{ portraitActionPending ? "提交中…" : "提交本次理解" }}
+            </button>
+          </template>
+
+          <template v-else>
+            <p
+              v-if="
+                portraitLifecycle.publishedVersion &&
+                portraitLifecycle.publishedVersion.id !==
+                  portraitLifecycle.submittedVersion?.id
+              "
+              class="published-note"
+            >
+              已发布的 v{{ portraitLifecycle.publishedVersion.version }} 继续服务，直到你发布新版本。
+            </p>
+
+            <form
+              v-if="activeCalibrationScenario"
+              class="calibration-form"
+              @submit.prevent="submitCalibrationAnswer"
+            >
+              <div class="calibration-progress">
+                <span>未见场景校准</span>
+                <strong>
+                  {{ activeCalibrationScenario.number }}/{{ portraitLifecycle.calibration?.total }}
+                </strong>
+              </div>
+              <h2>{{ activeCalibrationScenario.prompt }}</h2>
+              <div class="twin-prediction">
+                <span>分身预测回答 · AI</span>
+                <p>{{ activeCalibrationScenario.prediction }}</p>
+              </div>
+              <fieldset class="calibration-ratings">
+                <legend>这个回答像你吗？</legend>
+                <label>
+                  <input v-model="calibrationRating" type="radio" value="like" />
+                  <span>像我</span>
+                </label>
+                <label>
+                  <input v-model="calibrationRating" type="radio" value="partial" />
+                  <span>部分像我</span>
+                </label>
+                <label>
+                  <input v-model="calibrationRating" type="radio" value="unlike" />
+                  <span>不像我</span>
+                </label>
+              </fieldset>
+              <label v-if="calibrationRating && calibrationRating !== 'like'" class="calibration-correction">
+                <span>请聚焦纠正哪里不像你</span>
+                <textarea
+                  v-model="calibrationCorrection"
+                  maxlength="2000"
+                  rows="3"
+                  placeholder="写下你真实会怎样想或怎样做…"
+                  required
+                ></textarea>
+              </label>
+              <label
+                v-if="calibrationRating && calibrationRating !== 'like'"
+                class="critical-fabrication"
+              >
+                <input
+                  v-model="calibrationCriticalFabrication"
+                  name="critical-fabrication"
+                  type="checkbox"
+                />
+                <span>回答捏造了关键事实</span>
+              </label>
+              <button
+                type="submit"
+                :disabled="
+                  portraitActionPending ||
+                  !calibrationRating ||
+                  (calibrationRating !== 'like' && !calibrationCorrection.trim())
+                "
+              >
+                {{ portraitActionPending ? "保存中…" : "保存并继续" }}
+              </button>
+            </form>
+
+            <template v-else-if="portraitLifecycle.status === 'generating'">
+              <h2>正在生成 10 道未见场景回答</h2>
+              <p>版本已经保存，可以先离开这里；单 Worker 会继续处理。</p>
+            </template>
+
+            <template v-else-if="portraitLifecycle.status === 'generation_failed'">
+              <h2>{{ portraitLifecycle.message }}</h2>
+              <p>任务已在三次失败后停止，输入没有被修改。</p>
+            </template>
+
+            <template v-else-if="portraitLifecycle.status === 'needs_more_understanding'">
+              <h2>{{ portraitLifecycle.message }}</h2>
+              <p>你的纠正已经进入画像草稿；继续聊一聊，再提交新的同维度场景校准。</p>
+              <button
+                class="submit-portrait"
+                type="button"
+                :disabled="portraitActionPending || interviewSending"
+                @click="submitPortraitVersion"
+              >
+                提交新的理解版本
+              </button>
+            </template>
+
+            <template v-else-if="portraitLifecycle.status === 'ready_to_publish'">
+              <h2>校准已通过，等待你主动发布</h2>
+              <p>
+                {{ portraitLifecycle.calibration?.likeCount }}/10 道回答像你，且没有关键事实捏造。
+              </p>
+              <button
+                class="publish-portrait"
+                type="button"
+                :disabled="portraitActionPending || interviewSending"
+                @click="publishPortrait"
+              >
+                发布 v{{ portraitLifecycle.submittedVersion?.version }}
+              </button>
+            </template>
+
+            <template v-else-if="portraitLifecycle.status === 'published'">
+              <h2>v{{ portraitLifecycle.publishedVersion?.version }} 已发布</h2>
+              <p>它现在可以参与新的候选推荐和分身会话。</p>
+              <button
+                class="submit-portrait quiet-action"
+                type="button"
+                :disabled="portraitActionPending"
+                @click="submitPortraitVersion"
+              >
+                提交新的理解版本
+              </button>
+            </template>
+
+            <button
+              v-if="portraitLifecycle.publishedVersion"
+              class="withdraw-portrait"
+              type="button"
+              :disabled="portraitActionPending"
+              @click="withdrawPortrait"
+            >
+              撤回当前发布
+            </button>
+          </template>
+          <p v-if="portraitActionError" class="form-error" role="alert">
+            {{ portraitActionError }}
+          </p>
+        </section>
         <p v-if="progressFeedback" class="portrait-feedback" role="status">
           {{ progressFeedback }}
         </p>

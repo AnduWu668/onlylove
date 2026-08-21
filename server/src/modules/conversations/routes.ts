@@ -6,6 +6,8 @@ import type { Database } from "../../db.js";
 import { AgentEngine, AgentRunError } from "../agent-engine/engine.js";
 import { type AgentJob, AgentJobs } from "../agent-engine/jobs.js";
 import {
+  activeAdminById,
+  adminForRequest,
   interviewContextForMember,
   memberForRequest,
   superAdminForRequest,
@@ -58,6 +60,14 @@ async function processInterviewJob(
   options: ConversationsOptions,
 ) {
   const { agentEngine, agentJobs, db, now, portraits } = options;
+  if (
+    job.task !== "continue_interview" ||
+    !job.conversationId ||
+    !job.inputMessageId
+  ) {
+    stream.end(sse("error", { code: "AGENT_JOB_NOT_AVAILABLE" }));
+    return;
+  }
   const startedAt = now();
   const claimed = await agentJobs.claim(
     job.id,
@@ -88,6 +98,12 @@ async function processInterviewJob(
     stream.end("retry: 1000\n\n");
     return;
   }
+  if (!claimed.conversationId || !claimed.inputMessageId) {
+    stream.end(sse("error", { code: "AGENT_JOB_NOT_AVAILABLE" }));
+    return;
+  }
+  const conversationId = claimed.conversationId;
+  const inputMessageId = claimed.inputMessageId;
 
   const heartbeat = setInterval(() => {
     const at = now();
@@ -108,7 +124,7 @@ async function processInterviewJob(
       await db
         .select()
         .from(conversationMessages)
-        .where(eq(conversationMessages.id, claimed.inputMessageId))
+        .where(eq(conversationMessages.id, inputMessageId))
         .limit(1)
     )[0]!;
     const recentHistory = await db
@@ -119,7 +135,7 @@ async function processInterviewJob(
       .from(conversationMessages)
       .where(
         and(
-          eq(conversationMessages.conversationId, claimed.conversationId),
+          eq(conversationMessages.conversationId, conversationId),
           lt(conversationMessages.sequence, input.sequence),
         ),
       )
@@ -128,7 +144,7 @@ async function processInterviewJob(
     const history = recentHistory.reverse();
     const extraction = await portraits.extractDraft(
       claimed.memberId,
-      claimed.conversationId,
+      conversationId,
       input.sequence,
       agentEngine,
       (attempts) =>
@@ -164,13 +180,13 @@ async function processInterviewJob(
     const completedAt = now();
     const answer = await db.transaction(async (transaction) => {
       await transaction.execute(
-        sql`select pg_advisory_xact_lock(hashtext(${claimed.conversationId}))`,
+        sql`select pg_advisory_xact_lock(hashtext(${conversationId}))`,
       );
       const lastSequence = (
         await transaction
           .select({ value: max(conversationMessages.sequence) })
           .from(conversationMessages)
-          .where(eq(conversationMessages.conversationId, claimed.conversationId))
+          .where(eq(conversationMessages.conversationId, conversationId))
       )[0]?.value;
       const answerId = randomUUID();
       const saved = (
@@ -178,7 +194,7 @@ async function processInterviewJob(
           .insert(conversationMessages)
           .values({
             id: answerId,
-            conversationId: claimed.conversationId,
+            conversationId,
             role: "agent",
             content: result.text,
             sequence: (lastSequence ?? 0) + 1,
@@ -210,6 +226,8 @@ async function processInterviewJob(
       switchedModel = error.switchedModel;
     }
     const failedAt = now();
+    const refundQuota =
+      Boolean(input?.clientMessageId) && !claimed.quotaRefunded;
     await db.transaction(async (transaction) => {
       const failed = await agentJobs.fail(
         transaction,
@@ -217,10 +235,10 @@ async function processInterviewJob(
         code,
         retryCount,
         switchedModel,
-        Boolean(input?.clientMessageId),
+        refundQuota,
         failedAt,
       );
-      if (failed && input?.clientMessageId) {
+      if (failed && refundQuota) {
         await transaction
           .update(ownAgentDailyQuotas)
           .set({ used: sql`${ownAgentDailyQuotas.used} - 1`, updatedAt: failedAt })
@@ -492,9 +510,83 @@ export function registerConversationsRoutes(
   );
 
   app.get("/api/admin/agent-runs", async (request, reply) => {
-    const actor = await superAdminForRequest(request, db, now());
+    const actor = await adminForRequest(request, db, now());
     if (!actor) return reply.code(403).send({ code: "FORBIDDEN" });
-    const runs = await options.agentJobs.listRuns();
+    const runs = await options.agentJobs.listRuns(actor);
     return { runs };
   });
+
+  app.get("/api/admin/agent-jobs/failed", async (request, reply) => {
+    const actor = await adminForRequest(request, db, now());
+    if (!actor) return reply.code(403).send({ code: "FORBIDDEN" });
+    const jobs = await options.agentJobs.listFailed(actor);
+    return {
+      jobs: jobs.map((job) => ({
+        id: job.id,
+        role: job.role,
+        task: job.task,
+        memberId: job.memberId,
+        profileVersionId: job.profileVersionId,
+        calibrationScenarioId: job.calibrationScenarioId,
+        assignedAdminId: job.assignedAdminId,
+        retryCount: job.retryCount,
+        error: job.error,
+        failedAt: job.completedAt?.toISOString() ?? null,
+      })),
+    };
+  });
+
+  app.post<{ Params: { jobId: string } }>(
+    "/api/admin/agent-jobs/:jobId/retry",
+    {
+      schema: {
+        params: {
+          type: "object",
+          additionalProperties: false,
+          required: ["jobId"],
+          properties: { jobId: { type: "string", format: "uuid" } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const actor = await adminForRequest(request, db, now());
+      if (!actor) return reply.code(403).send({ code: "FORBIDDEN" });
+      const job = await options.agentJobs.retryFailed(request.params.jobId, actor);
+      if (!job) return reply.code(409).send({ code: "AGENT_JOB_NOT_RETRYABLE" });
+      return reply.code(202).send({ jobId: job.id, status: job.status });
+    },
+  );
+
+  app.post<{ Params: { jobId: string }; Body: { adminId: string } }>(
+    "/api/admin/agent-jobs/:jobId/assignment",
+    {
+      schema: {
+        params: {
+          type: "object",
+          additionalProperties: false,
+          required: ["jobId"],
+          properties: { jobId: { type: "string", format: "uuid" } },
+        },
+        body: {
+          type: "object",
+          additionalProperties: false,
+          required: ["adminId"],
+          properties: { adminId: { type: "string", format: "uuid" } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const actor = await superAdminForRequest(request, db, now());
+      if (!actor) return reply.code(403).send({ code: "FORBIDDEN" });
+      if (!(await activeAdminById(request.body.adminId, db))) {
+        return reply.code(400).send({ code: "ADMIN_ASSIGNEE_REQUIRED" });
+      }
+      const job = await options.agentJobs.assignFailed(
+        request.params.jobId,
+        request.body.adminId,
+      );
+      if (!job) return reply.code(409).send({ code: "AGENT_JOB_NOT_ASSIGNABLE" });
+      return { jobId: job.id, assignedAdminId: job.assignedAdminId };
+    },
+  );
 }

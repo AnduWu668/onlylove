@@ -37,7 +37,7 @@ export async function createApp(options: AppOptions) {
   );
   const agentJobs = new AgentJobs(db);
   const interviewConversations = new InterviewConversations(db);
-  const portraits = new Portraits(db, now, interviewConversations);
+  const portraits = new Portraits(db, now, interviewConversations, agentJobs);
 
   await migrateDatabase(db);
   await bootstrapSuperAdmin(db, options.superAdminEmail, now());
