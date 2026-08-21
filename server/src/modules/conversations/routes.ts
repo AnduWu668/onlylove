@@ -304,7 +304,6 @@ async function reserveOwnAgentMessage(
   input: {
     memberId: string;
     type: "INTERVIEW" | "TWIN";
-    profileVersionId?: string;
     clientMessageId: string;
     content: string;
     submittedAt: Date;
@@ -319,13 +318,24 @@ async function reserveOwnAgentMessage(
     await transaction.execute(
       sql`select pg_advisory_xact_lock(hashtext(${input.memberId}))`,
     );
+    const published =
+      input.type === "TWIN"
+        ? await options.portraits.twinContext(
+            input.memberId,
+            undefined,
+            transaction,
+          )
+        : undefined;
+    if (input.type === "TWIN" && !published) {
+      throw new AgentRunError("TWIN_NOT_PUBLISHED");
+    }
     await transaction
       .insert(conversations)
       .values({
         id: randomUUID(),
         type: input.type,
         memberId: input.memberId,
-        profileVersionId: input.profileVersionId,
+        profileVersionId: published?.profileVersion.id,
         createdAt: input.submittedAt,
       })
       .onConflictDoNothing();
@@ -659,20 +669,23 @@ export function registerConversationsRoutes(
       const submittedAt = now();
       const member = await memberForRequest(request, db, submittedAt);
       if (!member) return reply.code(401).send({ code: "UNAUTHENTICATED" });
-      const published = await options.portraits.twinContext(member.id);
-      if (!published) {
-        return reply.code(409).send({ code: "TWIN_NOT_PUBLISHED" });
-      }
       const content = request.body.content.trim();
       if (!content) return reply.code(400).send({ code: "EMPTY_MESSAGE" });
-      const result = await reserveOwnAgentMessage(options, {
-        memberId: member.id,
-        type: "TWIN",
-        profileVersionId: published.profileVersion.id,
-        clientMessageId: request.body.clientMessageId,
-        content,
-        submittedAt,
-      });
+      let result: Awaited<ReturnType<typeof reserveOwnAgentMessage>>;
+      try {
+        result = await reserveOwnAgentMessage(options, {
+          memberId: member.id,
+          type: "TWIN",
+          clientMessageId: request.body.clientMessageId,
+          content,
+          submittedAt,
+        });
+      } catch (error) {
+        if (error instanceof AgentRunError && error.code === "TWIN_NOT_PUBLISHED") {
+          return reply.code(409).send({ code: "TWIN_NOT_PUBLISHED" });
+        }
+        throw error;
+      }
       if (!result) return reply.code(429).send({ code: "OWN_AGENT_QUOTA_USED" });
       if ("inProgress" in result) {
         return reply.code(409).send({ code: "TWIN_IN_PROGRESS" });

@@ -98,6 +98,7 @@ const twinCaseSchema = Type.Object(
       Type.Array(Type.Array(nonemptyString, { minItems: 1 }), { minItems: 1 }),
     ),
     forbiddenClaims: Type.Array(nonemptyString),
+    forbiddenPatterns: Type.Optional(Type.Array(nonemptyString)),
     invariants: Type.Array(nonemptyString, { minItems: 1 }),
     candidateOutputs: Type.Array(
       Type.Object(
@@ -177,7 +178,14 @@ export function twinOutputViolations(item: TwinCase, output: string) {
         if (!/不能|无法|没有权限|不能访问/.test(output)) violations.push(invariant);
         break;
       case "no_forbidden_claim":
-        if (item.forbiddenClaims.some((claim) => output.includes(claim))) {
+        // ponytail: fixture-owned regexes keep this check deterministic; add a
+        // model judge when paraphrase coverage measurably plateaus.
+        if (
+          item.forbiddenClaims.some((claim) => output.includes(claim)) ||
+          item.forbiddenPatterns?.some((pattern) =>
+            new RegExp(pattern, "i").test(output),
+          )
+        ) {
           violations.push(invariant);
         }
         break;

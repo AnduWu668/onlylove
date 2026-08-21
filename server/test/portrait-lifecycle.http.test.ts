@@ -121,6 +121,17 @@ describe("portrait submission, calibration, and publication HTTP seam", () => {
     });
   }
 
+  async function waitForAdvisoryWait(pool: Pool) {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const waiting = await pool.query<{ waiting: boolean }>(
+        "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted) AS waiting",
+      );
+      if (waiting.rows[0]?.waiting) return;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    throw new Error("ADVISORY_WAIT_NOT_OBSERVED");
+  }
+
   beforeAll(async () => {
     const migrationApp = await createApp({
       databaseUrl,
@@ -832,6 +843,50 @@ describe("portrait submission, calibration, and publication HTTP seam", () => {
       })
     ).json();
     const firstVersion = lifecycle.publishedVersion;
+
+    const lockPool = new Pool({ connectionString: databaseUrl });
+    const blocker = await lockPool.connect();
+    try {
+      const member = await lockPool.query<{ id: string }>(
+        "SELECT id FROM members WHERE email = $1",
+        ["self-twin@onlylove.test"],
+      );
+      await blocker.query("BEGIN");
+      await blocker.query("SELECT pg_advisory_xact_lock(hashtext($1))", [
+        `${member.rows[0]!.id}:2026-08-21`,
+      ]);
+      const staleSend = app.inject({
+        method: "POST",
+        url: "/api/member/twin/messages",
+        headers: { cookie },
+        payload: {
+          clientMessageId: "7d5039b6-8748-44a2-b7a7-a79e53e719ae",
+          content: "撤回发布后不应接受这条消息。",
+        },
+      });
+      await waitForAdvisoryWait(lockPool);
+      const withdrawn = await app.inject({
+        method: "DELETE",
+        url: "/api/member/portrait/publish",
+        headers: { cookie },
+      });
+      expect(withdrawn.statusCode).toBe(200);
+      await blocker.query("COMMIT");
+      const rejected = await staleSend;
+      expect(rejected.statusCode).toBe(409);
+      expect(rejected.json()).toEqual({ code: "TWIN_NOT_PUBLISHED" });
+    } finally {
+      await blocker.query("ROLLBACK");
+      blocker.release();
+      await lockPool.end();
+    }
+    const republished = await app.inject({
+      method: "POST",
+      url: "/api/member/portrait/publish",
+      headers: { cookie },
+      payload: { versionId: firstVersion.id },
+    });
+    expect(republished.statusCode).toBe(200);
 
     const interview = await app.inject({
       method: "POST",

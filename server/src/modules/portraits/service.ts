@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Type } from "@earendil-works/pi-ai";
 import { and, asc, count, desc, eq, sql } from "drizzle-orm";
-import type { Database } from "../../db.js";
+import type { Database, DatabaseTransaction } from "../../db.js";
 import {
   AgentEngine,
   AgentRunError,
@@ -716,11 +716,15 @@ export class Portraits {
     };
   }
 
-  async twinContext(memberId: string, profileVersionId?: string) {
+  async twinContext(
+    memberId: string,
+    profileVersionId?: string,
+    database: Database | DatabaseTransaction = this.db,
+  ) {
     let versionId = profileVersionId;
     if (!versionId) {
       const state = (
-        await this.db
+        await database
           .select({ publishedVersionId: portraitMemberStates.publishedVersionId })
           .from(portraitMemberStates)
           .where(eq(portraitMemberStates.memberId, memberId))
@@ -730,7 +734,7 @@ export class Portraits {
     }
     if (!versionId) return undefined;
     const version = (
-      await this.db
+      await database
         .select({
           id: portraitVersions.id,
           version: portraitVersions.version,
