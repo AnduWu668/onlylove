@@ -261,6 +261,10 @@ function publicProfile(member: Member) {
   };
 }
 
+export function publicProfileForMember(member: Member) {
+  return publicProfile(member);
+}
+
 function publicMatchCriteria(
   criteria: typeof matchCriteriaVersions.$inferSelect,
 ) {

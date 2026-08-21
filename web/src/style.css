@@ -448,12 +448,36 @@ button:disabled {
   font-size: clamp(30px, 8vw, 40px);
 }
 
-.interview-intro > p:last-child {
+.interview-intro > p {
   grid-column: 1 / -1;
   margin: 0;
   color: #796b69;
   font-size: 13px;
   line-height: 1.7;
+}
+
+.twin-role-switch {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin-top: 8px;
+  padding: 4px;
+  border-radius: 14px;
+  background: #e7ddd2;
+}
+
+.twin-role-switch button {
+  min-height: 40px;
+  padding: 0 12px;
+  color: #6d5a5c;
+  background: transparent;
+  box-shadow: none;
+}
+
+.twin-role-switch button[aria-pressed="true"] {
+  color: #fffaf3;
+  background: #6f1831;
 }
 
 .ai-badge {
@@ -716,6 +740,34 @@ button:disabled {
 .interview-panel {
   display: grid;
   gap: 14px;
+}
+
+.twin-session-note {
+  display: grid;
+  gap: 9px;
+  padding: 16px;
+  border: 1px solid rgb(91 52 57 / 11%);
+  border-radius: 18px;
+  background: #eee5da;
+}
+
+.twin-session-note > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #6f1831;
+}
+
+.twin-session-note span {
+  font-size: 11px;
+}
+
+.twin-session-note p {
+  margin: 0;
+  color: #796b69;
+  font-size: 12px;
+  line-height: 1.65;
 }
 
 .message-list {

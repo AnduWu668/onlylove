@@ -22,6 +22,7 @@ export const conversations = pgTable(
     memberId: uuid("member_id")
       .notNull()
       .references(() => members.id),
+    profileVersionId: uuid("profile_version_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
   (table) => [

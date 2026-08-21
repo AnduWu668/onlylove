@@ -87,15 +87,17 @@ export interface InterviewHistoryMessage {
   content: string;
 }
 
+export interface PublicMemberProfile {
+  nickname: string;
+  birthDate: string;
+  gender: string;
+  heightCm: number | null;
+  city: string;
+  occupation: string;
+}
+
 export interface PortraitInterviewContext {
-  memberProfile: {
-    nickname: string;
-    birthDate: string;
-    gender: string;
-    heightCm: number | null;
-    city: string;
-    occupation: string;
-  };
+  memberProfile: PublicMemberProfile;
   matchCriteria: {
     version: number;
     desiredGender: string;
@@ -112,6 +114,12 @@ export interface PortraitInterviewContext {
   portraitDraft?: unknown;
   questionPlannerVersion?: string;
   planningPriority?: string;
+  recentMessages: InterviewHistoryMessage[];
+}
+
+export interface TwinReplyContext {
+  personaContext: string;
+  publicProfile: PublicMemberProfile | null;
   recentMessages: InterviewHistoryMessage[];
 }
 
@@ -588,18 +596,28 @@ export class AgentEngine {
   }
 
   replyAsTwin(
-    personaContext: string,
-    scenario: string,
+    context: TwinReplyContext,
+    content: string,
+    onDelta: ((text: string) => void) | undefined,
     recordAttempts: (attempts: AgentAttemptResult[]) => Promise<void>,
   ) {
-    const systemPrompt = `${publicTwinDefinition.systemPrompt}\n\n分身上下文：\n${personaContext}`;
+    const systemPrompt = `${publicTwinDefinition.systemPrompt}\n\n分身上下文：\n${context.personaContext}\n\n允许公开的基础资料：\n${JSON.stringify(context.publicProfile)}`;
+    const history = minimalInterviewContext(
+      context.recentMessages,
+      Math.max(
+        0,
+        this.#inputTokenBudget -
+          estimatedTokens(systemPrompt) -
+          estimatedTokens(content),
+      ),
+    );
     return this.#runText(
       systemPrompt,
-      [],
-      `请回答这个未见场景：${scenario}`,
-      () => undefined,
+      history,
+      content,
+      onDelta ?? (() => undefined),
       recordAttempts,
-      false,
+      Boolean(onDelta),
     );
   }
 

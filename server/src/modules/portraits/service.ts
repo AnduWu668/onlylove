@@ -716,6 +716,76 @@ export class Portraits {
     };
   }
 
+  async twinContext(memberId: string, profileVersionId?: string) {
+    let versionId = profileVersionId;
+    if (!versionId) {
+      const state = (
+        await this.db
+          .select({ publishedVersionId: portraitMemberStates.publishedVersionId })
+          .from(portraitMemberStates)
+          .where(eq(portraitMemberStates.memberId, memberId))
+          .limit(1)
+      )[0];
+      versionId = state?.publishedVersionId ?? undefined;
+    }
+    if (!versionId) return undefined;
+    const version = (
+      await this.db
+        .select({
+          id: portraitVersions.id,
+          version: portraitVersions.version,
+          personaContext: portraitVersions.personaContext,
+          createdAt: portraitVersions.createdAt,
+        })
+        .from(portraitVersions)
+        .where(
+          and(
+            eq(portraitVersions.id, versionId),
+            eq(portraitVersions.memberId, memberId),
+          ),
+        )
+        .limit(1)
+    )[0];
+    return version
+      ? {
+          personaContext: version.personaContext,
+          profileVersion: {
+            id: version.id,
+            version: version.version,
+            createdAt: version.createdAt.toISOString(),
+          },
+        }
+      : undefined;
+  }
+
+  async absorbSelfTwinMessage(
+    memberId: string,
+    sourceMessageId: string,
+    content: string,
+    agentEngine: AgentEngine,
+    recordAttempts: (attempts: AgentAttemptResult[]) => Promise<void>,
+  ) {
+    const message = await this.db.transaction(async (transaction) => {
+      await transaction.execute(
+        sql`select pg_advisory_xact_lock(hashtext(${memberId}))`,
+      );
+      return this.interviewConversations.appendSelfTwinEvidence(
+        transaction,
+        memberId,
+        sourceMessageId,
+        content,
+        this.now(),
+      );
+    });
+    return this.extractDraft(
+      memberId,
+      message.conversationId,
+      message.sequence,
+      agentEngine,
+      recordAttempts,
+    );
+  }
+
   async submitCalibrationAnswer(
     memberId: string,
     scenarioId: string,
@@ -943,8 +1013,13 @@ export class Portraits {
         throw new Error("CALIBRATION_INPUT_MISSING");
       }
       const result = await agentEngine.replyAsTwin(
-        version[0].personaContext,
+        {
+          personaContext: version[0].personaContext,
+          publicProfile: null,
+          recentMessages: [],
+        },
         scenario[0].prompt,
+        undefined,
         (attempts) =>
           this.agentJobs.recordAttempts(
             claimed,

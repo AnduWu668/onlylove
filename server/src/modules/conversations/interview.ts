@@ -12,6 +12,7 @@ export class InterviewConversations {
     type: "INTERVIEW",
     content: string,
     createdAt: Date,
+    clientMessageId?: string,
   ) {
     await transaction
       .insert(conversations)
@@ -34,6 +35,24 @@ export class InterviewConversations {
         )
         .limit(1)
     )[0]!;
+    if (clientMessageId) {
+      const existing = (
+        await transaction
+          .select({
+            id: conversationMessages.id,
+            sequence: conversationMessages.sequence,
+          })
+          .from(conversationMessages)
+          .where(
+            and(
+              eq(conversationMessages.conversationId, conversation.id),
+              eq(conversationMessages.clientMessageId, clientMessageId),
+            ),
+          )
+          .limit(1)
+      )[0];
+      if (existing) return { ...existing, conversationId: conversation.id };
+    }
     const lastSequence = (
       await transaction
         .select({ value: max(conversationMessages.sequence) })
@@ -49,6 +68,7 @@ export class InterviewConversations {
           role: "member",
           content,
           sequence: (lastSequence ?? 0) + 1,
+          clientMessageId,
           createdAt,
         })
         .returning({
@@ -86,6 +106,23 @@ export class InterviewConversations {
       "INTERVIEW",
       content,
       createdAt,
+    );
+  }
+
+  appendSelfTwinEvidence(
+    transaction: DatabaseTransaction,
+    memberId: string,
+    sourceMessageId: string,
+    content: string,
+    createdAt: Date,
+  ) {
+    return this.appendMemberMessage(
+      transaction,
+      memberId,
+      "INTERVIEW",
+      `成员与自己的恋爱分身对话（只有明确自述或纠正可作为画像证据，提问不能视为成员事实）：\n${content}`,
+      createdAt,
+      sourceMessageId,
     );
   }
 

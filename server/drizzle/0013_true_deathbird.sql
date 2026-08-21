@@ -1,0 +1,1 @@
+ALTER TABLE "conversations" ADD COLUMN "profile_version_id" uuid;

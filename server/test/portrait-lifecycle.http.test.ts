@@ -795,4 +795,154 @@ describe("portrait submission, calibration, and publication HTTP seam", () => {
     });
     expect(current.json().publishedVersion).toBeNull();
   });
+
+  it("keeps a self-twin session pinned while corrections update only the draft and share quota", async () => {
+    const { memberCookie: cookie } =
+      await inviteAndSignInMember("self-twin@onlylove.test");
+    await completeFixedInterview(cookie);
+    await app.inject({
+      method: "POST",
+      url: "/api/member/portrait/versions",
+      headers: { cookie },
+      payload: {
+        clientRequestId: "0f44a6f7-c767-4195-a68a-d81446fe1494",
+      },
+    });
+    let lifecycle = (await finishPortraitGeneration(cookie)).json();
+    for (const scenario of lifecycle.calibration.scenarios) {
+      lifecycle = (
+        await app.inject({
+          method: "POST",
+          url: `/api/member/portrait/calibration/${scenario.id}`,
+          headers: { cookie },
+          payload: {
+            rating: "like",
+            correction: "",
+            criticalFabrication: false,
+          },
+        })
+      ).json();
+    }
+    lifecycle = (
+      await app.inject({
+        method: "POST",
+        url: "/api/member/portrait/publish",
+        headers: { cookie },
+        payload: { versionId: lifecycle.submittedVersion.id },
+      })
+    ).json();
+    const firstVersion = lifecycle.publishedVersion;
+
+    const interview = await app.inject({
+      method: "POST",
+      url: "/api/member/interview/messages",
+      headers: { cookie },
+      payload: {
+        clientMessageId: "30b57ed8-9909-4fc2-ab5c-3c951ecf4297",
+        content: "我想先补充一条访谈语境。",
+      },
+    });
+    await app.inject({
+      method: "GET",
+      url: interview.json().eventsUrl,
+      headers: { cookie },
+    });
+
+    const emptyTwin = await app.inject({
+      method: "GET",
+      url: "/api/member/twin",
+      headers: { cookie },
+    });
+    expect(emptyTwin.statusCode).toBe(200);
+    expect(emptyTwin.json()).toMatchObject({
+      conversationId: null,
+      profileVersion: firstVersion,
+      messages: [],
+    });
+
+    const submitted = await app.inject({
+      method: "POST",
+      url: "/api/member/twin/messages",
+      headers: { cookie },
+      payload: {
+        clientMessageId: "44b6066a-85a4-4bd1-9fb5-d8feab8e4899",
+        content: "这不像我，我会先说明需要独处，再约好重新沟通的时间。",
+      },
+    });
+    expect(submitted.statusCode).toBe(202);
+    expect(submitted.json()).toMatchObject({ quotaRemaining: 98 });
+    const events = await app.inject({
+      method: "GET",
+      url: submitted.json().eventsUrl,
+      headers: { cookie },
+    });
+    expect(events.body).toContain("event: done");
+
+    const conversation = await app.inject({
+      method: "GET",
+      url: "/api/member/twin",
+      headers: { cookie },
+    });
+    expect(conversation.json()).toMatchObject({
+      profileVersion: firstVersion,
+      messages: [
+        expect.objectContaining({ role: "member", content: "这不像我，我会先说明需要独处，再约好重新沟通的时间。" }),
+        expect.objectContaining({ role: "agent" }),
+      ],
+    });
+
+    const stillPublished = await app.inject({
+      method: "GET",
+      url: "/api/member/portrait",
+      headers: { cookie },
+    });
+    expect(stillPublished.json()).toMatchObject({
+      status: "published",
+      submittedVersion: firstVersion,
+      publishedVersion: firstVersion,
+    });
+
+    const next = await app.inject({
+      method: "POST",
+      url: "/api/member/portrait/versions",
+      headers: { cookie },
+      payload: {
+        clientRequestId: "e2d0534e-8ff8-401c-9361-012d3d31f29b",
+      },
+    });
+    expect(next.statusCode).toBe(202);
+    expect(next.json()).toMatchObject({
+      submittedVersion: { version: 2 },
+      publishedVersion: firstVersion,
+    });
+
+    lifecycle = (await finishPortraitGeneration(cookie)).json();
+    for (const scenario of lifecycle.calibration.scenarios) {
+      lifecycle = (
+        await app.inject({
+          method: "POST",
+          url: `/api/member/portrait/calibration/${scenario.id}`,
+          headers: { cookie },
+          payload: {
+            rating: "like",
+            correction: "",
+            criticalFabrication: false,
+          },
+        })
+      ).json();
+    }
+    await app.inject({
+      method: "POST",
+      url: "/api/member/portrait/publish",
+      headers: { cookie },
+      payload: { versionId: lifecycle.submittedVersion.id },
+    });
+
+    const pinned = await app.inject({
+      method: "GET",
+      url: "/api/member/twin",
+      headers: { cookie },
+    });
+    expect(pinned.json().profileVersion).toEqual(firstVersion);
+  });
 });
