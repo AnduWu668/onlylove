@@ -487,6 +487,129 @@ describe("OnlyLove UI seam", () => {
     );
   });
 
+  it("completes the fixed interview before opening dynamic chat", async () => {
+    class FakeEventSource {
+      static current: FakeEventSource;
+      readonly listeners = new Map<string, (event: MessageEvent) => void>();
+
+      constructor(readonly url: string) {
+        FakeEventSource.current = this;
+      }
+
+      addEventListener(type: string, listener: (event: MessageEvent) => void) {
+        this.listeners.set(type, listener);
+      }
+
+      close() {}
+
+      emit(type: string, data: object) {
+        this.listeners.get(type)?.({ data: JSON.stringify(data) } as MessageEvent);
+      }
+    }
+    vi.stubGlobal("EventSource", FakeEventSource);
+    const request = vi.fn(async (url: string, options?: RequestInit) => {
+      if (url === "/api/session") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            member: { email: "member@example.com", role: "member" },
+          }),
+        };
+      }
+      if (url === "/api/member/profile") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ profile: {}, matchCriteria: null }),
+        };
+      }
+      if (
+        url === "/api/member/portrait/interview/fixed-answers" &&
+        options?.method === "POST"
+      ) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            fixedInterview: {
+              answered: 10,
+              total: 10,
+              completed: true,
+              question: null,
+            },
+            progress: { completed: 0, total: 8 },
+            autoFollowup: {
+              jobId: "9b1d8d72-bd60-41b2-8ad8-d2cfd0e84e2f",
+              eventsUrl:
+                "/api/member/interview/jobs/9b1d8d72-bd60-41b2-8ad8-d2cfd0e84e2f/events",
+            },
+          }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          conversationId: null,
+          messages: [],
+          fixedInterview: {
+            answered: 9,
+            total: 10,
+            completed: false,
+            question: {
+              id: "shared-future-cost",
+              number: 10,
+              prompt: "共同未来需要牺牲当下时，你会怎么衡量？",
+              options: [
+                { id: "accept-cost", text: "愿意承受一段时间的不方便" },
+                { id: "protect-now", text: "优先保护现在的生活质量" },
+                { id: "small-trial", text: "先做小规模尝试" },
+                { id: "agree-then-stop", text: "答应后也可能中途改变" },
+              ],
+            },
+          },
+          progress: { completed: 0, total: 8 },
+        }),
+      };
+    });
+    vi.stubGlobal("fetch", request);
+    const router = createRouter({ history: createMemoryHistory(), routes });
+    const wrapper = mount(App, { global: { plugins: [router] } });
+    await router.push("/app");
+    await router.isReady();
+    await flushPromises();
+    await wrapper
+      .findAll("nav button")
+      .find((button) => button.text().includes("我的分身"))!
+      .trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("固定访谈");
+    expect(wrapper.text()).toContain("10/10");
+    expect(wrapper.find("form.interview-composer").exists()).toBe(false);
+    await wrapper.get('.fixed-option input[value="accept-cost"]').setValue(true);
+    await wrapper.get(".fixed-supplement textarea").setValue("会先约定复盘时间。");
+    await wrapper.get(".fixed-interview-panel form").trigger("submit");
+    await flushPromises();
+
+    expect(request).toHaveBeenCalledWith(
+      "/api/member/portrait/interview/fixed-answers",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining('"selectedOptionIds":["accept-cost"]'),
+      }),
+    );
+    expect(wrapper.find("form.interview-composer").exists()).toBe(true);
+    expect(wrapper.text()).toContain("0/8");
+    expect(FakeEventSource.current.url).toContain("/events");
+    FakeEventSource.current.emit("delta", {
+      text: "哪一次具体经历最能说明你的取舍？",
+    });
+    await flushPromises();
+    expect(wrapper.text()).toContain("哪一次具体经历最能说明你的取舍？");
+  });
+
   it("sends the first interview message and renders the streamed Agent answer", async () => {
     class FakeEventSource {
       static current: FakeEventSource;

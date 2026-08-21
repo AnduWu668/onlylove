@@ -28,6 +28,43 @@ export class AgentJobs {
     )[0];
   }
 
+  async enqueueInterview(values: {
+    transaction: DatabaseTransaction;
+    memberId: string;
+    conversationId: string;
+    inputMessageId: string;
+    definition: {
+      role: "portrait_interviewer";
+      task: "continue_interview";
+      version: string;
+      promptVersion: string;
+      schemaVersion: null;
+    };
+    createdAt: Date;
+  }) {
+    const existing = await this.findByInput(
+      values.transaction,
+      values.inputMessageId,
+    );
+    if (existing) return existing;
+    return this.create(values.transaction, {
+      id: randomUUID(),
+      role: values.definition.role,
+      task: values.definition.task,
+      definitionVersion: values.definition.version,
+      promptVersion: values.definition.promptVersion,
+      schemaVersion: values.definition.schemaVersion,
+      memberId: values.memberId,
+      conversationId: values.conversationId,
+      inputMessageId: values.inputMessageId,
+      status: "pending",
+      retryCount: 0,
+      switchedModel: false,
+      quotaRefunded: false,
+      createdAt: values.createdAt,
+    });
+  }
+
   async findForMember(id: string, memberId: string) {
     return (
       await this.db
@@ -54,6 +91,12 @@ export class AgentJobs {
         )
         .limit(1)
     )[0];
+  }
+
+  async findActiveForConversationId(conversationId: string) {
+    return this.db.transaction((transaction) =>
+      this.findActiveForConversation(transaction, conversationId),
+    );
   }
 
   async claim(id: string, startedAt: Date, leaseExpiresAt: Date) {
@@ -105,7 +148,18 @@ export class AgentJobs {
     )[0];
   }
 
-  async recordAttempts(job: AgentJob, attempts: AgentAttemptResult[], at: Date) {
+  async recordAttempts(
+    job: AgentJob,
+    attempts: AgentAttemptResult[],
+    at: Date,
+    definition?: {
+      role: typeof job.role;
+      task: typeof job.task;
+      version: string;
+      promptVersion: string;
+      schemaVersion: string | null;
+    },
+  ) {
     if (!attempts.length) return;
     await this.db
       .insert(agentRuns)
@@ -113,11 +167,11 @@ export class AgentJobs {
         attempts.map((attempt) => ({
           id: randomUUID(),
           jobId: job.id,
-          role: job.role,
-          task: job.task,
-          definitionVersion: job.definitionVersion,
-          promptVersion: job.promptVersion,
-          schemaVersion: job.schemaVersion,
+          role: definition?.role ?? job.role,
+          task: definition?.task ?? job.task,
+          definitionVersion: definition?.version ?? job.definitionVersion,
+          promptVersion: definition?.promptVersion ?? job.promptVersion,
+          schemaVersion: definition?.schemaVersion ?? job.schemaVersion,
           memberId: job.memberId,
           conversationId: job.conversationId,
           ...attempt,
@@ -166,6 +220,7 @@ export class AgentJobs {
     code: string,
     retryCount: number,
     switchedModel: boolean,
+    refundQuota: boolean,
     failedAt: Date,
   ) {
     return Boolean(
@@ -177,7 +232,7 @@ export class AgentJobs {
             error: code,
             retryCount,
             switchedModel,
-            quotaRefunded: true,
+            quotaRefunded: refundQuota,
             leaseToken: null,
             leaseExpiresAt: null,
             completedAt: failedAt,

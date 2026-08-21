@@ -115,6 +115,10 @@ export const agentRuns = pgTable(
   },
   (table) => [
     index("agent_runs_job_index").on(table.jobId),
-    uniqueIndex("agent_runs_job_retry_unique").on(table.jobId, table.retryCount),
+    uniqueIndex("agent_runs_job_task_retry_unique").on(
+      table.jobId,
+      table.task,
+      table.retryCount,
+    ),
   ],
 );

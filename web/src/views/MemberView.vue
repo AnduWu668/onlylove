@@ -29,6 +29,27 @@ interface ProfileResponse {
   } | null;
 }
 
+interface PortraitInterviewState {
+  fixedInterview: {
+    answered: number;
+    total: number;
+    completed: boolean;
+    question: {
+      id: string;
+      number: number;
+      prompt: string;
+      options: { id: string; text: string }[];
+    } | null;
+  };
+  progress: { completed: number; total: number };
+}
+
+interface InterviewMessage {
+  id: string;
+  role: "member" | "agent";
+  content: string;
+}
+
 const router = useRouter();
 const member = ref<{ email: string; role: string }>();
 const loading = ref(true);
@@ -45,10 +66,14 @@ const interviewLoading = ref(false);
 const interviewSending = ref(false);
 const interviewError = ref("");
 const interviewInput = ref("");
+const portraitInterview = ref<PortraitInterviewState>();
+const fixedSelected = ref<string[]>([]);
+const fixedNoneApplies = ref(false);
+const fixedFreeText = ref("");
+const fixedSaving = ref(false);
+const progressFeedback = ref("");
 const quotaRemaining = ref<number>();
-const interviewMessages = ref<
-  { id: string; role: "member" | "agent"; content: string }[]
->([]);
+const interviewMessages = ref<InterviewMessage[]>([]);
 let interviewEvents: EventSource | undefined;
 let interviewRetry:
   | { clientMessageId: string; content: string }
@@ -281,15 +306,91 @@ async function loadInterview() {
             role: "member" | "agent";
             content: string;
           }[];
+          fixedInterview?: PortraitInterviewState["fixedInterview"];
+          progress?: PortraitInterviewState["progress"];
+          autoFollowup?: { jobId: string; eventsUrl: string };
         }>(response)
       : undefined;
     if (!data) throw new Error();
-    interviewMessages.value = data.messages;
+    interviewMessages.value = data.messages.filter(
+      (message) => !message.content.startsWith("固定访谈 "),
+    );
+    portraitInterview.value = {
+      fixedInterview: data.fixedInterview ?? {
+        answered: 10,
+        total: 10,
+        completed: true,
+        question: null,
+      },
+      progress: data.progress ?? { completed: 0, total: 8 },
+    };
+    if (data.autoFollowup) {
+      const answer = reactive<InterviewMessage>({
+        id: `pending-${data.autoFollowup.jobId}`,
+        role: "agent",
+        content: "",
+      });
+      interviewMessages.value.push(answer);
+      interviewSending.value = true;
+      listenForInterview(data.autoFollowup.eventsUrl, answer, false);
+    }
     interviewLoaded.value = true;
   } catch {
     interviewError.value = "暂时无法读取访谈记录，请稍后重试。";
   } finally {
     interviewLoading.value = false;
+  }
+}
+
+function toggleNone() {
+  if (fixedNoneApplies.value) fixedSelected.value = [];
+}
+
+async function submitFixedAnswer() {
+  const question = portraitInterview.value?.fixedInterview.question;
+  if (!question || fixedSaving.value) return;
+  fixedSaving.value = true;
+  interviewError.value = "";
+  try {
+    const response = await fetch(
+      "/api/member/portrait/interview/fixed-answers",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          questionId: question.id,
+          selectedOptionIds: fixedSelected.value,
+          noneApplies: fixedNoneApplies.value,
+          freeText: fixedFreeText.value,
+        }),
+      },
+    );
+    const data = response.ok
+      ? await jsonOrUndefined<
+          PortraitInterviewState & {
+            autoFollowup?: { jobId: string; eventsUrl: string };
+          }
+        >(response)
+      : undefined;
+    if (!data) throw new Error();
+    portraitInterview.value = data;
+    fixedSelected.value = [];
+    fixedNoneApplies.value = false;
+    fixedFreeText.value = "";
+    if (data.autoFollowup) {
+      const answer = reactive<InterviewMessage>({
+        id: `pending-${data.autoFollowup.jobId}`,
+        role: "agent",
+        content: "",
+      });
+      interviewMessages.value.push(answer);
+      interviewSending.value = true;
+      listenForInterview(data.autoFollowup.eventsUrl, answer, false);
+    }
+  } catch {
+    interviewError.value = "这道回答暂时没有保存，请稍后重试。";
+  } finally {
+    fixedSaving.value = false;
   }
 }
 
@@ -306,6 +407,55 @@ function streamError(code?: string) {
   }
   if (code === "INTERVIEW_IN_PROGRESS") return "上一条回答仍在生成中。";
   return "这次回答生成失败，消息额度已退回，请稍后重试。";
+}
+
+function listenForInterview(
+  eventsUrl: string,
+  answer: InterviewMessage,
+  quotaReserved = true,
+) {
+  interviewEvents?.close();
+  interviewEvents = new EventSource(eventsUrl);
+  interviewEvents.addEventListener("delta", (event) => {
+    const payload = JSON.parse((event as MessageEvent).data) as {
+      text: string;
+    };
+    answer.content += payload.text;
+  });
+  interviewEvents.addEventListener("progress", (event) => {
+    const payload = JSON.parse((event as MessageEvent).data) as {
+      completed: number;
+      total: number;
+      feedback: string;
+    };
+    if (portraitInterview.value) {
+      portraitInterview.value.progress = {
+        completed: payload.completed,
+        total: payload.total,
+      };
+    }
+    progressFeedback.value = payload.feedback;
+  });
+  interviewEvents.addEventListener("done", () => {
+    interviewEvents?.close();
+    interviewEvents = undefined;
+    interviewSending.value = false;
+  });
+  interviewEvents.addEventListener("error", (event) => {
+    if (!(event instanceof MessageEvent) || !event.data) return;
+    const code = (JSON.parse(event.data) as { code?: string }).code;
+    interviewError.value = quotaReserved
+      ? streamError(code)
+      : code === "MODEL_NOT_CONFIGURED"
+        ? streamError(code)
+        : "第一次动态追问生成失败，请稍后发送一条消息继续。";
+    interviewMessages.value = interviewMessages.value.filter(
+      (message) => message.id !== answer.id,
+    );
+    interviewEvents?.close();
+    interviewEvents = undefined;
+    interviewSending.value = false;
+  });
 }
 
 async function sendInterview() {
@@ -355,30 +505,7 @@ async function sendInterview() {
       return;
     }
     quotaRemaining.value = data.quotaRemaining;
-    interviewEvents?.close();
-    interviewEvents = new EventSource(data.eventsUrl);
-    interviewEvents.addEventListener("delta", (event) => {
-      const payload = JSON.parse((event as MessageEvent).data) as {
-        text: string;
-      };
-      answer.content += payload.text;
-    });
-    interviewEvents.addEventListener("done", () => {
-      interviewEvents?.close();
-      interviewEvents = undefined;
-      interviewSending.value = false;
-    });
-    interviewEvents.addEventListener("error", (event) => {
-      if (!(event instanceof MessageEvent) || !event.data) return;
-      const code = (JSON.parse(event.data) as { code?: string }).code;
-      interviewError.value = streamError(code);
-      interviewMessages.value = interviewMessages.value.filter(
-        (message) => message.id !== answer.id,
-      );
-      interviewEvents?.close();
-      interviewEvents = undefined;
-      interviewSending.value = false;
-    });
+    listenForInterview(data.eventsUrl, answer);
   } catch {
     interviewError.value = "网络中断，消息已恢复，请再次发送。";
     interviewRetry = { clientMessageId, content };
@@ -404,12 +531,75 @@ async function sendInterview() {
           <p class="step-label">我的分身</p>
           <h1>私有画像访谈员</h1>
         </div>
-        <span class="ai-badge">AI</span>
+        <div class="interview-status">
+          <span class="ai-badge">AI</span>
+          <span v-if="portraitInterview" class="portrait-progress">
+            {{ portraitInterview.progress.completed }}/{{ portraitInterview.progress.total }}
+          </span>
+        </div>
         <p>它只与你交流，通过追问逐步理解你；它不是公开恋爱分身，也不会替你作出承诺。</p>
       </section>
 
       <p v-if="interviewLoading" class="loading-state">正在读取访谈…</p>
+      <section
+        v-else-if="portraitInterview && !portraitInterview.fixedInterview.completed"
+        class="fixed-interview-panel"
+      >
+        <div class="fixed-question-heading">
+          <span>固定访谈</span>
+          <strong>
+            {{ portraitInterview.fixedInterview.answered + 1 }}/{{ portraitInterview.fixedInterview.total }}
+          </strong>
+        </div>
+        <form v-if="portraitInterview.fixedInterview.question" @submit.prevent="submitFixedAnswer">
+          <fieldset>
+            <legend>{{ portraitInterview.fixedInterview.question.prompt }}</legend>
+            <p>可以多选、组合，也可以补充自己的真实情况。</p>
+            <label
+              v-for="option in portraitInterview.fixedInterview.question.options"
+              :key="option.id"
+              class="fixed-option"
+            >
+              <input
+                v-model="fixedSelected"
+                type="checkbox"
+                :value="option.id"
+                :disabled="fixedNoneApplies"
+              />
+              <span>{{ option.text }}</span>
+            </label>
+            <label class="fixed-option none-option">
+              <input v-model="fixedNoneApplies" type="checkbox" @change="toggleNone" />
+              <span>都不符合</span>
+            </label>
+          </fieldset>
+          <label class="fixed-supplement">
+            <span>自由补充（可选）</span>
+            <textarea
+              v-model="fixedFreeText"
+              maxlength="2000"
+              rows="3"
+              placeholder="也可以写下选项没有覆盖的情况…"
+            ></textarea>
+          </label>
+          <p v-if="interviewError" class="form-error" role="alert">
+            {{ interviewError }}
+          </p>
+          <button
+            type="submit"
+            :disabled="
+              fixedSaving ||
+              (!fixedSelected.length && !fixedNoneApplies && !fixedFreeText.trim())
+            "
+          >
+            {{ fixedSaving ? "保存中…" : "保存并继续" }}
+          </button>
+        </form>
+      </section>
       <section v-else class="interview-panel" aria-live="polite">
+        <p v-if="progressFeedback" class="portrait-feedback" role="status">
+          {{ progressFeedback }}
+        </p>
         <div v-if="interviewMessages.length" class="message-list">
           <article
             v-for="message in interviewMessages"
