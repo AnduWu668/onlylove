@@ -53,6 +53,10 @@ export function registerPortraitsRoutes(
         const result = await options.portraits.submitVersion(
           member.id,
           request.body.clientRequestId,
+          {
+            agentEngine: options.agentEngine,
+            agentJobs: options.agentJobs,
+          },
         );
         return reply.code(result.created ? 201 : 200).send(result.state);
       } catch (error) {
@@ -93,15 +97,31 @@ export function registerPortraitsRoutes(
       const member = await memberForRequest(request, options.db, options.now());
       if (!member) return reply.code(401).send({ code: "UNAUTHENTICATED" });
       try {
-        return await options.portraits.submitCalibrationAnswer(
+        const result = await options.portraits.submitCalibrationAnswer(
           member.id,
           request.params.scenarioId,
           request.body,
+          {
+            agentJobs: options.agentJobs,
+            definition: options.agentEngine.interviewerDefinition,
+          },
         );
+        if (!result.followupJob) return result.state;
+        return {
+          ...result.state,
+          correctionFollowup: {
+            jobId: result.followupJob.id,
+            eventsUrl: `/api/member/interview/jobs/${result.followupJob.id}/events`,
+          },
+        };
       } catch (error) {
         if (error instanceof PortraitInputError) {
-          const status = error.code === "CALIBRATION_SCENARIO_NOT_FOUND" ? 404 :
-            error.code === "PORTRAIT_VERSION_REQUIRED" ? 409 : 400;
+          const status =
+            error.code === "CALIBRATION_SCENARIO_NOT_FOUND"
+              ? 404
+              : error.code === "PORTRAIT_VERSION_REQUIRED"
+                ? 409
+                : 400;
           return reply.code(status).send({ code: error.code });
         }
         throw error;

@@ -54,21 +54,27 @@ describe("portrait submission, calibration, and publication HTTP seam", () => {
       headers: { cookie: adminCookie },
       payload: { email },
     });
-    return signIn(email, "1990-01-01");
+    return {
+      adminCookie,
+      memberCookie: await signIn(email, "1990-01-01"),
+    };
   }
 
   async function completeFixedInterview(cookie: string) {
+    const prompts: string[] = [];
     for (;;) {
       const state = await app.inject({
         method: "GET",
         url: "/api/member/portrait/interview",
         headers: { cookie },
       });
-      if (state.json().fixedInterview.completed) return;
+      if (state.json().fixedInterview.completed) return prompts;
       const question = state.json().fixedInterview.question as {
         id: string;
+        prompt: string;
         options: { id: string }[];
       };
+      prompts.push(question.prompt);
       const response = await app.inject({
         method: "POST",
         url: "/api/member/portrait/interview/fixed-answers",
@@ -135,7 +141,8 @@ describe("portrait submission, calibration, and publication HTTP seam", () => {
   });
 
   it("creates one immutable version only after an idempotent manual submission", async () => {
-    const cookie = await inviteAndSignInMember("submit@onlylove.test");
+    const { adminCookie, memberCookie: cookie } =
+      await inviteAndSignInMember("submit@onlylove.test");
     const initial = await app.inject({
       method: "GET",
       url: "/api/member/portrait",
@@ -148,7 +155,7 @@ describe("portrait submission, calibration, and publication HTTP seam", () => {
       publishedVersion: null,
     });
 
-    await completeFixedInterview(cookie);
+    const fixedPrompts = await completeFixedInterview(cookie);
     const payload = {
       clientRequestId: "f6148226-ef5d-496c-9c9e-fe9e9aebac8a",
     };
@@ -167,34 +174,28 @@ describe("portrait submission, calibration, and publication HTTP seam", () => {
     });
     expect(submitted.json().calibration.scenarios).toHaveLength(10);
     expect(
-      new Set(
-        submitted
-          .json()
-          .calibration.scenarios.flatMap(
-            (scenario: { dimensions: string[] }) => scenario.dimensions,
-          ),
-      ),
-    ).toEqual(
-      new Set([
-        "long_term_planning",
-        "values",
-        "relationship_boundaries",
-        "communication",
-        "conflict_repair",
-        "emotional_support",
-        "lifestyle",
-        "family_and_finance",
-      ]),
-    );
+      submitted
+        .json()
+        .calibration.scenarios.some((scenario: { prompt: string }) =>
+          fixedPrompts.includes(scenario.prompt),
+        ),
+    ).toBe(false);
     expect(
       submitted
         .json()
         .calibration.scenarios.filter(
-          (scenario: { dimensions: string[] }) => scenario.dimensions.length === 2,
+          (scenario: { kind: string }) => scenario.kind === "single",
+        ),
+    ).toHaveLength(8);
+    expect(
+      submitted
+        .json()
+        .calibration.scenarios.filter(
+          (scenario: { kind: string }) => scenario.kind === "conflict",
         ),
     ).toHaveLength(2);
     expect(JSON.stringify(submitted.json())).not.toMatch(
-      /matchProfile|personaContext|evidenceMessageIds|partnerExpectation/,
+      /dimensions|long_term_planning|matchProfile|personaContext|evidenceMessageIds|partnerExpectation/,
     );
 
     const repeated = await app.inject({
@@ -208,32 +209,35 @@ describe("portrait submission, calibration, and publication HTTP seam", () => {
       submitted.json().submittedVersion.id,
     );
 
-    const pool = new Pool({ connectionString: databaseUrl });
-    const versions = await pool.query<{
-      match_profile: { schemaVersion: string };
-      persona_context: string;
-      persona_context_schema_version: string;
-    }>(
-      "select match_profile, persona_context, persona_context_schema_version from portrait_versions",
-    );
-    await pool.end();
-    expect(versions.rows).toHaveLength(1);
-    expect(versions.rows[0]!.match_profile.schemaVersion).toBe(
-      "match-profile-v1",
-    );
-    expect(versions.rows[0]!.persona_context_schema_version).toBe(
-      "persona-context-v1",
-    );
-    expect(versions.rows[0]!.persona_context).not.toContain(
-      "这段原始访谈不能复制进分身上下文。",
-    );
-    expect(versions.rows[0]!.persona_context).not.toMatch(
-      /partnerExpectation|evidenceMessageIds|confidence/,
-    );
+    const runs = await app.inject({
+      method: "GET",
+      url: "/api/admin/agent-runs",
+      headers: { cookie: adminCookie },
+    });
+    const twinRuns = runs
+      .json()
+      .runs.filter((run: { task: string }) => run.task === "reply_as_twin");
+    expect(twinRuns).toHaveLength(10);
+    expect(
+      new Set(
+        twinRuns.map(
+          (run: { profileVersionId: string }) => run.profileVersionId,
+        ),
+      ),
+    ).toEqual(new Set([submitted.json().submittedVersion.id]));
+    expect(
+      new Set(
+        twinRuns.map(
+          (run: { calibrationScenarioId: string }) =>
+            run.calibrationScenarioId,
+        ),
+      ).size,
+    ).toBe(10);
   });
 
   it("fails calibration on fabrication, keeps focused corrections, and rotates scenarios", async () => {
-    const cookie = await inviteAndSignInMember("calibrate@onlylove.test");
+    const { adminCookie, memberCookie: cookie } =
+      await inviteAndSignInMember("calibrate@onlylove.test");
     await completeFixedInterview(cookie);
     const submitted = await app.inject({
       method: "POST",
@@ -246,7 +250,7 @@ describe("portrait submission, calibration, and publication HTTP seam", () => {
     const first = submitted.json();
     const scenarios = first.calibration.scenarios as {
       id: string;
-      dimensions: string[];
+      kind: "single" | "conflict";
       prompt: string;
     }[];
 
@@ -294,17 +298,33 @@ describe("portrait submission, calibration, and publication HTTP seam", () => {
       },
     });
 
-    const pool = new Pool({ connectionString: databaseUrl });
-    const draft = await pool.query<{ content: Record<string, unknown> }>(
-      "select content from portrait_drafts",
-    );
-    await pool.end();
-    expect(JSON.stringify(draft.rows[0]!.content)).toContain(
-      "第 9 题的聚焦纠正",
-    );
-    expect(JSON.stringify(draft.rows[0]!.content)).toContain(
-      "第 10 题的聚焦纠正",
-    );
+    expect(state.correctionFollowup.eventsUrl).toContain("/events");
+    const tooSoon = await app.inject({
+      method: "POST",
+      url: "/api/member/portrait/versions",
+      headers: { cookie },
+      payload: {
+        clientRequestId: "1d7ca863-eab8-44c5-8e40-4f4957080448",
+      },
+    });
+    expect(tooSoon.statusCode).toBe(409);
+    expect(tooSoon.json()).toEqual({ code: "PORTRAIT_DRAFT_UPDATING" });
+    const correction = await app.inject({
+      method: "GET",
+      url: state.correctionFollowup.eventsUrl,
+      headers: { cookie },
+    });
+    expect(correction.body).toContain("event: done");
+    const runs = await app.inject({
+      method: "GET",
+      url: "/api/admin/agent-runs",
+      headers: { cookie: adminCookie },
+    });
+    expect(
+      runs
+        .json()
+        .runs.filter((run: { task: string }) => run.task === "extract_portrait"),
+    ).toHaveLength(2);
 
     const next = await app.inject({
       method: "POST",
@@ -319,19 +339,30 @@ describe("portrait submission, calibration, and publication HTTP seam", () => {
     expect(
       next
         .json()
-        .calibration.scenarios.map((scenario: { dimensions: string[] }) =>
-          scenario.dimensions,
-        ),
-    ).toEqual(scenarios.map((scenario) => scenario.dimensions));
+        .calibration.scenarios.map((scenario: { kind: string }) => scenario.kind),
+    ).toEqual(scenarios.map((scenario) => scenario.kind));
+    const nextPrompts = next
+      .json()
+      .calibration.scenarios.map((scenario: { prompt: string }) => scenario.prompt);
+    expect(nextPrompts).not.toEqual(scenarios.map((scenario) => scenario.prompt));
+    const third = await app.inject({
+      method: "POST",
+      url: "/api/member/portrait/versions",
+      headers: { cookie },
+      payload: {
+        clientRequestId: "36aa79db-0792-49b9-8129-a326d261f62c",
+      },
+    });
     expect(
-      next
+      third
         .json()
         .calibration.scenarios.map((scenario: { prompt: string }) => scenario.prompt),
-    ).not.toEqual(scenarios.map((scenario) => scenario.prompt));
+    ).not.toEqual(nextPrompts);
   });
 
   it("publishes only a passing version, atomically replaces it, and withdraws it", async () => {
-    const cookie = await inviteAndSignInMember("publish@onlylove.test");
+    const { memberCookie: cookie } =
+      await inviteAndSignInMember("publish@onlylove.test");
     await completeFixedInterview(cookie);
     const submit = async (clientRequestId: string) =>
       app.inject({
@@ -426,15 +457,11 @@ describe("portrait submission, calibration, and publication HTTP seam", () => {
       publishedVersion: null,
     });
 
-    const pool = new Pool({ connectionString: databaseUrl });
-    const versions = await pool.query<{ version: number }>(
-      "select version from portrait_versions order by version",
-    );
-    const state = await pool.query<{ published_version_id: string | null }>(
-      "select published_version_id from portrait_member_states",
-    );
-    await pool.end();
-    expect(versions.rows.map((version) => version.version)).toEqual([1, 2]);
-    expect(state.rows[0]!.published_version_id).toBeNull();
+    const current = await app.inject({
+      method: "GET",
+      url: "/api/member/portrait",
+      headers: { cookie },
+    });
+    expect(current.json().publishedVersion).toBeNull();
   });
 });

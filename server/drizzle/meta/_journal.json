@@ -64,6 +64,13 @@
       "when": 1787289942525,
       "tag": "0008_natural_iron_lad",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1787292276703,
+      "tag": "0009_yellow_spacker_dave",
+      "breakpoints": true
     }
   ]
 }

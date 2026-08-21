@@ -6,19 +6,20 @@ import { conversationMessages, conversations } from "./schema.js";
 export class InterviewConversations {
   constructor(private readonly db: Database) {}
 
-  async appendFixedAnswer(
+  private async appendMemberMessage(
     transaction: DatabaseTransaction,
     memberId: string,
+    type: "INTERVIEW" | "CALIBRATION",
     content: string,
     createdAt: Date,
   ) {
     await transaction
       .insert(conversations)
-      .values({
-        id: randomUUID(),
-        type: "INTERVIEW",
-        memberId,
-        createdAt,
+        .values({
+          id: randomUUID(),
+          type,
+          memberId,
+          createdAt,
       })
       .onConflictDoNothing();
     const conversation = (
@@ -28,7 +29,7 @@ export class InterviewConversations {
         .where(
           and(
             eq(conversations.memberId, memberId),
-            eq(conversations.type, "INTERVIEW"),
+            eq(conversations.type, type),
           ),
         )
         .limit(1)
@@ -58,6 +59,51 @@ export class InterviewConversations {
     return { ...message, conversationId: conversation.id };
   }
 
+  appendFixedAnswer(
+    transaction: DatabaseTransaction,
+    memberId: string,
+    content: string,
+    createdAt: Date,
+  ) {
+    return this.appendMemberMessage(
+      transaction,
+      memberId,
+      "INTERVIEW",
+      content,
+      createdAt,
+    );
+  }
+
+  appendCalibrationScenario(
+    transaction: DatabaseTransaction,
+    memberId: string,
+    content: string,
+    createdAt: Date,
+  ) {
+    return this.appendMemberMessage(
+      transaction,
+      memberId,
+      "CALIBRATION",
+      content,
+      createdAt,
+    );
+  }
+
+  appendCalibrationCorrections(
+    transaction: DatabaseTransaction,
+    memberId: string,
+    content: string,
+    createdAt: Date,
+  ) {
+    return this.appendMemberMessage(
+      transaction,
+      memberId,
+      "INTERVIEW",
+      content,
+      createdAt,
+    );
+  }
+
   memberEvidence(conversationId: string, throughSequence: number) {
     return this.db
       .select({
@@ -74,6 +120,21 @@ export class InterviewConversations {
         ),
       )
       .orderBy(asc(conversationMessages.sequence));
+  }
+
+  async conversationIdForMember(
+    memberId: string,
+    type: "INTERVIEW" | "CALIBRATION",
+  ) {
+    return (
+      await this.db
+        .select({ id: conversations.id })
+        .from(conversations)
+        .where(
+          and(eq(conversations.memberId, memberId), eq(conversations.type, type)),
+        )
+        .limit(1)
+    )[0]?.id;
   }
 
   async conversationForMessage(

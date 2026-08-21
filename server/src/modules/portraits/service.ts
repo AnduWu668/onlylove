@@ -33,6 +33,7 @@ export const QUESTION_PLANNER_VERSION = QUESTION_PLANNING_RULE.version;
 const MATCH_PROFILE_SCHEMA_VERSION = "match-profile-v1";
 const PERSONA_CONTEXT_SCHEMA_VERSION = "persona-context-v1";
 const CALIBRATION_SCHEMA_VERSION = "portrait-calibration-v1";
+const CALIBRATION_JOB_LEASE_MS = 2 * 60 * 1_000;
 
 const DIMENSION_LABELS: Record<PortraitDimension, string> = {
   long_term_planning: "长期规划",
@@ -84,7 +85,7 @@ const CALIBRATION_SCENARIO_SETS: readonly (readonly {
     },
     {
       dimensions: ["long_term_planning", "lifestyle"],
-      prompt: "长期目标需要连续两年牺牲当下生活质量，你会怎样权衡？",
+      prompt: "你计划两年后回家乡，但伴侣的工作和日常都在本地，会怎样安排现在与未来？",
     },
     {
       dimensions: ["relationship_boundaries", "emotional_support"],
@@ -205,6 +206,11 @@ interface AutoFollowupOptions {
   definition: AgentEngine["interviewerDefinition"];
 }
 
+interface VersionGenerationOptions {
+  agentEngine: AgentEngine;
+  agentJobs: AgentJobs;
+}
+
 function completedDimensions(content: PortraitDraftContent) {
   return PORTRAIT_DIMENSIONS.filter((dimension) =>
     ["medium", "high"].includes(content[dimension].confidence),
@@ -296,28 +302,37 @@ function personaContext(content: PortraitDraftContent) {
   return `# 恋爱分身上下文\n\n始终说明自己是 AI，不代表成员作出承诺；未知事实必须坦承不确定。\n\n${dimensions}`;
 }
 
-function calibrationPrediction(
-  content: PortraitDraftContent,
-  dimensions: readonly PortraitDimension[],
-) {
-  const understood = dimensions
-    .map((dimension) => content[dimension].selfTendency)
-    .filter((value): value is string => Boolean(value));
-  return understood.length
-    ? `面对这个场景，我可能会这样考虑：${understood.join("同时，")}`
-    : "我对这方面还没有足够信息，不会替本人猜测。";
-}
-
-function calibrationScenarios(version: number, content: PortraitDraftContent) {
+function calibrationScenarios(version: number) {
   return CALIBRATION_SCENARIO_SETS[(version - 1) % 2]!.map(
     (scenario, index) => ({
       id: randomUUID(),
       position: index + 1,
       dimensions: [...scenario.dimensions],
-      prompt: scenario.prompt,
-      prediction: calibrationPrediction(content, scenario.dimensions),
+      prompt:
+        version > 2
+          ? `在共同生活进入第 ${version} 年时，${scenario.prompt}`
+          : scenario.prompt,
+      prediction: null,
     }),
   );
+}
+
+function calibrationOutcome(
+  answers: readonly { rating: CalibrationRating; criticalFabrication: boolean }[],
+  total = 10,
+) {
+  const likeCount = answers.filter((answer) => answer.rating === "like").length;
+  const criticalFabrication = answers.some(
+    (answer) => answer.criticalFabrication,
+  );
+  const complete = answers.length === total;
+  return {
+    answered: answers.length,
+    likeCount,
+    criticalFabrication,
+    complete,
+    passed: complete && likeCount >= 8 && !criticalFabrication,
+  };
 }
 
 export class Portraits {
@@ -392,12 +407,7 @@ export class Portraits {
     const answerByScenario = new Map(
       answers.map((answer) => [answer.scenarioId, answer]),
     );
-    const likeCount = answers.filter((answer) => answer.rating === "like").length;
-    const criticalFabrication = answers.some(
-      (answer) => answer.criticalFabrication,
-    );
-    const complete = answers.length === scenarios.length;
-    const canPublish = complete && likeCount >= 8 && !criticalFabrication;
+    const outcome = calibrationOutcome(answers, scenarios.length);
     const isPublished = state.publishedVersionId === state.submittedVersionId;
     const publicVersion = (version: (typeof submitted)[number] | undefined) =>
       version
@@ -410,28 +420,28 @@ export class Portraits {
     return {
       status: isPublished
         ? ("published" as const)
-        : canPublish
+        : outcome.passed
           ? ("ready_to_publish" as const)
-        : complete
-          ? ("needs_more_understanding" as const)
-          : ("calibrating" as const),
-      ...(complete && !canPublish
+          : outcome.complete
+            ? ("needs_more_understanding" as const)
+            : ("calibrating" as const),
+      ...(outcome.complete && !outcome.passed
         ? { message: "分身还需要继续了解你" }
         : {}),
       submittedVersion: publicVersion(submitted[0]),
       publishedVersion: publicVersion(published[0]),
       calibration: {
-        answered: answers.length,
+        answered: outcome.answered,
         total: scenarios.length,
-        likeCount,
-        criticalFabrication,
-        canPublish,
+        likeCount: outcome.likeCount,
+        criticalFabrication: outcome.criticalFabrication,
+        canPublish: outcome.passed,
         scenarios: scenarios.map((scenario) => ({
           id: scenario.id,
           number: scenario.position,
-          dimensions: scenario.dimensions,
+          kind: scenario.dimensions.length === 1 ? "single" : "conflict",
           prompt: scenario.prompt,
-          prediction: scenario.prediction,
+          prediction: scenario.prediction!,
           answer: answerByScenario.get(scenario.id) ?? null,
         })),
       },
@@ -442,6 +452,7 @@ export class Portraits {
     memberId: string,
     scenarioId: string,
     input: CalibrationAnswerInput,
+    autoFollowup: AutoFollowupOptions,
   ) {
     const correction = input.correction.trim();
     if (input.rating !== "like" && !correction) {
@@ -451,6 +462,9 @@ export class Portraits {
       throw new PortraitInputError("INVALID_CALIBRATION_ANSWER");
     }
 
+    let followupJob:
+      | Awaited<ReturnType<AgentJobs["enqueueInterview"]>>
+      | undefined;
     await this.db.transaction(async (transaction) => {
       await transaction.execute(
         sql`select pg_advisory_xact_lock(hashtext(${memberId}))`,
@@ -503,8 +517,8 @@ export class Portraits {
           correction: portraitCalibrationAnswers.correction,
           criticalFabrication:
             portraitCalibrationAnswers.criticalFabrication,
-          dimensions: portraitCalibrationScenarios.dimensions,
           position: portraitCalibrationScenarios.position,
+          prompt: portraitCalibrationScenarios.prompt,
         })
         .from(portraitCalibrationAnswers)
         .innerJoin(
@@ -520,36 +534,38 @@ export class Portraits {
             state.submittedVersionId,
           ),
         );
-      const passed =
-        answers.length === 10 &&
-        answers.filter((answer) => answer.rating === "like").length >= 8 &&
-        !answers.some((answer) => answer.criticalFabrication);
-      if (answers.length !== 10 || passed) return;
-
-      const draft = (
-        await transaction
-          .select()
-          .from(portraitDrafts)
-          .where(eq(portraitDrafts.memberId, memberId))
-          .limit(1)
-      )[0];
-      if (!draft) return;
-      const content = structuredClone(draft.content);
-      for (const answer of answers) {
-        if (answer.rating === "like" || !answer.correction) continue;
-        const note = `校准纠正（第 ${answer.position} 题）：${answer.correction}`;
-        for (const dimension of answer.dimensions as PortraitDimension[]) {
-          if (!content[dimension].contradictions.includes(note)) {
-            content[dimension].contradictions.push(note);
-          }
-        }
-      }
-      await transaction
-        .update(portraitDrafts)
-        .set({ content, updatedAt: this.now() })
-        .where(eq(portraitDrafts.memberId, memberId));
+      const outcome = calibrationOutcome(answers);
+      if (!outcome.complete || outcome.passed) return;
+      const content = answers
+        .filter((answer) => answer.rating !== "like")
+        .map(
+          (answer) =>
+            [
+              `未见场景 ${answer.position}：${answer.prompt}`,
+              `成员判断：${answer.rating === "partial" ? "部分像我" : "不像我"}`,
+              `聚焦纠正：${answer.correction}`,
+              answer.criticalFabrication ? "成员指出：包含关键事实捏造" : "",
+            ]
+              .filter(Boolean)
+              .join("\n"),
+        )
+        .join("\n\n");
+      const message = await this.interviewConversations.appendCalibrationCorrections(
+        transaction,
+        memberId,
+        `分身校准后的理解纠正：\n\n${content}`,
+        this.now(),
+      );
+      followupJob = await autoFollowup.agentJobs.enqueueInterview({
+        transaction,
+        memberId,
+        conversationId: message.conversationId,
+        inputMessageId: message.id,
+        definition: autoFollowup.definition,
+        createdAt: this.now(),
+      });
     });
-    return this.memberState(memberId);
+    return { state: await this.memberState(memberId), followupJob };
   }
 
   async publishVersion(memberId: string, versionId: string) {
@@ -584,11 +600,7 @@ export class Portraits {
         .where(
           eq(portraitCalibrationScenarios.portraitVersionId, versionId),
         );
-      if (
-        answers.length !== 10 ||
-        answers.filter((answer) => answer.rating === "like").length < 8 ||
-        answers.some((answer) => answer.criticalFabrication)
-      ) {
+      if (!calibrationOutcome(answers).passed) {
         throw new PortraitInputError("CALIBRATION_NOT_PASSED");
       }
       await transaction
@@ -612,14 +624,109 @@ export class Portraits {
     return this.memberState(memberId);
   }
 
-  async submitVersion(memberId: string, clientRequestId: string) {
+  private async generateCalibrationPredictions(
+    versionId: string,
+    context: string,
+    { agentEngine, agentJobs }: VersionGenerationOptions,
+  ) {
+    // ponytail: durable jobs run inline until the single worker claims business jobs.
+    const [scenarios, savedJobs] = await Promise.all([
+      this.db
+        .select()
+        .from(portraitCalibrationScenarios)
+        .where(eq(portraitCalibrationScenarios.portraitVersionId, versionId))
+        .orderBy(asc(portraitCalibrationScenarios.position)),
+      agentJobs.calibrationJobsForVersion(versionId),
+    ]);
+    const jobByScenario = new Map(
+      savedJobs.map((job) => [job.calibrationScenarioId, job]),
+    );
+    for (const scenario of scenarios) {
+      if (scenario.prediction) continue;
+      let job = jobByScenario.get(scenario.id);
+      if (!job) throw new Error("CALIBRATION_JOB_MISSING");
+      if (job.status === "failed") job = (await agentJobs.requeueFailed(job.id))!;
+      const startedAt = this.now();
+      const claimed = await agentJobs.claim(
+        job.id,
+        startedAt,
+        new Date(startedAt.getTime() + CALIBRATION_JOB_LEASE_MS),
+      );
+      if (!claimed) {
+        const current = await agentJobs.get(job.id);
+        if (current?.status === "completed") continue;
+        throw new PortraitInputError("PORTRAIT_SUBMISSION_IN_PROGRESS");
+      }
+      try {
+        const result = await agentEngine.replyAsTwin(
+          context,
+          scenario.prompt,
+          (attempts) =>
+            agentJobs.recordAttempts(
+              claimed,
+              attempts,
+              this.now(),
+              agentEngine.twinDefinition,
+            ),
+        );
+        await this.db.transaction(async (transaction) => {
+          await transaction
+            .update(portraitCalibrationScenarios)
+            .set({ prediction: result.text })
+            .where(eq(portraitCalibrationScenarios.id, scenario.id));
+          const completed = await agentJobs.complete(
+            transaction,
+            claimed,
+            null,
+            result.retryCount,
+            result.switchedModel,
+            this.now(),
+          );
+          if (!completed) throw new Error("AGENT_JOB_LEASE_LOST");
+        });
+      } catch (error) {
+        const runError = error instanceof AgentRunError ? error : undefined;
+        await this.db.transaction((transaction) =>
+          agentJobs.fail(
+            transaction,
+            claimed,
+            runError?.code ?? "MODEL_REQUEST_FAILED",
+            runError?.retryCount ?? 0,
+            runError?.switchedModel ?? false,
+            false,
+            this.now(),
+          ),
+        );
+        throw error;
+      }
+    }
+  }
+
+  async submitVersion(
+    memberId: string,
+    clientRequestId: string,
+    generation: VersionGenerationOptions,
+  ) {
+    const interviewConversationId =
+      await this.interviewConversations.conversationIdForMember(
+        memberId,
+        "INTERVIEW",
+      );
+    if (
+      interviewConversationId &&
+      (await generation.agentJobs.findActiveForConversationId(
+        interviewConversationId,
+      ))
+    ) {
+      throw new PortraitInputError("PORTRAIT_DRAFT_UPDATING");
+    }
     const result = await this.db.transaction(async (transaction) => {
       await transaction.execute(
         sql`select pg_advisory_xact_lock(hashtext(${memberId}))`,
       );
       const existing = (
         await transaction
-          .select({ id: portraitVersions.id })
+          .select()
           .from(portraitVersions)
           .where(
             and(
@@ -629,7 +736,14 @@ export class Portraits {
           )
           .limit(1)
       )[0];
-      if (existing) return { created: false };
+      if (existing) {
+        return {
+          created: false,
+          versionId: existing.id,
+          version: existing.version,
+          personaContext: existing.personaContext,
+        };
+      }
 
       const draft = (
         await transaction
@@ -650,6 +764,7 @@ export class Portraits {
       const version = (current?.version ?? 0) + 1;
       const id = randomUUID();
       const createdAt = this.now();
+      const context = personaContext(draft.content);
       await transaction.insert(portraitVersions).values({
         id,
         memberId,
@@ -661,30 +776,76 @@ export class Portraits {
           dimensions: draft.content,
         },
         personaContextSchemaVersion: PERSONA_CONTEXT_SCHEMA_VERSION,
-        personaContext: personaContext(draft.content),
+        personaContext: context,
         calibrationSchemaVersion: CALIBRATION_SCHEMA_VERSION,
         createdAt,
       });
+      const scenarios = calibrationScenarios(version);
       await transaction.insert(portraitCalibrationScenarios).values(
-        calibrationScenarios(version, draft.content).map((scenario) => ({
+        scenarios.map((scenario) => ({
           ...scenario,
           portraitVersionId: id,
           createdAt,
         })),
       );
+      for (const scenario of scenarios) {
+        const message = await this.interviewConversations.appendCalibrationScenario(
+          transaction,
+          memberId,
+          scenario.prompt,
+          createdAt,
+        );
+        await generation.agentJobs.enqueueTwinCalibration({
+          transaction,
+          memberId,
+          conversationId: message.conversationId,
+          inputMessageId: message.id,
+          profileVersionId: id,
+          calibrationScenarioId: scenario.id,
+          definition: generation.agentEngine.twinDefinition,
+          createdAt,
+        });
+      }
+      return { created: true, versionId: id, version, personaContext: context };
+    });
+    await this.generateCalibrationPredictions(
+      result.versionId,
+      result.personaContext,
+      generation,
+    );
+    await this.db.transaction(async (transaction) => {
+      await transaction.execute(
+        sql`select pg_advisory_xact_lock(hashtext(${memberId}))`,
+      );
+      const state = (
+        await transaction
+          .select()
+          .from(portraitMemberStates)
+          .where(eq(portraitMemberStates.memberId, memberId))
+          .limit(1)
+      )[0];
+      const currentVersion = state
+        ? (
+            await transaction
+              .select({ version: portraitVersions.version })
+              .from(portraitVersions)
+              .where(eq(portraitVersions.id, state.submittedVersionId))
+              .limit(1)
+          )[0]?.version
+        : undefined;
+      if (currentVersion !== undefined && currentVersion > result.version) return;
       await transaction
         .insert(portraitMemberStates)
         .values({
           memberId,
-          submittedVersionId: id,
+          submittedVersionId: result.versionId,
           publishedVersionId: null,
-          updatedAt: createdAt,
+          updatedAt: this.now(),
         })
         .onConflictDoUpdate({
           target: portraitMemberStates.memberId,
-          set: { submittedVersionId: id, updatedAt: createdAt },
+          set: { submittedVersionId: result.versionId, updatedAt: this.now() },
         });
-      return { created: true };
     });
     return { ...result, state: await this.memberState(memberId) };
   }

@@ -837,7 +837,7 @@ describe("OnlyLove UI seam", () => {
     const scenario = {
       id: "d9d4c6c7-ef3e-47de-bbf0-e0367ad67957",
       number: 1,
-      dimensions: ["long_term_planning"],
+      kind: "single",
       prompt: "伴侣收到外地三年的理想工作机会，你会怎样一起决定？",
       prediction: "我可能会先讨论这件事对两个人长期计划的影响。",
       answer: null,

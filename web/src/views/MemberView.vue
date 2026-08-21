@@ -600,6 +600,8 @@ async function submitPortraitVersion() {
       portraitActionError.value =
         data?.code === "PORTRAIT_DRAFT_REQUIRED"
           ? "先继续聊一会儿，让画像访谈员形成可提交的理解。"
+          : data?.code === "PORTRAIT_DRAFT_UPDATING"
+            ? "画像访谈员正在吸收你的最新纠正，完成后再提交。"
           : "这次理解暂时无法提交，请稍后重试。";
       return;
     }
@@ -636,13 +638,27 @@ async function submitCalibrationAnswer() {
       },
     );
     const data = response.ok
-      ? await jsonOrUndefined<PortraitLifecycleState>(response)
+      ? await jsonOrUndefined<
+          PortraitLifecycleState & {
+            correctionFollowup?: { jobId: string; eventsUrl: string };
+          }
+        >(response)
       : undefined;
     if (!data) {
       portraitActionError.value = "这次判断没有保存，请稍后重试。";
       return;
     }
     portraitLifecycle.value = data;
+    if (data.correctionFollowup) {
+      const answer = reactive<InterviewMessage>({
+        id: `pending-${data.correctionFollowup.jobId}`,
+        role: "agent",
+        content: "",
+      });
+      interviewMessages.value.push(answer);
+      interviewSending.value = true;
+      listenForInterview(data.correctionFollowup.eventsUrl, answer, false);
+    }
     calibrationRating.value = undefined;
     calibrationCorrection.value = "";
     calibrationCriticalFabrication.value = false;
@@ -804,7 +820,7 @@ async function withdrawPortrait() {
             <button
               class="submit-portrait"
               type="button"
-              :disabled="portraitActionPending"
+              :disabled="portraitActionPending || interviewSending"
               @click="submitPortraitVersion"
             >
               {{ portraitActionPending ? "提交中…" : "提交本次理解" }}
@@ -893,7 +909,7 @@ async function withdrawPortrait() {
               <button
                 class="submit-portrait"
                 type="button"
-                :disabled="portraitActionPending"
+                :disabled="portraitActionPending || interviewSending"
                 @click="submitPortraitVersion"
               >
                 提交新的理解版本
@@ -908,7 +924,7 @@ async function withdrawPortrait() {
               <button
                 class="publish-portrait"
                 type="button"
-                :disabled="portraitActionPending"
+                :disabled="portraitActionPending || interviewSending"
                 @click="publishPortrait"
               >
                 发布 v{{ portraitLifecycle.submittedVersion?.version }}

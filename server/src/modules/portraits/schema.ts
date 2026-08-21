@@ -117,7 +117,7 @@ export const portraitCalibrationScenarios = pgTable(
     position: integer("position").notNull(),
     dimensions: varchar("dimensions", { length: 40 }).array().notNull(),
     prompt: text("prompt").notNull(),
-    prediction: text("prediction").notNull(),
+    prediction: text("prediction"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
   (table) => [

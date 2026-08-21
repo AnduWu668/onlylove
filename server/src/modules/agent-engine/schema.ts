@@ -50,6 +50,8 @@ export const agentJobs = pgTable(
     inputMessageId: uuid("input_message_id")
       .notNull()
       .references(() => conversationMessages.id),
+    profileVersionId: uuid("profile_version_id"),
+    calibrationScenarioId: uuid("calibration_scenario_id"),
     outputMessageId: uuid("output_message_id").references(
       () => conversationMessages.id,
     ),

@@ -65,6 +65,70 @@ export class AgentJobs {
     });
   }
 
+  enqueueTwinCalibration(values: {
+    transaction: DatabaseTransaction;
+    memberId: string;
+    conversationId: string;
+    inputMessageId: string;
+    profileVersionId: string;
+    calibrationScenarioId: string;
+    definition: {
+      role: "public_twin";
+      task: "reply_as_twin";
+      version: string;
+      promptVersion: string;
+      schemaVersion: null;
+    };
+    createdAt: Date;
+  }) {
+    return this.create(values.transaction, {
+      id: randomUUID(),
+      role: values.definition.role,
+      task: values.definition.task,
+      definitionVersion: values.definition.version,
+      promptVersion: values.definition.promptVersion,
+      schemaVersion: values.definition.schemaVersion,
+      memberId: values.memberId,
+      conversationId: values.conversationId,
+      inputMessageId: values.inputMessageId,
+      profileVersionId: values.profileVersionId,
+      calibrationScenarioId: values.calibrationScenarioId,
+      status: "pending",
+      retryCount: 0,
+      switchedModel: false,
+      quotaRefunded: false,
+      createdAt: values.createdAt,
+    });
+  }
+
+  calibrationJobsForVersion(profileVersionId: string) {
+    return this.db
+      .select()
+      .from(agentJobs)
+      .where(
+        and(
+          eq(agentJobs.profileVersionId, profileVersionId),
+          eq(agentJobs.task, "reply_as_twin"),
+        ),
+      );
+  }
+
+  async requeueFailed(id: string) {
+    return (
+      await this.db
+        .update(agentJobs)
+        .set({
+          status: "pending",
+          error: null,
+          leaseToken: null,
+          leaseExpiresAt: null,
+          completedAt: null,
+        })
+        .where(and(eq(agentJobs.id, id), eq(agentJobs.status, "failed")))
+        .returning()
+    )[0];
+  }
+
   async findForMember(id: string, memberId: string) {
     return (
       await this.db
@@ -184,7 +248,7 @@ export class AgentJobs {
   async complete(
     transaction: DatabaseTransaction,
     job: AgentJob,
-    outputMessageId: string,
+    outputMessageId: string | null,
     retryCount: number,
     switchedModel: boolean,
     completedAt: Date,
@@ -249,10 +313,19 @@ export class AgentJobs {
     );
   }
 
-  listRuns() {
-    return this.db
-      .select()
+  async listRuns() {
+    const rows = await this.db
+      .select({
+        run: agentRuns,
+        profileVersionId: agentJobs.profileVersionId,
+        calibrationScenarioId: agentJobs.calibrationScenarioId,
+      })
       .from(agentRuns)
+      .innerJoin(agentJobs, eq(agentJobs.id, agentRuns.jobId))
       .orderBy(desc(agentRuns.createdAt), asc(agentRuns.retryCount));
+    return rows.map(({ run, ...jobReferences }) => ({
+      ...run,
+      ...jobReferences,
+    }));
   }
 }
