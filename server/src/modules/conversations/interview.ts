@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, lte, max } from "drizzle-orm";
+import { and, asc, eq, inArray, lte, max } from "drizzle-orm";
 import type { Database, DatabaseTransaction } from "../../db.js";
 import { conversationMessages, conversations } from "./schema.js";
 
@@ -165,19 +165,20 @@ export class InterviewConversations {
       );
   }
 
-  async conversationIdForMember(
+  conversationIdsForMember(
     memberId: string,
-    type: "INTERVIEW" | "TWIN",
+    types: ("INTERVIEW" | "TWIN")[],
+    database: Database | DatabaseTransaction = this.db,
   ) {
-    return (
-      await this.db
-        .select({ id: conversations.id })
-        .from(conversations)
-        .where(
-          and(eq(conversations.memberId, memberId), eq(conversations.type, type)),
-        )
-        .limit(1)
-    )[0]?.id;
+    return database
+      .select({ id: conversations.id })
+      .from(conversations)
+      .where(
+        and(
+          eq(conversations.memberId, memberId),
+          inArray(conversations.type, types),
+        ),
+      );
   }
 
   async conversationForMessage(

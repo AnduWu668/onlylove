@@ -316,6 +316,9 @@ async function reserveOwnAgentMessage(
     await transaction.execute(
       sql`select pg_advisory_xact_lock(hashtext(${`${input.memberId}:${quotaDate}`}))`,
     );
+    await transaction.execute(
+      sql`select pg_advisory_xact_lock(hashtext(${input.memberId}))`,
+    );
     await transaction
       .insert(conversations)
       .values({

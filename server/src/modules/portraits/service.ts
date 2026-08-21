@@ -1073,19 +1073,17 @@ export class Portraits {
         await this.interviewConversations.agentQuestionsForMember(memberId)
       ).map((message) => message.content),
     ];
-    const conversationIds = (
-      await Promise.all([
-        this.interviewConversations.conversationIdForMember(
-          memberId,
-          "INTERVIEW",
-        ),
-        this.interviewConversations.conversationIdForMember(memberId, "TWIN"),
-      ])
-    ).filter((id): id is string => Boolean(id));
     const result = await this.db.transaction(async (transaction) => {
       await transaction.execute(
         sql`select pg_advisory_xact_lock(hashtext(${memberId}))`,
       );
+      const conversationIds = (
+        await this.interviewConversations.conversationIdsForMember(
+          memberId,
+          ["INTERVIEW", "TWIN"],
+          transaction,
+        )
+      ).map((conversation) => conversation.id);
       const existing = (
         await transaction
           .select()
