@@ -14,6 +14,9 @@ const email = ref("");
 const invitations = ref<Invitation[]>([]);
 const busy = ref(false);
 const error = ref("");
+const candidateCapacity = ref(5);
+const minimumReciprocalScore = ref(60);
+const settingsSuccess = ref("");
 
 const statusText: Record<Invitation["status"], string> = {
   active: "有效",
@@ -26,6 +29,14 @@ async function loadInvitations() {
   const response = await fetch("/api/admin/invitations");
   if (!response.ok) throw new Error("无法读取邀请记录");
   invitations.value = (await response.json()).invitations;
+}
+
+async function loadMatchingSettings() {
+  const response = await fetch("/api/admin/matching-settings");
+  if (!response.ok) throw new Error("无法读取推荐配置");
+  const settings = await response.json();
+  candidateCapacity.value = settings.candidateCapacity;
+  minimumReciprocalScore.value = settings.minimumReciprocalScore;
 }
 
 onMounted(async () => {
@@ -47,11 +58,36 @@ onMounted(async () => {
     return;
   }
   try {
-    await loadInvitations();
+    await Promise.all([loadInvitations(), loadMatchingSettings()]);
   } catch (caught) {
     error.value = caught instanceof Error ? caught.message : "暂时无法读取邀请。";
   }
 });
+
+async function saveMatchingSettings() {
+  busy.value = true;
+  error.value = "";
+  settingsSuccess.value = "";
+  try {
+    const response = await fetch("/api/admin/matching-settings", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        candidateCapacity: candidateCapacity.value,
+        minimumReciprocalScore: minimumReciprocalScore.value,
+      }),
+    });
+    if (!response.ok) throw new Error("推荐配置保存失败，请检查填写内容。");
+    const settings = await response.json();
+    candidateCapacity.value = settings.candidateCapacity;
+    minimumReciprocalScore.value = settings.minimumReciprocalScore;
+    settingsSuccess.value = "推荐配置已保存，修改记录已写入审计。";
+  } catch (caught) {
+    error.value = caught instanceof Error ? caught.message : "推荐配置保存失败。";
+  } finally {
+    busy.value = false;
+  }
+}
 
 async function issue() {
   busy.value = true;
@@ -127,6 +163,27 @@ function formatDate(value: string) {
         <button type="submit" :disabled="busy">签发邀请</button>
       </form>
       <p v-if="error" class="form-error" role="alert">{{ error }}</p>
+    </section>
+
+    <section class="admin-panel matching-settings-panel">
+      <div class="list-heading">
+        <div>
+          <h2>候选推荐配置</h2>
+          <p>同一个容量同时限制每日新增和未处理候选；低于阈值的人不会用于补数。</p>
+        </div>
+      </div>
+      <form class="matching-settings-form" @submit.prevent="saveMatchingSettings">
+        <div>
+          <label for="candidate-capacity">每日新增 / 未处理共同容量</label>
+          <input id="candidate-capacity" v-model.number="candidateCapacity" type="number" min="1" max="100" required />
+        </div>
+        <div>
+          <label for="minimum-reciprocal-score">最低互惠适合度</label>
+          <input id="minimum-reciprocal-score" v-model.number="minimumReciprocalScore" type="number" min="0" max="100" step="0.01" required />
+        </div>
+        <button type="submit" :disabled="busy">保存推荐配置</button>
+      </form>
+      <p v-if="settingsSuccess" class="save-success" role="status">{{ settingsSuccess }}</p>
     </section>
 
     <section class="invitation-list" aria-labelledby="invitation-list-title">

@@ -157,6 +157,7 @@ export interface MembersOptions {
   now: () => Date;
   otpSecret: string;
   production: boolean;
+  recheckRecommendations?: (memberId: string) => Promise<void>;
 }
 
 function normalizeEmail(email: string) {
@@ -548,7 +549,14 @@ export async function activeAdminById(id: string, db: Database) {
 
 export function registerMembersRoutes(
   app: FastifyInstance,
-  { db, mailer, now, otpSecret, production }: MembersOptions,
+  {
+    db,
+    mailer,
+    now,
+    otpSecret,
+    production,
+    recheckRecommendations,
+  }: MembersOptions,
 ) {
   app.post<{ Body: { email: string; password: string } }>(
     "/api/auth/login",
@@ -927,6 +935,7 @@ export function registerMembersRoutes(
             .returning()
         )[0]!;
       });
+      await recheckRecommendations?.(member.id);
       return {
         profile: body.profile,
         matchCriteria: publicMatchCriteria(criteria),

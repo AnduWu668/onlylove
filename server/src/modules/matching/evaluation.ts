@@ -169,7 +169,7 @@ function requiredRangeStatus(
     : "conflict";
 }
 
-function directionalStructuredStatus(
+function directionalDeterministicStatus(
   criteria: StructuredMatchCriteria,
   candidate: StructuredMatchCriteria["member"],
 ): PairConditionStatus {
@@ -194,13 +194,36 @@ function directionalStructuredStatus(
       : criteria.acceptableCities.includes(candidate.city)
         ? "pass"
         : "conflict";
+  return combineStatus(age, height, city);
+}
+
+function directionalStructuredStatus(
+  criteria: StructuredMatchCriteria,
+  candidate: StructuredMatchCriteria["member"],
+): PairConditionStatus {
   const occupation =
     criteria.occupationMode === "required" &&
     criteria.occupationRequirement &&
     !candidate.occupation
       ? "needs_more_information"
       : "pass";
-  return combineStatus(age, height, city, occupation);
+  return combineStatus(
+    directionalDeterministicStatus(criteria, candidate),
+    occupation,
+  );
+}
+
+export function deterministicPairStatus(input: PairEvaluationInput) {
+  return combineStatus(
+    directionalDeterministicStatus(
+      input.memberA.structuredCriteria,
+      input.memberB.structuredCriteria.member,
+    ),
+    directionalDeterministicStatus(
+      input.memberB.structuredCriteria,
+      input.memberA.structuredCriteria.member,
+    ),
+  );
 }
 
 function deterministicStructuredStatus(input: PairEvaluationInput) {

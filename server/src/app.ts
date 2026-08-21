@@ -13,6 +13,8 @@ import {
   bootstrapSuperAdmin,
   registerMembersRoutes,
 } from "./modules/members/routes.js";
+import { registerMatchingRoutes } from "./modules/matching/routes.js";
+import { Matching } from "./modules/matching/service.js";
 import { registerPortraitsRoutes } from "./modules/portraits/routes.js";
 import { Portraits } from "./modules/portraits/service.js";
 
@@ -38,6 +40,7 @@ export async function createApp(options: AppOptions) {
   const agentJobs = new AgentJobs(db);
   const interviewConversations = new InterviewConversations(db);
   const portraits = new Portraits(db, now, interviewConversations, agentJobs);
+  const matching = new Matching(db, now, agentEngine, agentJobs);
 
   await migrateDatabase(db);
   await bootstrapSuperAdmin(db, options.superAdminEmail, now());
@@ -49,6 +52,7 @@ export async function createApp(options: AppOptions) {
     now,
     otpSecret: options.otpSecret,
     production: options.production ?? false,
+    recheckRecommendations: (memberId) => matching.recheckForMember(memberId),
   });
   registerPortraitsRoutes(app, {
     agentEngine,
@@ -64,6 +68,7 @@ export async function createApp(options: AppOptions) {
     now,
     portraits,
   });
+  registerMatchingRoutes(app, { db, now, matching });
   app.addHook("onClose", async () => {
     agentEngine.close();
     await pool.end();

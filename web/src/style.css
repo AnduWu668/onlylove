@@ -1050,6 +1050,160 @@ button:disabled {
   font-size: 11px;
 }
 
+.recommendations-intro {
+  padding: 34px 4px 22px;
+}
+
+.recommendations-intro h1 {
+  max-width: none;
+  margin-bottom: 10px;
+  font-size: clamp(31px, 8vw, 40px);
+}
+
+.recommendations-intro > p:last-child,
+.recommendation-toolbar p {
+  margin: 0;
+  color: #796b69;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.recommendation-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: #e9dfd4;
+}
+
+.recommendation-toolbar button {
+  flex: none;
+  min-height: 42px;
+  padding: 0 16px;
+}
+
+.recommendation-toolbar span {
+  color: #8a7777;
+  font-size: 12px;
+}
+
+.candidate-list {
+  display: grid;
+  gap: 14px;
+}
+
+.candidate-card,
+.recommendations-empty,
+.matching-followups {
+  padding: 20px;
+  border: 1px solid rgb(91 52 57 / 11%);
+  border-radius: 22px;
+  background: #eee5da;
+}
+
+.candidate-heading {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.candidate-avatar {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  color: #fffaf3;
+  background: #6f1831;
+  font-family: Georgia, "Songti SC", serif;
+  font-size: 24px;
+}
+
+.candidate-heading h2,
+.recommendations-empty h2,
+.matching-followups h2 {
+  margin: 0 0 6px;
+  color: #4b393c;
+  font-size: 20px;
+}
+
+.candidate-heading p,
+.recommendations-empty p,
+.matching-followups p,
+.matching-followups li {
+  margin: 2px 0 0;
+  color: #806f6d;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.candidate-reason {
+  margin: 17px 0;
+  padding: 13px 14px;
+  border-left: 3px solid #6f1831;
+  border-radius: 4px 12px 12px 4px;
+  color: #59484a;
+  background: #fffaf3;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.skip-candidate {
+  width: 100%;
+  border: 1px solid #bda8a5;
+  color: #6f1831;
+  background: transparent;
+}
+
+.recommendations-empty {
+  text-align: center;
+}
+
+.recommendations-empty button {
+  margin-top: 12px;
+  padding-inline: 18px;
+}
+
+.matching-followups {
+  margin-bottom: 14px;
+  background: #e9e3cf;
+}
+
+.matching-followups ul {
+  margin: 12px 0 0;
+  padding-left: 20px;
+}
+
+.matching-settings-panel {
+  margin-top: 16px;
+}
+
+.matching-settings-panel .list-heading p {
+  margin: 5px 0 0;
+  color: #8b7978;
+  font-size: 12px;
+}
+
+.matching-settings-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  align-items: end;
+  gap: 12px;
+}
+
+.matching-settings-form > div {
+  display: grid;
+  gap: 8px;
+}
+
+.matching-settings-panel .save-success {
+  margin-top: 12px;
+}
+
 @media (max-width: 600px) {
   .admin-header {
     display: block;
@@ -1060,7 +1214,8 @@ button:disabled {
     margin-top: 12px;
   }
 
-  .invite-form {
+  .invite-form,
+  .matching-settings-form {
     grid-template-columns: 1fr;
   }
 
