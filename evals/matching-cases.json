@@ -1,0 +1,260 @@
+{
+  "schemaVersion": "matching-benchmark-v0",
+  "rubricVersion": "matching-rubric-v0",
+  "defaults": {
+    "memberA": {
+      "facts": { "gender": "female", "age": 30, "heightCm": 165, "city": "上海", "occupation": "设计师" },
+      "criteria": {
+        "version": 1,
+        "desiredGender": "male",
+        "ageMinimum": null,
+        "ageMaximum": null,
+        "ageMode": null,
+        "heightMinimumCm": null,
+        "heightMaximumCm": null,
+        "heightMode": null,
+        "acceptableCities": [],
+        "occupationRequirement": null,
+        "occupationMode": null
+      },
+      "dimensions": {
+        "long_term_planning": { "selfTendency": "愿意共同规划", "partnerExpectation": "愿意共同规划", "importance": 1, "confidence": "high" },
+        "values": { "selfTendency": "尊重差异", "partnerExpectation": "尊重差异", "importance": 1, "confidence": "high" },
+        "relationship_boundaries": { "selfTendency": "边界清晰", "partnerExpectation": "尊重边界", "importance": 1, "confidence": "high" },
+        "communication": { "selfTendency": "愿意直接沟通", "partnerExpectation": "愿意直接沟通", "importance": 1, "confidence": "high" },
+        "conflict_repair": { "selfTendency": "冲突后会修复", "partnerExpectation": "愿意修复", "importance": 1, "confidence": "high" },
+        "emotional_support": { "selfTendency": "会先倾听", "partnerExpectation": "愿意倾听", "importance": 1, "confidence": "high" },
+        "lifestyle": { "selfTendency": "作息规律", "partnerExpectation": "可协商日常安排", "importance": 1, "confidence": "high" },
+        "family_and_finance": { "selfTendency": "重大支出共同决定", "partnerExpectation": "财务透明", "importance": 1, "confidence": "high" }
+      }
+    },
+    "memberB": {
+      "facts": { "gender": "male", "age": 32, "heightCm": 178, "city": "上海", "occupation": "工程师" },
+      "criteria": {
+        "version": 1,
+        "desiredGender": "female",
+        "ageMinimum": null,
+        "ageMaximum": null,
+        "ageMode": null,
+        "heightMinimumCm": null,
+        "heightMaximumCm": null,
+        "heightMode": null,
+        "acceptableCities": [],
+        "occupationRequirement": null,
+        "occupationMode": null
+      },
+      "dimensions": {
+        "long_term_planning": { "selfTendency": "愿意共同规划", "partnerExpectation": "愿意共同规划", "importance": 1, "confidence": "high" },
+        "values": { "selfTendency": "尊重差异", "partnerExpectation": "尊重差异", "importance": 1, "confidence": "high" },
+        "relationship_boundaries": { "selfTendency": "边界清晰", "partnerExpectation": "尊重边界", "importance": 1, "confidence": "high" },
+        "communication": { "selfTendency": "愿意直接沟通", "partnerExpectation": "愿意直接沟通", "importance": 1, "confidence": "high" },
+        "conflict_repair": { "selfTendency": "冲突后会修复", "partnerExpectation": "愿意修复", "importance": 1, "confidence": "high" },
+        "emotional_support": { "selfTendency": "会先倾听", "partnerExpectation": "愿意倾听", "importance": 1, "confidence": "high" },
+        "lifestyle": { "selfTendency": "作息规律", "partnerExpectation": "可协商日常安排", "importance": 1, "confidence": "high" },
+        "family_and_finance": { "selfTendency": "重大支出共同决定", "partnerExpectation": "财务透明", "importance": 1, "confidence": "high" }
+      }
+    },
+    "prediction": {
+      "defaultAToB": 60,
+      "defaultBToA": 60,
+      "structuredConditionStatus": "pass",
+      "defaultHardBoundaryStatus": "pass",
+      "safeRecommendationReason": "你们都愿意通过沟通理解彼此，可以进一步了解。",
+      "dimensions": {}
+    }
+  },
+  "cases": [
+    {
+      "id": "mutual-communication",
+      "category": "mutual",
+      "memberA": { "dimensions": { "communication": { "selfTendency": "重要问题会直接说明", "partnerExpectation": "愿意把问题说开", "importance": 5, "confidence": "high" } } },
+      "memberB": { "dimensions": { "communication": { "selfTendency": "重要问题会直接说明", "partnerExpectation": "愿意把问题说开", "importance": 5, "confidence": "high" } } },
+      "prediction": { "defaultAToB": 85, "defaultBToA": 86, "safeRecommendationReason": "你们都重视把重要问题说清楚，沟通节奏较为合拍。" },
+      "expected": { "eligibility": "eligible", "direction": "balanced", "minimumReciprocal": 80, "rankingGroup": "communication-reciprocity", "rank": 1, "forbiddenReasonTerms": [] }
+    },
+    {
+      "id": "one-sided-communication",
+      "category": "one_sided",
+      "memberA": { "dimensions": { "communication": { "selfTendency": "重要问题会直接说明", "partnerExpectation": "愿意把问题说开", "importance": 5, "confidence": "high" } } },
+      "memberB": { "dimensions": { "communication": { "selfTendency": "遇到压力会长期回避", "partnerExpectation": "对方不要追问", "importance": 5, "confidence": "high" } } },
+      "prediction": { "defaultAToB": 92, "defaultBToA": 18, "safeRecommendationReason": "你们处理重要沟通的节奏差异较大，需要谨慎了解。" },
+      "expected": { "eligibility": "eligible", "direction": "a_higher", "maximumReciprocal": 35, "rankingGroup": "communication-reciprocity", "rank": 2, "forbiddenReasonTerms": [] }
+    },
+    {
+      "id": "mutual-values",
+      "category": "mutual",
+      "memberA": { "dimensions": { "values": { "selfTendency": "重大决定重视诚实", "partnerExpectation": "坦诚说明影响双方的事实", "importance": 5, "confidence": "high" } } },
+      "memberB": { "dimensions": { "values": { "selfTendency": "重大决定重视诚实", "partnerExpectation": "坦诚说明影响双方的事实", "importance": 5, "confidence": "high" } } },
+      "prediction": { "defaultAToB": 81, "defaultBToA": 79, "safeRecommendationReason": "你们都看重重要决定中的坦诚，核心判断较为接近。" },
+      "expected": { "eligibility": "eligible", "direction": "balanced", "minimumReciprocal": 75, "rankingGroup": "values-reciprocity", "rank": 1, "forbiddenReasonTerms": [] }
+    },
+    {
+      "id": "one-sided-values",
+      "category": "one_sided",
+      "memberA": { "dimensions": { "values": { "selfTendency": "重大决定重视诚实", "partnerExpectation": "坦诚说明影响双方的事实", "importance": 5, "confidence": "high" } } },
+      "memberB": { "dimensions": { "values": { "selfTendency": "会为避免争执隐瞒事实", "partnerExpectation": "不要追问过程", "importance": 5, "confidence": "high" } } },
+      "prediction": { "defaultAToB": 88, "defaultBToA": 25, "safeRecommendationReason": "你们对重要事实的沟通期待不同，需要先确认能否接受。" },
+      "expected": { "eligibility": "eligible", "direction": "a_higher", "maximumReciprocal": 45, "rankingGroup": "values-reciprocity", "rank": 2, "forbiddenReasonTerms": [] }
+    },
+    {
+      "id": "structured-gender-conflict",
+      "category": "structured_boundary",
+      "memberB": { "facts": { "gender": "female" } },
+      "prediction": { "defaultAToB": 90, "defaultBToA": 90, "safeRecommendationReason": "当前条件不支持形成候选推荐。" },
+      "expected": { "eligibility": "excluded", "forbiddenReasonTerms": [] }
+    },
+    {
+      "id": "structured-age-conflict",
+      "category": "structured_boundary",
+      "memberA": { "criteria": { "ageMinimum": 28, "ageMaximum": 35, "ageMode": "required" } },
+      "memberB": { "facts": { "age": 40 } },
+      "prediction": { "defaultAToB": 90, "defaultBToA": 90, "safeRecommendationReason": "当前条件不支持形成候选推荐。" },
+      "expected": { "eligibility": "excluded", "forbiddenReasonTerms": [] }
+    },
+    {
+      "id": "structured-height-conflict",
+      "category": "structured_boundary",
+      "memberB": { "criteria": { "heightMinimumCm": 170, "heightMode": "required" } },
+      "prediction": { "defaultAToB": 88, "defaultBToA": 88, "safeRecommendationReason": "当前条件不支持形成候选推荐。" },
+      "expected": { "eligibility": "excluded", "forbiddenReasonTerms": [] }
+    },
+    {
+      "id": "structured-city-conflict",
+      "category": "structured_boundary",
+      "memberA": { "criteria": { "acceptableCities": ["北京"] } },
+      "prediction": { "defaultAToB": 87, "defaultBToA": 87, "safeRecommendationReason": "当前条件不支持形成候选推荐。" },
+      "expected": { "eligibility": "excluded", "forbiddenReasonTerms": [] }
+    },
+    {
+      "id": "semantic-boundary-from-a",
+      "category": "semantic_boundary",
+      "memberA": { "dimensions": { "family_and_finance": { "hardBoundary": "不能接受未经商量动用共同储蓄", "importance": 5, "confidence": "high" } } },
+      "memberB": { "dimensions": { "family_and_finance": { "selfTendency": "会自行用共同储蓄支持家人", "importance": 5, "confidence": "high" } } },
+      "prediction": { "safeRecommendationReason": "对方曾擅自动用共同储蓄支持家人。", "dimensions": { "family_and_finance": { "aToB": 5, "bToA": 65, "interactionReason": "共同资金决策方式触发一方明确边界。", "hardBoundaryStatus": "conflict" } } },
+      "expected": { "eligibility": "excluded", "direction": "b_higher", "forbiddenReasonTerms": ["共同储蓄", "支持家人"] }
+    },
+    {
+      "id": "semantic-boundary-from-b",
+      "category": "semantic_boundary",
+      "memberA": { "dimensions": { "relationship_boundaries": { "selfTendency": "希望查看伴侣私人聊天", "importance": 5, "confidence": "high" } } },
+      "memberB": { "dimensions": { "relationship_boundaries": { "hardBoundary": "不能接受伴侣查看私人聊天", "importance": 5, "confidence": "high" } } },
+      "prediction": { "safeRecommendationReason": "当前条件不支持形成候选推荐。", "dimensions": { "relationship_boundaries": { "aToB": 60, "bToA": 5, "interactionReason": "隐私边界存在明确冲突。", "hardBoundaryStatus": "conflict" } } },
+      "expected": { "eligibility": "excluded", "direction": "a_higher", "forbiddenReasonTerms": ["私人聊天"] }
+    },
+    {
+      "id": "missing-semantic-information-for-a",
+      "category": "missing_information",
+      "memberA": { "dimensions": { "long_term_planning": { "hardBoundary": "不能接受未来长期异地", "importance": 5, "confidence": "high" } } },
+      "memberB": { "dimensions": { "long_term_planning": { "confidence": "low" } } },
+      "prediction": { "safeRecommendationReason": "模型错误地猜测条件已经满足。", "dimensions": { "long_term_planning": { "aToB": 50, "bToA": 50, "interactionReason": "缺少判断长期地点安排的信息。", "hardBoundaryStatus": "pass" } } },
+      "expected": { "eligibility": "needs_more_information", "forbiddenReasonTerms": ["长期异地"] }
+    },
+    {
+      "id": "missing-semantic-information-for-b",
+      "category": "missing_information",
+      "memberA": { "dimensions": { "emotional_support": { "confidence": "low" } } },
+      "memberB": { "dimensions": { "emotional_support": { "hardBoundary": "不能接受长期冷处理", "importance": 5, "confidence": "high" } } },
+      "prediction": { "safeRecommendationReason": "模型错误地猜测条件已经满足。", "dimensions": { "emotional_support": { "aToB": 50, "bToA": 50, "interactionReason": "缺少判断压力下回应方式的信息。", "hardBoundaryStatus": "pass" } } },
+      "expected": { "eligibility": "needs_more_information", "forbiddenReasonTerms": ["冷处理"] }
+    },
+    {
+      "id": "missing-required-age",
+      "category": "missing_information",
+      "memberA": { "criteria": { "ageMinimum": 28, "ageMaximum": 36, "ageMode": "required" } },
+      "memberB": { "facts": { "age": null } },
+      "prediction": { "structuredConditionStatus": "conflict", "safeRecommendationReason": "模型错误地猜测存在冲突。" },
+      "expected": { "eligibility": "needs_more_information", "forbiddenReasonTerms": [] }
+    },
+    {
+      "id": "low-confidence-score-ignored",
+      "category": "low_confidence",
+      "memberA": { "dimensions": { "values": { "selfTendency": "未经支持的相同观点", "importance": 5, "confidence": "low" } } },
+      "memberB": { "dimensions": { "values": { "selfTendency": "未经支持的相同观点", "importance": 5, "confidence": "low" } } },
+      "prediction": { "defaultAToB": 50, "defaultBToA": 50, "structuredConditionStatus": "conflict", "safeRecommendationReason": "模型声称匹配得分是八十分。", "dimensions": { "values": { "aToB": 100, "bToA": 100, "interactionReason": "低置信度内容不应影响汇总。" } } },
+      "expected": { "eligibility": "eligible", "direction": "balanced", "maximumReciprocal": 55, "forbiddenReasonTerms": ["未经支持", "八十分", "得分"] }
+    },
+    {
+      "id": "low-confidence-boundary-ignored",
+      "category": "low_confidence",
+      "memberA": { "dimensions": { "lifestyle": { "hardBoundary": "不能接受周末外出", "importance": 5, "confidence": "low" } } },
+      "memberB": { "dimensions": { "lifestyle": { "selfTendency": "周末常外出", "importance": 5, "confidence": "high" } } },
+      "prediction": { "defaultAToB": 58, "defaultBToA": 60, "safeRecommendationReason": "不能接受周末外出，但模型仍泄露了这条经历。", "dimensions": { "lifestyle": { "bToA": 100, "hardBoundaryStatus": "conflict" } } },
+      "expected": { "eligibility": "eligible", "direction": "balanced", "maximumReciprocal": 62, "forbiddenReasonTerms": ["周末外出"] }
+    },
+    {
+      "id": "similar-positive",
+      "category": "similar",
+      "memberA": { "dimensions": { "lifestyle": { "selfTendency": "偏好安静规律的周末", "partnerExpectation": "一起保持规律", "importance": 5, "confidence": "high" } } },
+      "memberB": { "dimensions": { "lifestyle": { "selfTendency": "偏好安静规律的周末", "partnerExpectation": "一起保持规律", "importance": 5, "confidence": "high" } } },
+      "prediction": { "defaultAToB": 82, "defaultBToA": 80, "safeRecommendationReason": "你们偏好的日常节奏相近，安排共同生活时较容易协调。" },
+      "expected": { "eligibility": "eligible", "direction": "balanced", "minimumReciprocal": 75, "rankingGroup": "similarity-context", "rank": 1, "forbiddenReasonTerms": [] }
+    },
+    {
+      "id": "similar-negative",
+      "category": "similar",
+      "memberA": { "dimensions": { "conflict_repair": { "selfTendency": "冲突后长期沉默", "partnerExpectation": "对方主动修复", "importance": 5, "confidence": "high" } } },
+      "memberB": { "dimensions": { "conflict_repair": { "selfTendency": "冲突后长期沉默", "partnerExpectation": "对方主动修复", "importance": 5, "confidence": "high" } } },
+      "prediction": { "defaultAToB": 32, "defaultBToA": 34, "safeRecommendationReason": "你们在冲突后都需要较长缓冲，修复节奏可能停滞。" },
+      "expected": { "eligibility": "eligible", "direction": "balanced", "maximumReciprocal": 40, "rankingGroup": "similarity-context", "rank": 2, "forbiddenReasonTerms": [] }
+    },
+    {
+      "id": "complementary-positive",
+      "category": "complementary",
+      "memberA": { "dimensions": { "emotional_support": { "selfTendency": "压力下会清楚表达需要", "partnerExpectation": "先倾听再回应", "importance": 5, "confidence": "high" } } },
+      "memberB": { "dimensions": { "emotional_support": { "selfTendency": "擅长倾听后回应", "partnerExpectation": "对方清楚表达需要", "importance": 5, "confidence": "high" } } },
+      "prediction": { "defaultAToB": 78, "defaultBToA": 76, "safeRecommendationReason": "你们表达需要和回应支持的方式能够彼此衔接。" },
+      "expected": { "eligibility": "eligible", "direction": "balanced", "minimumReciprocal": 70, "rankingGroup": "complementarity-context", "rank": 1, "forbiddenReasonTerms": [] }
+    },
+    {
+      "id": "complementary-negative",
+      "category": "complementary",
+      "memberA": { "dimensions": { "family_and_finance": { "selfTendency": "偏好高风险投入", "partnerExpectation": "对方承担稳定储蓄", "importance": 5, "confidence": "high" } } },
+      "memberB": { "dimensions": { "family_and_finance": { "selfTendency": "严格控制支出", "partnerExpectation": "对方完全服从预算", "importance": 5, "confidence": "high" } } },
+      "prediction": { "defaultAToB": 28, "defaultBToA": 24, "safeRecommendationReason": "你们的财务安排差异会带来较高协商成本。" },
+      "expected": { "eligibility": "eligible", "direction": "balanced", "maximumReciprocal": 35, "rankingGroup": "complementarity-context", "rank": 2, "forbiddenReasonTerms": [] }
+    },
+    {
+      "id": "complex-support-positive",
+      "category": "complex",
+      "memberA": { "dimensions": { "relationship_boundaries": { "selfTendency": "需要独处恢复", "partnerExpectation": "尊重独处后再连接", "importance": 4, "confidence": "high" }, "emotional_support": { "selfTendency": "恢复后会主动回应", "partnerExpectation": "给空间但保持关心", "importance": 5, "confidence": "high" } } },
+      "memberB": { "dimensions": { "relationship_boundaries": { "selfTendency": "会尊重明确说明的独处", "partnerExpectation": "说明何时恢复联系", "importance": 4, "confidence": "high" }, "emotional_support": { "selfTendency": "会保持关心而不逼迫", "partnerExpectation": "恢复后主动回应", "importance": 5, "confidence": "high" } } },
+      "prediction": { "defaultAToB": 75, "defaultBToA": 73, "safeRecommendationReason": "你们能在保留个人空间的同时维持关心，互动条件较清楚。" },
+      "expected": { "eligibility": "eligible", "direction": "balanced", "minimumReciprocal": 68, "rankingGroup": "complex-boundary-support", "rank": 1, "forbiddenReasonTerms": [] }
+    },
+    {
+      "id": "complex-support-negative",
+      "category": "complex",
+      "memberA": { "dimensions": { "relationship_boundaries": { "selfTendency": "压力下需要独处", "partnerExpectation": "不要追问", "importance": 5, "confidence": "high" }, "emotional_support": { "selfTendency": "很少说明恢复时间", "partnerExpectation": "等待自己联系", "importance": 4, "confidence": "high" } } },
+      "memberB": { "dimensions": { "relationship_boundaries": { "selfTendency": "焦虑时需要持续确认", "partnerExpectation": "随时回应", "importance": 5, "confidence": "high" }, "emotional_support": { "selfTendency": "会反复追问", "partnerExpectation": "立即安抚", "importance": 4, "confidence": "high" } } },
+      "prediction": { "defaultAToB": 38, "defaultBToA": 41, "safeRecommendationReason": "你们在空间与陪伴上的需要容易相互放大，需要较多协调。" },
+      "expected": { "eligibility": "eligible", "direction": "balanced", "maximumReciprocal": 48, "rankingGroup": "complex-boundary-support", "rank": 2, "forbiddenReasonTerms": [] }
+    },
+    {
+      "id": "occupation-semantic-conflict",
+      "category": "occupation",
+      "memberA": { "criteria": { "occupationRequirement": "医疗行业且接受夜班", "occupationMode": "required" } },
+      "prediction": { "structuredConditionStatus": "conflict", "safeRecommendationReason": "当前条件不支持形成候选推荐。" },
+      "expected": { "eligibility": "excluded", "forbiddenReasonTerms": ["医疗行业", "夜班"] }
+    },
+    {
+      "id": "occupation-information-missing",
+      "category": "occupation",
+      "memberA": { "criteria": { "occupationRequirement": "工作地点长期稳定", "occupationMode": "required" } },
+      "memberB": { "facts": { "occupation": null } },
+      "prediction": { "structuredConditionStatus": "conflict", "safeRecommendationReason": "模型错误地猜测职业条件冲突。" },
+      "expected": { "eligibility": "needs_more_information", "forbiddenReasonTerms": ["工作地点"] }
+    },
+    {
+      "id": "balanced-moderate",
+      "category": "mutual",
+      "prediction": { "defaultAToB": 62, "defaultBToA": 60, "safeRecommendationReason": "你们有一些共同基础，也有值得继续确认的差异。" },
+      "expected": { "eligibility": "eligible", "direction": "balanced", "minimumReciprocal": 55, "rankingGroup": "severe-one-sided", "rank": 1, "forbiddenReasonTerms": [] }
+    },
+    {
+      "id": "severe-one-sided",
+      "category": "one_sided",
+      "prediction": { "defaultAToB": 98, "defaultBToA": 4, "safeRecommendationReason": "双方当前的期待明显不对称，需要谨慎了解。" },
+      "expected": { "eligibility": "eligible", "direction": "a_higher", "maximumReciprocal": 10, "rankingGroup": "severe-one-sided", "rank": 2, "forbiddenReasonTerms": [] }
+    }
+  ]
+}

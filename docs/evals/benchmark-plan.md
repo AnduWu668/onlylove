@@ -1,6 +1,6 @@
 # OnlyLove Agent Benchmark 计划
 
-状态：画像访谈、画像提取与“固定 10 题 → 对话完善”数据集和 runner 已实现；分身与配对数据集待补。
+状态：画像访谈、画像提取、“固定 10 题 → 对话完善”和配对评估数据集及 runner 已实现；分身数据集待补。
 
 ## 1. 目的
 
@@ -22,7 +22,7 @@ Benchmark 的首要目标是验证恋爱分身准确度和匹配判断是否遵�
 
 画像学习 benchmark 使用同一模型、生产画像提取 Prompt 与 Schema 做成对消融：先从空草稿提取固定 10 题，再基于该草稿只输入新增对话。两阶段对同一最终金标计算特征槽位 precision、recall、F1 和 slot accuracy；中高置信度特征必须命中独立概念组并引用正确证据，未知证据、无证据高置信结论和预设虚假事实为一票否决。当前 3 个合成案例是先导集，只报告分布和增益，不据此设发布阈值；扩大并人工复核案例后再冻结门槛。
 
-真实方舟完整运行命令为 `npm run benchmark -w evals`，只复测画像学习消融可运行 `npm run benchmark -w evals -- --portrait-learning`；确定性数据和评分器检查为 `npm test -w evals`。
+真实方舟完整运行命令为 `npm run benchmark -w evals`，只复测画像学习消融可运行 `npm run benchmark -w evals -- --portrait-learning`。配对评估使用同一 runner：确定性假模型运行 `npm run benchmark:matching -w evals`，显式方舟评测运行 `npm run benchmark:matching:ark -w evals`；前者也包含在 `npm test -w evals`，后者不进入默认 CI。
 
 ## 3. 四类角色
 

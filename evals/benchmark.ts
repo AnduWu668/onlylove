@@ -5,7 +5,12 @@ import {
   AgentEngine,
   type AgentAttemptResult,
 } from "../server/src/modules/agent-engine/engine.js";
+import {
+  matchEvaluatorDefinition,
+  portraitExtractorDefinition,
+} from "../server/src/modules/agent-engine/definitions.js";
 import { PORTRAIT_DIMENSIONS } from "../server/src/modules/portraits/questions.js";
+import { PAIR_EVALUATION_SCHEMA_VERSION } from "../server/src/modules/matching/evaluation.js";
 import {
   assessPortraitDraft,
   emptyPortraitDraft,
@@ -26,6 +31,14 @@ import {
   type PortraitFeatureScore,
   type PortraitLearningCase,
 } from "./portrait-learning.js";
+import {
+  assertMatchingRanking,
+  assertMatchingResult,
+  matchingInput,
+  matchingModelOutput,
+  matchingSuite,
+  type MatchingCase,
+} from "./matching.js";
 
 const HIDDEN_OUTPUT =
   /portraitDraft|selfTendency|partnerExpectation|hardBoundary|evidenceMessageIds|置信度|画像草稿|证据消息/;
@@ -36,6 +49,8 @@ const totals = {
   inputTokens: 0,
   outputTokens: 0,
   latencyMs: 0,
+  firstTokenLatencyMs: 0,
+  firstTokenSamples: 0,
   estimatedCostMicroCny: 0,
   retryAttempts: 0,
   switchedAttempts: 0,
@@ -48,6 +63,10 @@ function collect(attempts: AgentAttemptResult[]) {
     totals.inputTokens += attempt.inputTokens;
     totals.outputTokens += attempt.outputTokens;
     totals.latencyMs += attempt.latencyMs;
+    if (attempt.firstTokenLatencyMs !== null) {
+      totals.firstTokenLatencyMs += attempt.firstTokenLatencyMs;
+      totals.firstTokenSamples += 1;
+    }
     totals.estimatedCostMicroCny += attempt.estimatedCostMicroCny;
     totals.retryAttempts += Number(attempt.retryCount > 0);
     totals.switchedAttempts += Number(attempt.switchedModel);
@@ -315,61 +334,123 @@ function summarizeFeatureScores(scores: PortraitFeatureScore[]) {
   };
 }
 
+async function benchmarkMatching(
+  engine: AgentEngine | undefined,
+  item: MatchingCase,
+  deterministic: boolean,
+) {
+  const currentEngine = deterministic
+    ? new AgentEngine({
+        provider: "deterministic-fake",
+        model: "matching-deterministic-v0",
+        reply: JSON.stringify(matchingModelOutput(item)),
+      })
+    : engine;
+  assert(currentEngine, "matching benchmark engine is required");
+  try {
+    const result = await currentEngine.evaluatePair(
+      matchingInput(item),
+      async () => undefined,
+    );
+    assertMatchingResult(item, result.value);
+    collect(result.attempts);
+    console.info(
+      `PASS matching/${item.id} reciprocal=${result.value.reciprocalScore} ` +
+        `eligibility=${result.value.eligibility} provider=${result.attempts.at(-1)?.provider} ` +
+        `requested_model=${result.attempts.at(-1)?.requestedModel} actual_model=${result.attempts.at(-1)?.actualModel} ` +
+        `tokens=${result.attempts.at(-1)?.inputTokens}/${result.attempts.at(-1)?.outputTokens} ` +
+        `latency_ms=${result.attempts.at(-1)?.latencyMs} first_token_ms=${result.attempts.at(-1)?.firstTokenLatencyMs} ` +
+        `cost_micro_cny=${result.attempts.at(-1)?.estimatedCostMicroCny}`,
+    );
+    return { item, result: result.value };
+  } finally {
+    if (deterministic) currentEngine.close();
+  }
+}
+
 loadRootEnv();
-const config = readConfig();
+const learningOnly = process.argv.includes("--portrait-learning");
+const matchingOnly = process.argv.includes("--matching");
+const deterministic = process.argv.includes("--deterministic");
 assert(
-  config.agentModel,
+  !deterministic || matchingOnly,
+  "deterministic mode currently supports the matching benchmark",
+);
+const config = deterministic ? undefined : readConfig();
+assert(
+  deterministic || config?.agentModel,
   "Ark benchmark requires ARK_API_KEY, ARK_MODEL_ID and pricing configuration",
 );
-const engine = new AgentEngine(config.agentModel, config.agentInputTokenBudget);
-const learningOnly = process.argv.includes("--portrait-learning");
+const engine = config?.agentModel
+  ? new AgentEngine(config.agentModel, config.agentInputTokenBudget)
+  : undefined;
 console.info(
-  `benchmark config: dataset=${portraitLearningSuite.schemaVersion}, ` +
-    `extractor=${engine.extractorDefinition.version}, ` +
-    `prompt=${engine.extractorDefinition.promptVersion}, ` +
-    `schema=${engine.extractorDefinition.schemaVersion}, ` +
-    `requested_model=${config.agentModel.model}, ` +
-    `input_budget=${config.agentInputTokenBudget}, ` +
-    `pricing_date=${config.agentModel.pricing.effectiveDate}`,
+  `benchmark config: portrait_dataset=${portraitLearningSuite.schemaVersion}, ` +
+    `matching_dataset=${matchingSuite.schemaVersion}, ` +
+    `matching_rubric=${matchingSuite.rubricVersion}, ` +
+    `matching_schema=${PAIR_EVALUATION_SCHEMA_VERSION}, ` +
+    `matching_prompt=${matchEvaluatorDefinition.promptVersion}, ` +
+    `matching_prompt_file=${matchEvaluatorDefinition.promptFile}, ` +
+    `portrait_prompt=${portraitExtractorDefinition.promptVersion}, ` +
+    `requested_model=${config?.agentModel?.model ?? "matching-deterministic-v0"}, ` +
+    `input_budget=${config?.agentInputTokenBudget ?? "deterministic"}, ` +
+    `pricing_date=${config?.agentModel?.pricing.effectiveDate ?? "none"}`,
 );
+let caseCount = 0;
 try {
-  if (!learningOnly) {
+  if (!matchingOnly && !learningOnly) {
+    assert(engine);
     for (const item of interviewCases) await benchmarkInterview(engine, item);
     for (const item of extractionCases) await benchmarkExtraction(engine, item);
+    caseCount += interviewCases.length + extractionCases.length;
   }
-  const portraitLearningResults = [];
-  for (const item of portraitLearningSuite.cases) {
-    portraitLearningResults.push(await benchmarkPortraitLearning(engine, item));
+  if (!matchingOnly) {
+    assert(engine);
+    const portraitLearningResults = [];
+    for (const item of portraitLearningSuite.cases) {
+      portraitLearningResults.push(
+        await benchmarkPortraitLearning(engine, item),
+      );
+    }
+    caseCount += portraitLearningSuite.cases.length;
+    const baseline = summarizeFeatureScores(
+      portraitLearningResults.map((result) => result.baselineScore),
+    );
+    const refined = summarizeFeatureScores(
+      portraitLearningResults.map((result) => result.refinedScore),
+    );
+    const percent = (value: number) => `${(value * 100).toFixed(1)}%`;
+    console.info(
+      `portrait-learning summary: fixed10 ` +
+        `P/R/F1=${percent(baseline.precision)}/${percent(baseline.recall)}/${percent(baseline.f1)}, ` +
+        `10+dialogue P/R/F1=${percent(refined.precision)}/${percent(refined.recall)}/${percent(refined.f1)}, ` +
+        `F1 delta=${percent(refined.f1 - baseline.f1)}, ` +
+        `slot accuracy=${percent(refined.slotAccuracy)}`,
+    );
+    assert.equal(
+      refined.vetoes.length,
+      0,
+      `portrait learning vetoes: ${refined.vetoes.join(", ")}`,
+    );
   }
-  const baseline = summarizeFeatureScores(
-    portraitLearningResults.map((result) => result.baselineScore),
-  );
-  const refined = summarizeFeatureScores(
-    portraitLearningResults.map((result) => result.refinedScore),
-  );
-  const percent = (value: number) => `${(value * 100).toFixed(1)}%`;
-  console.info(
-    `portrait-learning summary: fixed10 ` +
-      `P/R/F1=${percent(baseline.precision)}/${percent(baseline.recall)}/${percent(baseline.f1)}, ` +
-      `10+dialogue P/R/F1=${percent(refined.precision)}/${percent(refined.recall)}/${percent(refined.f1)}, ` +
-      `F1 delta=${percent(refined.f1 - baseline.f1)}, ` +
-      `slot accuracy=${percent(refined.slotAccuracy)}`,
-  );
-  assert.equal(
-    refined.vetoes.length,
-    0,
-    `portrait learning vetoes: ${refined.vetoes.join(", ")}`,
-  );
+  if (!learningOnly) {
+    const matchingResults = [];
+    for (const item of matchingSuite.cases) {
+      matchingResults.push(
+        await benchmarkMatching(engine, item, deterministic),
+      );
+    }
+    assertMatchingRanking(matchingResults);
+    caseCount += matchingSuite.cases.length;
+  }
 } finally {
-  engine.close();
+  engine?.close();
 }
 
 console.info(
-  `portrait benchmark ok: ${
-    (learningOnly ? 0 : interviewCases.length + extractionCases.length) +
-    portraitLearningSuite.cases.length
-  } cases, ` +
+  `agent benchmark ok: ${caseCount} cases, ` +
     `${totals.calls} calls, ${totals.inputTokens}/${totals.outputTokens} tokens, ` +
     `${totals.latencyMs}ms, retries=${totals.retryAttempts}, errors=${totals.failedAttempts}, ` +
+    `first_token_avg=${totals.firstTokenSamples ? Math.round(totals.firstTokenLatencyMs / totals.firstTokenSamples) : "n/a"}ms, ` +
     `switches=${totals.switchedAttempts}, ¥${(totals.estimatedCostMicroCny / 1_000_000).toFixed(6)}`,
 );

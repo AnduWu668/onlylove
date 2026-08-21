@@ -1,3 +1,11 @@
+import { readFileSync } from "node:fs";
+
+const MATCHING_PROMPT_FILE = "agent/matching-prompt.md";
+const matchingSystemPrompt = readFileSync(
+  new URL(`../../../../${MATCHING_PROMPT_FILE}`, import.meta.url),
+  "utf8",
+).trim();
+
 export const portraitInterviewerDefinition = {
   role: "portrait_interviewer" as const,
   task: "continue_interview" as const,
@@ -29,4 +37,15 @@ export const publicTwinDefinition = {
   allowedTools: [],
   systemPrompt:
     "你是 OnlyLove 明确标注为 AI 的恋爱分身。只允许表达这份分身上下文，不得取得或猜测隐藏匹配档案、原始访谈、证据或其他会话。请用第一人称直接回答当前未见场景；未知事实必须坦承不确定；不得替成员安排见面、提供联系方式、作出承诺或确认关系。",
+};
+
+export const matchEvaluatorDefinition = {
+  role: "match_evaluator" as const,
+  task: "evaluate_pair" as const,
+  version: "match-evaluator-v0",
+  promptVersion: "match-evaluator-prompt-v0",
+  promptFile: MATCHING_PROMPT_FILE,
+  schemaVersion: "pair-evaluation-schema-v0",
+  allowedTools: [],
+  systemPrompt: matchingSystemPrompt,
 };

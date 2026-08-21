@@ -6,6 +6,7 @@ import {
   AgentRunError,
   type InterviewHistoryMessage,
 } from "../src/modules/agent-engine/engine.js";
+import { PORTRAIT_DIMENSIONS } from "../src/modules/portraits/questions.js";
 
 function interviewContext(recentMessages: InterviewHistoryMessage[] = []) {
   return {
@@ -292,6 +293,90 @@ describe("Agent Engine continueInterview seam", () => {
       task: "reply_as_twin",
       version: "public-twin-v1",
     });
+    engine.close();
+  });
+});
+
+describe("Agent Engine evaluatePair seam", () => {
+  it("weights both directions and derives reciprocal suitability", async () => {
+    const profile = (importance: number) => ({
+      schemaVersion: "match-profile-v1",
+      dimensions: Object.fromEntries(
+        PORTRAIT_DIMENSIONS.map((dimension) => [
+          dimension,
+          {
+            selfTendency: "愿意协商",
+            partnerExpectation: "愿意协商",
+            hardBoundary: null,
+            importance,
+            confidence: "high",
+            evidenceMessageIds: ["hidden-evidence-id"],
+            contradictions: [],
+          },
+        ]),
+      ),
+    });
+    const criteria = (gender: "female" | "male") => ({
+      version: 1,
+      member: {
+        gender,
+        age: 30,
+        heightCm: 170,
+        city: "上海",
+        occupation: "设计师",
+      },
+      desiredGender: gender === "female" ? "male" : "female",
+      ageMinimum: null,
+      ageMaximum: null,
+      ageMode: null,
+      heightMinimumCm: null,
+      heightMaximumCm: null,
+      heightMode: null,
+      acceptableCities: [],
+      occupationRequirement: null,
+      occupationMode: null,
+    });
+    const modelOutput = {
+      schemaVersion: "pair-evaluation-schema-v0",
+      rubricVersion: "matching-rubric-v0",
+      structuredConditionStatus: "pass",
+      dimensions: PORTRAIT_DIMENSIONS.map((dimension) => ({
+        dimension,
+        aToB: 80,
+        bToA: 20,
+        interactionReason: "两人的协商节奏需要进一步磨合。",
+        hardBoundaryStatus: "pass",
+      })),
+      safeRecommendationReason: "你们都愿意协商重要决定，可以进一步了解彼此。",
+    };
+    const engine = new AgentEngine({
+      provider: "deterministic-fake",
+      model: "matching-v0",
+      attempts: [
+        {
+          reply: JSON.stringify(modelOutput),
+          promptIncludes: ["匹配评判规则版本", "测试规则", "structuredCriteria"],
+          promptExcludes: ["hidden-evidence-id", "recentMessages", "personaContext"],
+        },
+      ],
+    });
+
+    const result = await engine.evaluatePair(
+      {
+        memberA: { matchProfile: profile(5), structuredCriteria: criteria("female") },
+        memberB: { matchProfile: profile(1), structuredCriteria: criteria("male") },
+        rubric: { version: "matching-rubric-v0", content: "测试规则" },
+      },
+      async () => undefined,
+    );
+
+    expect(result.value).toMatchObject({
+      aToBScore: 80,
+      bToAScore: 20,
+      reciprocalScore: 32,
+      eligibility: "eligible",
+    });
+    expect(result.attempts).toHaveLength(1);
     engine.close();
   });
 });
