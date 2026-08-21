@@ -14,7 +14,7 @@ const conditionStatusSchema = Type.Union([
   Type.Literal("conflict"),
   Type.Literal("needs_more_information"),
 ]);
-const dimensionSchema = Type.Union([
+export const portraitDimensionSchema = Type.Union([
   Type.Literal("long_term_planning"),
   Type.Literal("values"),
   Type.Literal("relationship_boundaries"),
@@ -26,7 +26,7 @@ const dimensionSchema = Type.Union([
 ]);
 const dimensionEvaluationSchema = Type.Object(
   {
-    dimension: dimensionSchema,
+    dimension: portraitDimensionSchema,
     aToB: Type.Number({ minimum: 0, maximum: 100 }),
     bToA: Type.Number({ minimum: 0, maximum: 100 }),
     interactionReason: nonemptyString,
@@ -248,14 +248,53 @@ function weightedScore(
   );
 }
 
-function assertSafeReason(reason: string) {
-  if (
-    /[\d０-９]|(?:置信度|重要程度|权重|隐藏标签|评分|得分)|(?:selfTendency|partnerExpectation|hardBoundary|evidenceMessageIds|confidence|importance|score|schemaVersion|rubricVersion|long_term_planning|relationship_boundaries|conflict_repair|emotional_support|family_and_finance)/i.test(
-      reason,
-    )
-  ) {
-    throw new Error("安全推荐理由包含内部标签或数字分");
+function normalizedStructuredStatus(
+  input: PairEvaluationInput,
+  modelStatus: PairConditionStatus,
+) {
+  const deterministic = deterministicStructuredStatus(input);
+  if (deterministic !== "pass") return deterministic;
+  const hasRequiredOccupation = [input.memberA, input.memberB].some(
+    ({ structuredCriteria }) =>
+      structuredCriteria.occupationMode === "required" &&
+      Boolean(structuredCriteria.occupationRequirement),
+  );
+  return hasRequiredOccupation ? modelStatus : "pass";
+}
+
+function normalizedBoundaryStatus(
+  input: PairEvaluationInput,
+  dimension: PortraitDimension,
+  modelStatus: PairConditionStatus,
+): PairConditionStatus {
+  const a = input.memberA.matchProfile.dimensions[dimension];
+  const b = input.memberB.matchProfile.dimensions[dimension];
+  const aBoundary = a.confidence === "high" && Boolean(a.hardBoundary?.trim());
+  const bBoundary = b.confidence === "high" && Boolean(b.hardBoundary?.trim());
+  if (!aBoundary && !bBoundary) return "pass";
+  const aHasInformation =
+    !aBoundary ||
+    (b.confidence !== "low" && Boolean(b.selfTendency?.trim()));
+  const bHasInformation =
+    !bBoundary ||
+    (a.confidence !== "low" && Boolean(a.selfTendency?.trim()));
+  const hasInformedBoundary =
+    (aBoundary && aHasInformation) || (bBoundary && bHasInformation);
+  if (modelStatus === "conflict" && hasInformedBoundary) return "conflict";
+  if (!aHasInformation || !bHasInformation) return "needs_more_information";
+  return modelStatus;
+}
+
+function safeRecommendationReason(
+  eligibility: PairEvaluationResult["eligibility"],
+) {
+  if (eligibility === "excluded") {
+    return "当前条件不支持形成候选推荐。";
   }
+  if (eligibility === "needs_more_information") {
+    return "目前还需要补充信息，暂不形成候选推荐。";
+  }
+  return "你们可以通过进一步交流，确认彼此在重要关系议题上的期待。";
 }
 
 export function finalizePairEvaluation(
@@ -274,12 +313,16 @@ export function finalizePairEvaluation(
   ) {
     throw new Error("配对评估必须恰好覆盖八个关系维度");
   }
-  assertSafeReason(modelResult.safeRecommendationReason);
-  const dimensions = PORTRAIT_DIMENSIONS.map(
-    (dimension) => byDimension.get(dimension)!,
-  );
-  const structuredConditionStatus = combineStatus(
-    deterministicStructuredStatus(input),
+  const dimensions = PORTRAIT_DIMENSIONS.map((dimension) => ({
+    ...byDimension.get(dimension)!,
+    hardBoundaryStatus: normalizedBoundaryStatus(
+      input,
+      dimension,
+      byDimension.get(dimension)!.hardBoundaryStatus,
+    ),
+  }));
+  const structuredConditionStatus = normalizedStructuredStatus(
+    input,
     modelResult.structuredConditionStatus,
   );
   const boundaryStatus = combineStatus(
@@ -296,6 +339,12 @@ export function finalizePairEvaluation(
     dimensions,
     "bToA",
   );
+  const eligibility =
+    boundaryStatus === "conflict"
+      ? "excluded"
+      : boundaryStatus === "needs_more_information"
+        ? "needs_more_information"
+        : "eligible";
   return {
     ...modelResult,
     structuredConditionStatus,
@@ -306,11 +355,7 @@ export function finalizePairEvaluation(
       aToBScore + bToAScore
         ? rounded((2 * aToBScore * bToAScore) / (aToBScore + bToAScore))
         : 0,
-    eligibility:
-      boundaryStatus === "conflict"
-        ? "excluded"
-        : boundaryStatus === "needs_more_information"
-          ? "needs_more_information"
-          : "eligible",
+    eligibility,
+    safeRecommendationReason: safeRecommendationReason(eligibility),
   };
 }

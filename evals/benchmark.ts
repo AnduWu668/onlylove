@@ -5,6 +5,10 @@ import {
   AgentEngine,
   type AgentAttemptResult,
 } from "../server/src/modules/agent-engine/engine.js";
+import {
+  matchEvaluatorDefinition,
+  portraitExtractorDefinition,
+} from "../server/src/modules/agent-engine/definitions.js";
 import { PORTRAIT_DIMENSIONS } from "../server/src/modules/portraits/questions.js";
 import { PAIR_EVALUATION_SCHEMA_VERSION } from "../server/src/modules/matching/evaluation.js";
 import {
@@ -45,6 +49,8 @@ const totals = {
   inputTokens: 0,
   outputTokens: 0,
   latencyMs: 0,
+  firstTokenLatencyMs: 0,
+  firstTokenSamples: 0,
   estimatedCostMicroCny: 0,
   retryAttempts: 0,
   switchedAttempts: 0,
@@ -57,6 +63,10 @@ function collect(attempts: AgentAttemptResult[]) {
     totals.inputTokens += attempt.inputTokens;
     totals.outputTokens += attempt.outputTokens;
     totals.latencyMs += attempt.latencyMs;
+    if (attempt.firstTokenLatencyMs !== null) {
+      totals.firstTokenLatencyMs += attempt.firstTokenLatencyMs;
+      totals.firstTokenSamples += 1;
+    }
     totals.estimatedCostMicroCny += attempt.estimatedCostMicroCny;
     totals.retryAttempts += Number(attempt.retryCount > 0);
     totals.switchedAttempts += Number(attempt.switchedModel);
@@ -346,7 +356,11 @@ async function benchmarkMatching(
     collect(result.attempts);
     console.info(
       `PASS matching/${item.id} reciprocal=${result.value.reciprocalScore} ` +
-        `eligibility=${result.value.eligibility} model=${result.attempts.at(-1)?.actualModel}`,
+        `eligibility=${result.value.eligibility} provider=${result.attempts.at(-1)?.provider} ` +
+        `requested_model=${result.attempts.at(-1)?.requestedModel} actual_model=${result.attempts.at(-1)?.actualModel} ` +
+        `tokens=${result.attempts.at(-1)?.inputTokens}/${result.attempts.at(-1)?.outputTokens} ` +
+        `latency_ms=${result.attempts.at(-1)?.latencyMs} first_token_ms=${result.attempts.at(-1)?.firstTokenLatencyMs} ` +
+        `cost_micro_cny=${result.attempts.at(-1)?.estimatedCostMicroCny}`,
     );
     return { item, result: result.value };
   } finally {
@@ -375,6 +389,9 @@ console.info(
     `matching_dataset=${matchingSuite.schemaVersion}, ` +
     `matching_rubric=${matchingSuite.rubricVersion}, ` +
     `matching_schema=${PAIR_EVALUATION_SCHEMA_VERSION}, ` +
+    `matching_prompt=${matchEvaluatorDefinition.promptVersion}, ` +
+    `matching_prompt_file=${matchEvaluatorDefinition.promptFile}, ` +
+    `portrait_prompt=${portraitExtractorDefinition.promptVersion}, ` +
     `requested_model=${config?.agentModel?.model ?? "matching-deterministic-v0"}, ` +
     `input_budget=${config?.agentInputTokenBudget ?? "deterministic"}, ` +
     `pricing_date=${config?.agentModel?.pricing.effectiveDate ?? "none"}`,
@@ -434,5 +451,6 @@ console.info(
   `agent benchmark ok: ${caseCount} cases, ` +
     `${totals.calls} calls, ${totals.inputTokens}/${totals.outputTokens} tokens, ` +
     `${totals.latencyMs}ms, retries=${totals.retryAttempts}, errors=${totals.failedAttempts}, ` +
+    `first_token_avg=${totals.firstTokenSamples ? Math.round(totals.firstTokenLatencyMs / totals.firstTokenSamples) : "n/a"}ms, ` +
     `switches=${totals.switchedAttempts}, ¥${(totals.estimatedCostMicroCny / 1_000_000).toFixed(6)}`,
 );

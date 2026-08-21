@@ -1,3 +1,11 @@
+import { readFileSync } from "node:fs";
+
+const MATCHING_PROMPT_FILE = "agent/matching-prompt.md";
+const matchingSystemPrompt = readFileSync(
+  new URL(`../../../../${MATCHING_PROMPT_FILE}`, import.meta.url),
+  "utf8",
+).trim();
+
 export const portraitInterviewerDefinition = {
   role: "portrait_interviewer" as const,
   task: "continue_interview" as const,
@@ -36,8 +44,8 @@ export const matchEvaluatorDefinition = {
   task: "evaluate_pair" as const,
   version: "match-evaluator-v0",
   promptVersion: "match-evaluator-prompt-v0",
+  promptFile: MATCHING_PROMPT_FILE,
   schemaVersion: "pair-evaluation-schema-v0",
   allowedTools: [],
-  systemPrompt:
-    "你是 OnlyLove 的内部配对评估 Agent。只按输入中的双方匹配档案、结构化择偶条件和版本化匹配评判规则评估，不索取或猜测原始访谈、分身会话或其他资料。必须逐一覆盖八个关系维度，分别判断 A→B、B→A、互动理由和硬边界状态。低置信度内容不得进入评分；相似或互补都不能自动视为正向。只返回请求 Schema 对应的 JSON。安全推荐理由不得包含隐藏标签、数字分、置信度、权重或敏感经历。",
+  systemPrompt: matchingSystemPrompt,
 };

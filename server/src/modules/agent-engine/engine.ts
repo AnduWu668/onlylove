@@ -130,6 +130,7 @@ export interface AgentAttemptResult {
   inputTokens: number;
   outputTokens: number;
   latencyMs: number;
+  firstTokenLatencyMs: number | null;
   retryCount: number;
   switchedModel: boolean;
   error: string | null;
@@ -438,6 +439,7 @@ export class AgentEngine {
     let completed: AssistantMessage | undefined;
     let failure: unknown;
     let emitted = false;
+    let firstTokenLatencyMs: number | null = null;
     try {
       this.#runtime.prepareAttempt?.(
         attemptIndex,
@@ -464,6 +466,10 @@ export class AgentEngine {
         ) {
           if (event.assistantMessageEvent.delta) {
             emitted = true;
+            firstTokenLatencyMs ??= Math.max(
+              0,
+              Math.round(performance.now() - started),
+            );
             onDelta(event.assistantMessageEvent.delta);
           }
         }
@@ -494,6 +500,7 @@ export class AgentEngine {
       inputTokens: completed?.usage.input ?? 0,
       outputTokens: completed?.usage.output ?? 0,
       latencyMs: Math.max(0, Math.round(performance.now() - started)),
+      firstTokenLatencyMs,
       retryCount: attemptIndex,
       switchedModel,
       error: errorCode

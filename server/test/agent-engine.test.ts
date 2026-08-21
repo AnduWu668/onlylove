@@ -6,6 +6,7 @@ import {
   AgentRunError,
   type InterviewHistoryMessage,
 } from "../src/modules/agent-engine/engine.js";
+import { PORTRAIT_DIMENSIONS } from "../src/modules/portraits/questions.js";
 
 function interviewContext(recentMessages: InterviewHistoryMessage[] = []) {
   return {
@@ -298,20 +299,10 @@ describe("Agent Engine continueInterview seam", () => {
 
 describe("Agent Engine evaluatePair seam", () => {
   it("weights both directions and derives reciprocal suitability", async () => {
-    const dimensions = [
-      "long_term_planning",
-      "values",
-      "relationship_boundaries",
-      "communication",
-      "conflict_repair",
-      "emotional_support",
-      "lifestyle",
-      "family_and_finance",
-    ] as const;
     const profile = (importance: number) => ({
       schemaVersion: "match-profile-v1",
       dimensions: Object.fromEntries(
-        dimensions.map((dimension) => [
+        PORTRAIT_DIMENSIONS.map((dimension) => [
           dimension,
           {
             selfTendency: "愿意协商",
@@ -349,7 +340,7 @@ describe("Agent Engine evaluatePair seam", () => {
       schemaVersion: "pair-evaluation-schema-v0",
       rubricVersion: "matching-rubric-v0",
       structuredConditionStatus: "pass",
-      dimensions: dimensions.map((dimension) => ({
+      dimensions: PORTRAIT_DIMENSIONS.map((dimension) => ({
         dimension,
         aToB: 80,
         bToA: 20,

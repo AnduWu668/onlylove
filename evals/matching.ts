@@ -36,16 +36,6 @@ const statusSchema = Type.Union([
   Type.Literal("conflict"),
   Type.Literal("needs_more_information"),
 ]);
-const dimensionSchema = Type.Union([
-  Type.Literal("long_term_planning"),
-  Type.Literal("values"),
-  Type.Literal("relationship_boundaries"),
-  Type.Literal("communication"),
-  Type.Literal("conflict_repair"),
-  Type.Literal("emotional_support"),
-  Type.Literal("lifestyle"),
-  Type.Literal("family_and_finance"),
-]);
 const factsSchema = Type.Object(
   {
     gender: Type.Union([genderSchema, Type.Null()]),

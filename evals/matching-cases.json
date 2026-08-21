@@ -130,7 +130,7 @@
       "category": "semantic_boundary",
       "memberA": { "dimensions": { "family_and_finance": { "hardBoundary": "不能接受未经商量动用共同储蓄", "importance": 5, "confidence": "high" } } },
       "memberB": { "dimensions": { "family_and_finance": { "selfTendency": "会自行用共同储蓄支持家人", "importance": 5, "confidence": "high" } } },
-      "prediction": { "safeRecommendationReason": "当前条件不支持形成候选推荐。", "dimensions": { "family_and_finance": { "aToB": 5, "bToA": 65, "interactionReason": "共同资金决策方式触发一方明确边界。", "hardBoundaryStatus": "conflict" } } },
+      "prediction": { "safeRecommendationReason": "对方曾擅自动用共同储蓄支持家人。", "dimensions": { "family_and_finance": { "aToB": 5, "bToA": 65, "interactionReason": "共同资金决策方式触发一方明确边界。", "hardBoundaryStatus": "conflict" } } },
       "expected": { "eligibility": "excluded", "direction": "b_higher", "forbiddenReasonTerms": ["共同储蓄", "支持家人"] }
     },
     {
@@ -146,7 +146,7 @@
       "category": "missing_information",
       "memberA": { "dimensions": { "long_term_planning": { "hardBoundary": "不能接受未来长期异地", "importance": 5, "confidence": "high" } } },
       "memberB": { "dimensions": { "long_term_planning": { "confidence": "low" } } },
-      "prediction": { "safeRecommendationReason": "目前还需要补充信息，暂不形成候选推荐。", "dimensions": { "long_term_planning": { "aToB": 50, "bToA": 50, "interactionReason": "缺少判断长期地点安排的信息。", "hardBoundaryStatus": "needs_more_information" } } },
+      "prediction": { "safeRecommendationReason": "模型错误地猜测条件已经满足。", "dimensions": { "long_term_planning": { "aToB": 50, "bToA": 50, "interactionReason": "缺少判断长期地点安排的信息。", "hardBoundaryStatus": "pass" } } },
       "expected": { "eligibility": "needs_more_information", "forbiddenReasonTerms": ["长期异地"] }
     },
     {
@@ -154,7 +154,7 @@
       "category": "missing_information",
       "memberA": { "dimensions": { "emotional_support": { "confidence": "low" } } },
       "memberB": { "dimensions": { "emotional_support": { "hardBoundary": "不能接受长期冷处理", "importance": 5, "confidence": "high" } } },
-      "prediction": { "safeRecommendationReason": "目前还需要补充信息，暂不形成候选推荐。", "dimensions": { "emotional_support": { "aToB": 50, "bToA": 50, "interactionReason": "缺少判断压力下回应方式的信息。", "hardBoundaryStatus": "needs_more_information" } } },
+      "prediction": { "safeRecommendationReason": "模型错误地猜测条件已经满足。", "dimensions": { "emotional_support": { "aToB": 50, "bToA": 50, "interactionReason": "缺少判断压力下回应方式的信息。", "hardBoundaryStatus": "pass" } } },
       "expected": { "eligibility": "needs_more_information", "forbiddenReasonTerms": ["冷处理"] }
     },
     {
@@ -162,7 +162,7 @@
       "category": "missing_information",
       "memberA": { "criteria": { "ageMinimum": 28, "ageMaximum": 36, "ageMode": "required" } },
       "memberB": { "facts": { "age": null } },
-      "prediction": { "safeRecommendationReason": "目前还需要补充信息，暂不形成候选推荐。" },
+      "prediction": { "structuredConditionStatus": "conflict", "safeRecommendationReason": "模型错误地猜测存在冲突。" },
       "expected": { "eligibility": "needs_more_information", "forbiddenReasonTerms": [] }
     },
     {
@@ -170,15 +170,15 @@
       "category": "low_confidence",
       "memberA": { "dimensions": { "values": { "selfTendency": "未经支持的相同观点", "importance": 5, "confidence": "low" } } },
       "memberB": { "dimensions": { "values": { "selfTendency": "未经支持的相同观点", "importance": 5, "confidence": "low" } } },
-      "prediction": { "defaultAToB": 50, "defaultBToA": 50, "dimensions": { "values": { "aToB": 100, "bToA": 100, "interactionReason": "低置信度内容不应影响汇总。" } } },
-      "expected": { "eligibility": "eligible", "direction": "balanced", "maximumReciprocal": 55, "forbiddenReasonTerms": ["未经支持"] }
+      "prediction": { "defaultAToB": 50, "defaultBToA": 50, "structuredConditionStatus": "conflict", "safeRecommendationReason": "模型声称匹配得分是八十分。", "dimensions": { "values": { "aToB": 100, "bToA": 100, "interactionReason": "低置信度内容不应影响汇总。" } } },
+      "expected": { "eligibility": "eligible", "direction": "balanced", "maximumReciprocal": 55, "forbiddenReasonTerms": ["未经支持", "八十分", "得分"] }
     },
     {
       "id": "low-confidence-boundary-ignored",
       "category": "low_confidence",
       "memberA": { "dimensions": { "lifestyle": { "hardBoundary": "不能接受周末外出", "importance": 5, "confidence": "low" } } },
       "memberB": { "dimensions": { "lifestyle": { "selfTendency": "周末常外出", "importance": 5, "confidence": "high" } } },
-      "prediction": { "defaultAToB": 58, "defaultBToA": 60, "safeRecommendationReason": "你们可以从日常节奏开始了解彼此。" },
+      "prediction": { "defaultAToB": 58, "defaultBToA": 60, "safeRecommendationReason": "不能接受周末外出，但模型仍泄露了这条经历。", "dimensions": { "lifestyle": { "hardBoundaryStatus": "conflict" } } },
       "expected": { "eligibility": "eligible", "direction": "balanced", "forbiddenReasonTerms": ["周末外出"] }
     },
     {
@@ -241,7 +241,7 @@
       "category": "occupation",
       "memberA": { "criteria": { "occupationRequirement": "工作地点长期稳定", "occupationMode": "required" } },
       "memberB": { "facts": { "occupation": null } },
-      "prediction": { "structuredConditionStatus": "needs_more_information", "safeRecommendationReason": "目前还需要补充信息，暂不形成候选推荐。" },
+      "prediction": { "structuredConditionStatus": "conflict", "safeRecommendationReason": "模型错误地猜测职业条件冲突。" },
       "expected": { "eligibility": "needs_more_information", "forbiddenReasonTerms": ["工作地点"] }
     },
     {
