@@ -14,16 +14,9 @@ const conditionStatusSchema = Type.Union([
   Type.Literal("conflict"),
   Type.Literal("needs_more_information"),
 ]);
-export const portraitDimensionSchema = Type.Union([
-  Type.Literal("long_term_planning"),
-  Type.Literal("values"),
-  Type.Literal("relationship_boundaries"),
-  Type.Literal("communication"),
-  Type.Literal("conflict_repair"),
-  Type.Literal("emotional_support"),
-  Type.Literal("lifestyle"),
-  Type.Literal("family_and_finance"),
-]);
+export const portraitDimensionSchema = Type.Unsafe<PortraitDimension>(
+  Type.Union(PORTRAIT_DIMENSIONS.map((dimension) => Type.Literal(dimension))),
+);
 const dimensionEvaluationSchema = Type.Object(
   {
     dimension: portraitDimensionSchema,
