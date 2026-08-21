@@ -204,6 +204,18 @@ describe("portrait submission, calibration, and publication HTTP seam", () => {
       status: "generating",
       submittedVersion: { version: 1 },
     });
+    const overlapping = await app.inject({
+      method: "POST",
+      url: "/api/member/portrait/versions",
+      headers: { cookie },
+      payload: {
+        clientRequestId: "b6788239-fb93-414c-95b7-3efce5d13e7c",
+      },
+    });
+    expect(overlapping.statusCode).toBe(409);
+    expect(overlapping.json()).toEqual({
+      code: "PORTRAIT_VERSION_IN_PROGRESS",
+    });
     const submitted = await finishPortraitGeneration(cookie);
     expect(submitted.statusCode).toBe(200);
     expect(submitted.json()).toMatchObject({
@@ -353,6 +365,19 @@ describe("portrait submission, calibration, and publication HTTP seam", () => {
       },
     });
 
+    const idempotentReplay = await app.inject({
+      method: "POST",
+      url: "/api/member/portrait/versions",
+      headers: { cookie },
+      payload: {
+        clientRequestId: "dcb4c812-9230-493b-820d-a2ba4b6871cc",
+      },
+    });
+    expect(idempotentReplay.statusCode).toBe(200);
+    expect(idempotentReplay.json().submittedVersion.id).toBe(
+      first.submittedVersion.id,
+    );
+
     expect(state.correctionFollowup.eventsUrl).toContain("/events");
     const tooSoon = await app.inject({
       method: "POST",
@@ -381,6 +406,31 @@ describe("portrait submission, calibration, and publication HTTP seam", () => {
         .runs.filter((run: { task: string }) => run.task === "extract_portrait"),
     ).toHaveLength(2);
 
+    const finishFailedCalibration = async (current: any) => {
+      let failed = current;
+      for (const scenario of current.calibration.scenarios) {
+        const response = await app.inject({
+          method: "POST",
+          url: `/api/member/portrait/calibration/${scenario.id}`,
+          headers: { cookie },
+          payload: {
+            rating: "unlike",
+            correction: `第 ${scenario.number} 题仍需补充语境`,
+            criticalFabrication: false,
+          },
+        });
+        expect(response.statusCode).toBe(200);
+        failed = response.json();
+      }
+      expect(failed.status).toBe("needs_more_understanding");
+      const followup = await app.inject({
+        method: "GET",
+        url: failed.correctionFollowup.eventsUrl,
+        headers: { cookie },
+      });
+      expect(followup.body).toContain("event: done");
+    };
+
     const nextAccepted = await app.inject({
       method: "POST",
       url: "/api/member/portrait/versions",
@@ -402,6 +452,7 @@ describe("portrait submission, calibration, and publication HTTP seam", () => {
       .json()
       .calibration.scenarios.map((scenario: { prompt: string }) => scenario.prompt);
     expect(nextPrompts).not.toEqual(scenarios.map((scenario) => scenario.prompt));
+    await finishFailedCalibration(next.json());
     const thirdAccepted = await app.inject({
       method: "POST",
       url: "/api/member/portrait/versions",
@@ -416,6 +467,7 @@ describe("portrait submission, calibration, and publication HTTP seam", () => {
       .json()
       .calibration.scenarios.map((scenario: { prompt: string }) => scenario.prompt);
     expect(thirdPrompts).not.toEqual(nextPrompts);
+    await finishFailedCalibration(third.json());
     const fourthAccepted = await app.inject({
       method: "POST",
       url: "/api/member/portrait/versions",
@@ -430,6 +482,7 @@ describe("portrait submission, calibration, and publication HTTP seam", () => {
       .json()
       .calibration.scenarios.map((scenario: { prompt: string }) => scenario.prompt);
     expect(fourthPrompts).not.toEqual(thirdPrompts);
+    await finishFailedCalibration(fourth.json());
     const fifthAccepted = await app.inject({
       method: "POST",
       url: "/api/member/portrait/versions",
@@ -439,12 +492,12 @@ describe("portrait submission, calibration, and publication HTTP seam", () => {
       },
     });
     expect(fifthAccepted.statusCode).toBe(202);
-    const fifthPrompts = (await finishPortraitGeneration(cookie))
-      .json()
-      .calibration.scenarios.map(
-        (scenario: { prompt: string }) => scenario.prompt,
-      );
+    const fifth = await finishPortraitGeneration(cookie);
+    const fifthPrompts = fifth.json().calibration.scenarios.map(
+      (scenario: { prompt: string }) => scenario.prompt,
+    );
     expect(fifthPrompts).not.toEqual(fourthPrompts);
+    await finishFailedCalibration(fifth.json());
     const allPrompts = [
       ...scenarios.map((scenario) => scenario.prompt),
       ...nextPrompts,
@@ -462,13 +515,15 @@ describe("portrait submission, calibration, and publication HTTP seam", () => {
         },
       });
       expect(accepted.statusCode).toBe(202);
+      const current = await finishPortraitGeneration(cookie);
       allPrompts.push(
-        ...accepted
+        ...current
           .json()
           .calibration.scenarios.map(
             (scenario: { prompt: string }) => scenario.prompt,
           ),
       );
+      if (version < 16) await finishFailedCalibration(current.json());
     }
     expect(new Set(allPrompts).size).toBe(160);
   });

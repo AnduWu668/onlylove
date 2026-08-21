@@ -903,6 +903,7 @@ export class Portraits {
       candidate.id,
       startedAt,
       new Date(startedAt.getTime() + CALIBRATION_JOB_LEASE_MS),
+      { retryFailed: true },
     );
     if (!claimed) return true;
 
@@ -1002,17 +1003,6 @@ export class Portraits {
         memberId,
         "INTERVIEW",
       );
-    if (interviewConversationId) {
-      const latestJob = await generation.agentJobs.latestForConversation(
-        interviewConversationId,
-      );
-      if (latestJob && ["pending", "running"].includes(latestJob.status)) {
-        throw new PortraitInputError("PORTRAIT_DRAFT_UPDATING");
-      }
-      if (latestJob?.status === "failed") {
-        throw new PortraitInputError("PORTRAIT_DRAFT_UPDATE_FAILED");
-      }
-    }
     const result = await this.db.transaction(async (transaction) => {
       await transaction.execute(
         sql`select pg_advisory_xact_lock(hashtext(${memberId}))`,
@@ -1035,6 +1025,53 @@ export class Portraits {
           versionId: existing.id,
           version: existing.version,
         };
+      }
+
+      if (interviewConversationId) {
+        const latestJob = await generation.agentJobs.latestForConversation(
+          interviewConversationId,
+          transaction,
+        );
+        if (latestJob && ["pending", "running"].includes(latestJob.status)) {
+          throw new PortraitInputError("PORTRAIT_DRAFT_UPDATING");
+        }
+        if (latestJob?.status === "failed") {
+          throw new PortraitInputError("PORTRAIT_DRAFT_UPDATE_FAILED");
+        }
+      }
+
+      const state = (
+        await transaction
+          .select()
+          .from(portraitMemberStates)
+          .where(eq(portraitMemberStates.memberId, memberId))
+          .limit(1)
+      )[0];
+      if (state && state.publishedVersionId !== state.submittedVersionId) {
+        const currentAnswers = await transaction
+          .select({
+            rating: portraitCalibrationAnswers.rating,
+            criticalFabrication:
+              portraitCalibrationAnswers.criticalFabrication,
+          })
+          .from(portraitCalibrationAnswers)
+          .innerJoin(
+            portraitCalibrationScenarios,
+            eq(
+              portraitCalibrationScenarios.id,
+              portraitCalibrationAnswers.scenarioId,
+            ),
+          )
+          .where(
+            eq(
+              portraitCalibrationScenarios.portraitVersionId,
+              state.submittedVersionId,
+            ),
+          );
+        const outcome = calibrationOutcome(currentAnswers);
+        if (!outcome.complete || outcome.passed) {
+          throw new PortraitInputError("PORTRAIT_VERSION_IN_PROGRESS");
+        }
       }
 
       const draft = (

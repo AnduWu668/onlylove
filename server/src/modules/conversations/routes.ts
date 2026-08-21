@@ -226,6 +226,8 @@ async function processInterviewJob(
       switchedModel = error.switchedModel;
     }
     const failedAt = now();
+    const refundQuota =
+      Boolean(input?.clientMessageId) && !claimed.quotaRefunded;
     await db.transaction(async (transaction) => {
       const failed = await agentJobs.fail(
         transaction,
@@ -233,10 +235,10 @@ async function processInterviewJob(
         code,
         retryCount,
         switchedModel,
-        Boolean(input?.clientMessageId),
+        refundQuota,
         failedAt,
       );
-      if (failed && input?.clientMessageId) {
+      if (failed && refundQuota) {
         await transaction
           .update(ownAgentDailyQuotas)
           .set({ used: sql`${ownAgentDailyQuotas.used} - 1`, updatedAt: failedAt })

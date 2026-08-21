@@ -531,6 +531,26 @@ describe("first portrait interview HTTP and Agent Engine seam", () => {
       ),
     ).toBe(true);
 
+    const replay = await app.inject({
+      method: "GET",
+      url: first.json().eventsUrl,
+      headers: { cookie },
+    });
+    expect(replay.body).toContain("event: error");
+
+    const runsAfterReplay = await app.inject({
+      method: "GET",
+      url: "/api/admin/agent-runs",
+      headers: { cookie: adminCookie },
+    });
+    expect(
+      runsAfterReplay
+        .json()
+        .runs.filter(
+          (run: { jobId: string }) => run.jobId === first.json().jobId,
+        ),
+    ).toHaveLength(4);
+
     const afterRefund = await app.inject({
       method: "POST",
       url: "/api/member/interview/messages",

@@ -201,9 +201,12 @@ export class AgentJobs {
     );
   }
 
-  async latestForConversation(conversationId: string) {
+  async latestForConversation(
+    conversationId: string,
+    database: Database | DatabaseTransaction = this.db,
+  ) {
     return (
-      await this.db
+      await database
         .select({ job: agentJobs })
         .from(agentJobs)
         .innerJoin(
@@ -216,7 +219,12 @@ export class AgentJobs {
     )[0]?.job;
   }
 
-  async claim(id: string, startedAt: Date, leaseExpiresAt: Date) {
+  async claim(
+    id: string,
+    startedAt: Date,
+    leaseExpiresAt: Date,
+    options: { retryFailed?: boolean } = {},
+  ) {
     const leaseToken = randomUUID();
     return (
       await this.db
@@ -227,10 +235,12 @@ export class AgentJobs {
             eq(agentJobs.id, id),
             or(
               eq(agentJobs.status, "pending"),
-              and(
-                eq(agentJobs.status, "failed"),
-                lt(agentJobs.retryCount, MAX_JOB_ATTEMPTS),
-              ),
+              options.retryFailed
+                ? and(
+                    eq(agentJobs.status, "failed"),
+                    lt(agentJobs.retryCount, MAX_JOB_ATTEMPTS),
+                  )
+                : undefined,
               and(
                 eq(agentJobs.status, "running"),
                 or(
@@ -352,7 +362,7 @@ export class AgentJobs {
             error: code,
             retryCount,
             switchedModel,
-            quotaRefunded: refundQuota,
+            quotaRefunded: job.quotaRefunded || refundQuota,
             leaseToken: null,
             leaseExpiresAt: null,
             completedAt: failedAt,
