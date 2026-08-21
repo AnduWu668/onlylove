@@ -6,6 +6,7 @@ import { createApp } from "../src/app.js";
 import { loadRootEnv } from "../src/env.js";
 import { MemoryMailer } from "../src/modules/members/mailer.js";
 import { PORTRAIT_DIMENSIONS } from "../src/modules/portraits/questions.js";
+import { createPortraitWorker } from "../src/portrait-worker.js";
 
 loadRootEnv();
 const configuredTestUrl = process.env.TEST_DATABASE_URL;
@@ -35,6 +36,22 @@ describe("Candidate recommendations HTTP seam", () => {
   let app: FastifyInstance;
   let mailer: MemoryMailer;
   let currentTime: Date;
+  let worker: Awaited<ReturnType<typeof createPortraitWorker>>;
+
+  async function generate(cookie: string) {
+    const accepted = await app.inject({
+      method: "POST",
+      url: "/api/member/recommendations",
+      headers: { cookie },
+    });
+    expect(accepted.statusCode).toBe(202);
+    await worker.drain();
+    return app.inject({
+      method: "GET",
+      url: "/api/member/recommendations",
+      headers: { cookie },
+    });
+  }
 
   async function signIn(email: string, birthDate?: string) {
     const challenge = await app.inject({
@@ -197,6 +214,7 @@ describe("Candidate recommendations HTTP seam", () => {
 
   beforeEach(async () => {
     if (app) await app.close();
+    if (worker) await worker.close();
     const pool = new Pool({ connectionString: databaseUrl });
     await pool.query(
       "TRUNCATE sessions, otp_challenges, invitations, members CASCADE",
@@ -216,10 +234,20 @@ describe("Candidate recommendations HTTP seam", () => {
         reply: JSON.stringify(modelOutput),
       },
     });
+    worker = await createPortraitWorker({
+      databaseUrl,
+      now: () => currentTime,
+      agentModel: {
+        provider: "deterministic-fake",
+        model: "matching-v0",
+        reply: JSON.stringify(modelOutput),
+      },
+    });
   });
 
   afterAll(async () => {
     if (app) await app.close();
+    if (worker) await worker.close();
   });
 
   it("returns only an eligible, mutually filtered and evaluated candidate card", async () => {
@@ -234,7 +262,7 @@ describe("Candidate recommendations HTTP seam", () => {
       occupation: "产品设计师",
       acceptableCities: ["上海"],
     });
-    await createMember(adminCookie, {
+    const candidateCookie = await createMember(adminCookie, {
       email: "beichuan@onlylove.test",
       nickname: "北川",
       birthDate: "1990-03-02",
@@ -258,17 +286,12 @@ describe("Candidate recommendations HTTP seam", () => {
     await publishEligiblePortrait("beichuan@onlylove.test");
     await publishEligiblePortrait("other@onlylove.test");
 
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/member/recommendations",
-      headers: { cookie: memberCookie },
-    });
+    const response = await generate(memberCookie);
 
     expect(response.statusCode).toBe(200);
     expect(response.json().candidates).toEqual([
       {
         id: expect.any(String),
-        memberId: expect.any(String),
         avatarText: "北",
         nickname: "北川",
         age: 36,
@@ -278,6 +301,46 @@ describe("Candidate recommendations HTTP seam", () => {
         reason: "你们可以通过进一步交流，确认彼此在重要关系议题上的期待。",
       },
     ]);
+    const auditPool = new Pool({ connectionString: databaseUrl });
+    const audit = await auditPool.query<{
+      task: string;
+      actual_model: string;
+      agent_job_id: string;
+    }>(
+      `SELECT j.task, r.actual_model, e.agent_job_id
+         FROM pair_evaluations e
+         JOIN agent_jobs j ON j.id = e.agent_job_id
+         JOIN agent_runs r ON r.job_id = j.id
+        LIMIT 1`,
+    );
+    await auditPool.end();
+    expect(audit.rows[0]).toMatchObject({
+      task: "evaluate_pair",
+      actual_model: "matching-v0",
+      agent_job_id: expect.any(String),
+    });
+
+    await app.inject({
+      method: "DELETE",
+      url: "/api/member/portrait/publish",
+      headers: { cookie: candidateCookie },
+    });
+    currentTime = new Date("2026-08-23T08:00:00.000Z");
+    await createMember(adminCookie, {
+      email: "replacement@onlylove.test",
+      nickname: "新候选",
+      birthDate: "1991-02-01",
+      gender: "male",
+      heightCm: 177,
+      city: "上海",
+      occupation: "教师",
+      acceptableCities: ["上海"],
+    });
+    await publishEligiblePortrait("replacement@onlylove.test");
+    const replacement = await generate(memberCookie);
+    expect(
+      replacement.json().candidates.map((candidate: { nickname: string }) => candidate.nickname),
+    ).toEqual(["新候选"]);
   });
 
   it("enforces eligibility, one daily fetch, condition rechecks and versioned skips", async () => {
@@ -316,11 +379,7 @@ describe("Candidate recommendations HTTP seam", () => {
     });
 
     await publishEligiblePortrait("member@onlylove.test");
-    const first = await app.inject({
-      method: "POST",
-      url: "/api/member/recommendations",
-      headers: { cookie: memberCookie },
-    });
+    const first = await generate(memberCookie);
     expect(first.statusCode).toBe(200);
     expect(first.json().candidates).toHaveLength(1);
     expect(first.json().remainingCapacity).toBe(4);
@@ -371,7 +430,7 @@ describe("Candidate recommendations HTTP seam", () => {
     expect(afterChange.json().candidates).toEqual([]);
 
     currentTime = new Date("2026-08-23T08:00:00.000Z");
-    await createMember(adminCookie, {
+    const beijingCookie = await createMember(adminCookie, {
       email: "beijing@onlylove.test",
       nickname: "北京候选",
       birthDate: "1991-05-01",
@@ -382,11 +441,7 @@ describe("Candidate recommendations HTTP seam", () => {
       acceptableCities: ["上海"],
     });
     await publishEligiblePortrait("beijing@onlylove.test");
-    const refreshed = await app.inject({
-      method: "POST",
-      url: "/api/member/recommendations",
-      headers: { cookie: memberCookie },
-    });
+    const refreshed = await generate(memberCookie);
     expect(refreshed.statusCode).toBe(200);
     expect(refreshed.json().candidates).toHaveLength(1);
     expect(refreshed.json().candidates[0].nickname).toBe("北京候选");
@@ -402,13 +457,13 @@ describe("Candidate recommendations HTTP seam", () => {
       ).statusCode,
     ).toBe(204);
     currentTime = new Date("2026-08-24T08:00:00.000Z");
-    const afterSkip = await app.inject({
-      method: "POST",
-      url: "/api/member/recommendations",
-      headers: { cookie: memberCookie },
-    });
+    const afterSkip = await generate(memberCookie);
     expect(afterSkip.statusCode).toBe(200);
     expect(afterSkip.json().candidates).toEqual([]);
+    const reverse = await generate(beijingCookie);
+    expect(
+      reverse.json().candidates.map((candidate: { nickname: string }) => candidate.nickname),
+    ).not.toContain("成员甲");
   });
 
   it("filters blocks and current contacts before invoking pair evaluation", async () => {
@@ -469,17 +524,14 @@ describe("Candidate recommendations HTTP seam", () => {
     );
     await pool.end();
 
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/member/recommendations",
-      headers: { cookie: memberCookie },
-    });
+    const response = await generate(memberCookie);
     expect(response.statusCode).toBe(200);
     expect(response.json().candidates).toEqual([]);
   });
 
   it("withholds an uncertain pair and asks only the missing-information member", async () => {
     await app.close();
+    await worker.close();
     const uncertainOutput = {
       ...modelOutput,
       dimensions: modelOutput.dimensions.map((item) =>
@@ -494,6 +546,15 @@ describe("Candidate recommendations HTTP seam", () => {
       mailer,
       otpSecret: "test-only-secret",
       superAdminEmail: "admin@onlylove.test",
+      now: () => currentTime,
+      agentModel: {
+        provider: "deterministic-fake",
+        model: "matching-v0",
+        reply: JSON.stringify(uncertainOutput),
+      },
+    });
+    worker = await createPortraitWorker({
+      databaseUrl,
       now: () => currentTime,
       agentModel: {
         provider: "deterministic-fake",
@@ -531,11 +592,7 @@ describe("Candidate recommendations HTTP seam", () => {
       selfTendency: null,
     });
 
-    const generated = await app.inject({
-      method: "POST",
-      url: "/api/member/recommendations",
-      headers: { cookie: requesterCookie },
-    });
+    const generated = await generate(requesterCookie);
     expect(generated.statusCode).toBe(200);
     expect(generated.json().candidates).toEqual([]);
     const missingState = await app.inject({

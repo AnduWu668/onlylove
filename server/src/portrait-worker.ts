@@ -5,7 +5,12 @@ import {
   type AgentModelOptions,
 } from "./modules/agent-engine/engine.js";
 import { AgentJobs } from "./modules/agent-engine/jobs.js";
+import { MatchingConnections } from "./modules/connections/matching.js";
 import { InterviewConversations } from "./modules/conversations/interview.js";
+import { MatchingMembers } from "./modules/members/matching.js";
+import { Matching } from "./modules/matching/service.js";
+import { MatchingModeration } from "./modules/moderation/matching.js";
+import { MatchingPortraits } from "./modules/portraits/matching.js";
 import { Portraits } from "./modules/portraits/service.js";
 
 export async function createPortraitWorker(options: {
@@ -27,22 +32,40 @@ export async function createPortraitWorker(options: {
     new InterviewConversations(db),
     agentJobs,
   );
+  const matching = new Matching(
+    db,
+    now,
+    agentJobs,
+    agentEngine.matchingDefinition,
+    new MatchingMembers(db),
+    new MatchingPortraits(db),
+    new MatchingModeration(db),
+    new MatchingConnections(db),
+  );
   let closed = false;
 
   return {
     async runOnce() {
-      return portraits.processNextCalibrationJob(agentEngine);
+      return (
+        (await portraits.processNextCalibrationJob(agentEngine)) ||
+        matching.processNextEvaluationJob(agentEngine)
+      );
     },
     async drain() {
       let processed: boolean;
       do {
-        processed = await portraits.processNextCalibrationJob(agentEngine);
+        processed =
+          (await portraits.processNextCalibrationJob(agentEngine)) ||
+          (await matching.processNextEvaluationJob(agentEngine));
       } while (processed);
     },
     async run() {
       while (!closed) {
         try {
-          if (!(await portraits.processNextCalibrationJob(agentEngine))) {
+          if (
+            !(await portraits.processNextCalibrationJob(agentEngine)) &&
+            !(await matching.processNextEvaluationJob(agentEngine))
+          ) {
             await delay(500);
           }
         } catch (error) {

@@ -100,6 +100,36 @@ export class AgentJobs {
     });
   }
 
+  enqueueMatching(values: {
+    transaction: DatabaseTransaction;
+    memberId: string;
+    profileVersionId: string;
+    definition: {
+      role: "match_evaluator";
+      task: "evaluate_pair";
+      version: string;
+      promptVersion: string;
+      schemaVersion: string;
+    };
+    createdAt: Date;
+  }) {
+    return this.create(values.transaction, {
+      id: randomUUID(),
+      role: values.definition.role,
+      task: values.definition.task,
+      definitionVersion: values.definition.version,
+      promptVersion: values.definition.promptVersion,
+      schemaVersion: values.definition.schemaVersion,
+      memberId: values.memberId,
+      profileVersionId: values.profileVersionId,
+      status: "pending",
+      retryCount: 0,
+      switchedModel: false,
+      quotaRefunded: false,
+      createdAt: values.createdAt,
+    });
+  }
+
   calibrationJobsForVersion(profileVersionId: string) {
     return this.db
       .select()
@@ -146,6 +176,35 @@ export class AgentJobs {
         .where(
           and(
             eq(agentJobs.task, "reply_as_twin"),
+            or(
+              eq(agentJobs.status, "pending"),
+              and(
+                eq(agentJobs.status, "failed"),
+                lt(agentJobs.retryCount, MAX_JOB_ATTEMPTS),
+              ),
+              and(
+                eq(agentJobs.status, "running"),
+                or(
+                  isNull(agentJobs.leaseExpiresAt),
+                  lte(agentJobs.leaseExpiresAt, at),
+                ),
+              ),
+            ),
+          ),
+        )
+        .orderBy(asc(agentJobs.createdAt))
+        .limit(1)
+    )[0];
+  }
+
+  async nextMatchingJob(at: Date) {
+    return (
+      await this.db
+        .select()
+        .from(agentJobs)
+        .where(
+          and(
+            eq(agentJobs.task, "evaluate_pair"),
             or(
               eq(agentJobs.status, "pending"),
               and(

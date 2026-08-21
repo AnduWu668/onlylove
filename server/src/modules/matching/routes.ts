@@ -22,7 +22,7 @@ export function registerMatchingRoutes(
     const member = await memberForRequest(request, db, now());
     if (!member) return reply.code(401).send({ code: "UNAUTHENTICATED" });
     try {
-      return await matching.generate(member.id);
+      return reply.code(202).send(await matching.generate(member.id));
     } catch (error) {
       if (error instanceof MatchingError) {
         return reply

@@ -3,14 +3,18 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Pool } from "pg";
 import * as agentEngineSchema from "./modules/agent-engine/schema.js";
+import * as connectionsSchema from "./modules/connections/schema.js";
 import * as conversationsSchema from "./modules/conversations/schema.js";
 import * as matchingSchema from "./modules/matching/schema.js";
 import * as membersSchema from "./modules/members/schema.js";
+import * as moderationSchema from "./modules/moderation/schema.js";
 import * as portraitsSchema from "./modules/portraits/schema.js";
 
 const schema = {
   ...membersSchema,
   ...matchingSchema,
+  ...connectionsSchema,
+  ...moderationSchema,
   ...conversationsSchema,
   ...agentEngineSchema,
   ...portraitsSchema,

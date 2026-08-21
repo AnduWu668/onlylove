@@ -1221,7 +1221,6 @@ describe("OnlyLove UI seam", () => {
     let candidates = [
       {
         id: "recommendation-1",
-        memberId: "candidate-1",
         avatarText: "北",
         nickname: "北川",
         age: 36,

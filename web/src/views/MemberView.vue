@@ -96,9 +96,10 @@ interface RecommendationState {
   capacity: number;
   remainingCapacity: number;
   dailyFetchAvailable: boolean;
+  generating?: boolean;
+  generationFailed?: boolean;
   candidates: {
     id: string;
-    memberId: string;
     avatarText: string;
     nickname: string;
     age: number;
@@ -153,6 +154,7 @@ const recommendationsLoading = ref(false);
 const recommendationsPending = ref(false);
 const recommendationsError = ref("");
 let portraitPoll: number | undefined;
+let recommendationPoll: number | undefined;
 const ownAgentChats = {
   interviewer: {
     input: interviewInput,
@@ -292,6 +294,7 @@ onMounted(loadProfile);
 onUnmounted(() => {
   Object.values(ownAgentEvents).forEach((events) => events.close());
   if (portraitPoll !== undefined) window.clearTimeout(portraitPoll);
+  if (recommendationPoll !== undefined) window.clearTimeout(recommendationPoll);
 });
 
 async function signOut() {
@@ -410,6 +413,15 @@ async function loadRecommendations() {
       : undefined;
     if (!data) throw new Error();
     recommendations.value = data;
+    if (recommendationPoll !== undefined) {
+      window.clearTimeout(recommendationPoll);
+    }
+    if (data.generating) {
+      recommendationPoll = window.setTimeout(
+        () => void loadRecommendations(),
+        1_000,
+      );
+    }
   } catch {
     recommendationsError.value = "暂时无法读取候选推荐，请稍后重试。";
   } finally {
@@ -435,6 +447,12 @@ async function fetchRecommendations() {
       return;
     }
     recommendations.value = data;
+    if (data.generating) {
+      recommendationPoll = window.setTimeout(
+        () => void loadRecommendations(),
+        1_000,
+      );
+    }
   } catch {
     recommendationsError.value = "暂时无法生成推荐，请稍后重试。";
   } finally {
@@ -1516,10 +1534,11 @@ async function withdrawPortrait() {
           >
             {{ recommendationsPending ? "评估中…" : "获取今日推荐" }}
           </button>
-          <span v-else>今日已获取</span>
+          <span v-else>{{ recommendations.generating ? "正在评估…" : "今日已获取" }}</span>
         </div>
 
-        <section v-if="recommendations.candidates.length" class="candidate-list" aria-label="候选推荐列表">
+        <p v-if="recommendations.generating" class="loading-state">配对评估正在后台进行，完成后会自动刷新。</p>
+        <section v-else-if="recommendations.candidates.length" class="candidate-list" aria-label="候选推荐列表">
           <article v-for="candidate in recommendations.candidates" :key="candidate.id" class="candidate-card">
             <div class="candidate-heading">
               <span class="candidate-avatar" aria-hidden="true">{{ candidate.avatarText }}</span>

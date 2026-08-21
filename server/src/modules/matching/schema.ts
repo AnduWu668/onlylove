@@ -12,9 +12,10 @@ import {
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
+import { agentJobs } from "../agent-engine/schema.js";
 import { members, matchCriteriaVersions } from "../members/schema.js";
 import { portraitVersions } from "../portraits/schema.js";
-import type { PairEvaluationResult } from "./evaluation.js";
+import type { PairEvaluationInput, PairEvaluationResult } from "./evaluation.js";
 
 export const matchingSettings = pgTable("matching_settings", {
   id: integer("id").primaryKey(),
@@ -62,6 +63,7 @@ export const pairEvaluations = pgTable(
     criteriaVersionBId: uuid("criteria_version_b_id")
       .notNull()
       .references(() => matchCriteriaVersions.id),
+    agentJobId: uuid("agent_job_id").references(() => agentJobs.id),
     rubricVersion: varchar("rubric_version", { length: 80 }).notNull(),
     result: jsonb("result").$type<PairEvaluationResult>().notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
@@ -76,10 +78,15 @@ export const pairEvaluations = pgTable(
       table.criteriaVersionBId,
       table.rubricVersion,
     ),
+    uniqueIndex("pair_evaluations_agent_job_unique").on(table.agentJobId),
   ],
 );
 
-export type CandidateRecommendationStatus = "pending" | "skipped" | "removed";
+export type CandidateRecommendationStatus =
+  | "pending"
+  | "rechecking"
+  | "skipped"
+  | "removed";
 
 export const candidateRecommendations = pgTable(
   "candidate_recommendations",
@@ -168,37 +175,53 @@ export const matchingFollowupQuestions = pgTable(
   ],
 );
 
-export const memberBlocks = pgTable(
-  "member_blocks",
-  {
-    blockerMemberId: uuid("blocker_member_id")
-      .notNull()
-      .references(() => members.id),
-    blockedMemberId: uuid("blocked_member_id")
-      .notNull()
-      .references(() => members.id),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
-  },
-  (table) => [
-    primaryKey({ columns: [table.blockerMemberId, table.blockedMemberId] }),
-  ],
-);
-
-export const memberConnections = pgTable(
-  "member_connections",
+export const recommendationPairJobs = pgTable(
+  "recommendation_pair_jobs",
   {
     id: uuid("id").primaryKey(),
-    memberAId: uuid("member_a_id")
+    memberId: uuid("member_id")
       .notNull()
       .references(() => members.id),
-    memberBId: uuid("member_b_id")
+    candidateMemberId: uuid("candidate_member_id")
       .notNull()
       .references(() => members.id),
+    runDate: date("run_date"),
+    recommendationId: uuid("recommendation_id").references(
+      () => candidateRecommendations.id,
+    ),
+    agentJobId: uuid("agent_job_id").references(() => agentJobs.id),
+    pairEvaluationId: uuid("pair_evaluation_id").references(
+      () => pairEvaluations.id,
+    ),
+    memberPortraitVersionId: uuid("member_portrait_version_id")
+      .notNull()
+      .references(() => portraitVersions.id),
+    candidatePortraitVersionId: uuid("candidate_portrait_version_id")
+      .notNull()
+      .references(() => portraitVersions.id),
+    memberCriteriaVersionId: uuid("member_criteria_version_id")
+      .notNull()
+      .references(() => matchCriteriaVersions.id),
+    candidateCriteriaVersionId: uuid("candidate_criteria_version_id")
+      .notNull()
+      .references(() => matchCriteriaVersions.id),
+    input: jsonb("input").$type<PairEvaluationInput>().notNull(),
     status: varchar("status", { length: 16 })
-      .$type<"active" | "ended">()
+      .$type<"pending" | "completed" | "failed">()
       .notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
-    endedAt: timestamp("ended_at", { withTimezone: true }),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
   },
-  (table) => [index("member_connections_status_index").on(table.status)],
+  (table) => [
+    uniqueIndex("recommendation_pair_jobs_agent_job_unique").on(table.agentJobId),
+    index("recommendation_pair_jobs_run_index").on(
+      table.memberId,
+      table.runDate,
+      table.status,
+    ),
+    index("recommendation_pair_jobs_recommendation_index").on(
+      table.recommendationId,
+      table.status,
+    ),
+  ],
 );

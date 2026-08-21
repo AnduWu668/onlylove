@@ -5,7 +5,6 @@ import {
   asc,
   desc,
   eq,
-  isNull,
   ne,
   or,
   sql,
@@ -16,13 +15,23 @@ import {
   type AgentEngine,
 } from "../agent-engine/engine.js";
 import type { AgentJobs } from "../agent-engine/jobs.js";
-import { members, matchCriteriaVersions } from "../members/schema.js";
-import { portraitCalibrationAnswers, portraitCalibrationScenarios, portraitMemberStates, portraitVersions } from "../portraits/schema.js";
-import { PORTRAIT_DIMENSIONS, type PortraitDimension } from "../portraits/questions.js";
+import type { MatchingConnections } from "../connections/matching.js";
+import type {
+  MatchingMember,
+  MatchingMembers,
+} from "../members/matching.js";
+import type { MatchingModeration } from "../moderation/matching.js";
+import type {
+  MatchingPortraits,
+  PublishedMatchingPortrait,
+} from "../portraits/matching.js";
+import {
+  PORTRAIT_DIMENSIONS,
+  type PortraitDimension,
+} from "../portraits/questions.js";
 import {
   deterministicPairStatus,
   type PairEvaluationInput,
-  type PairEvaluationResult,
   type StructuredMatchCriteria,
 } from "./evaluation.js";
 import {
@@ -30,10 +39,9 @@ import {
   matchingFollowupQuestions,
   matchingSettings,
   matchingSettingsAudits,
-  memberBlocks,
-  memberConnections,
   pairEvaluations,
   recommendationDailyRuns,
+  recommendationPairJobs,
 } from "./schema.js";
 
 const DEFAULT_CANDIDATE_CAPACITY = 5;
@@ -43,13 +51,15 @@ const MATCHING_RUBRIC = readFileSync(
   new URL("../../../../agent/matching-rubric.md", import.meta.url),
   "utf8",
 ).trim();
+const JOB_LEASE_MS = 2 * 60_000;
+const JOB_HEARTBEAT_MS = 30_000;
+const MAX_JOB_ATTEMPTS = 3;
 
-type Member = typeof members.$inferSelect;
-type Criteria = typeof matchCriteriaVersions.$inferSelect;
-type PortraitVersion = typeof portraitVersions.$inferSelect;
+type Criteria = NonNullable<MatchingMember["criteria"]>;
+type PortraitVersion = PublishedMatchingPortrait["version"];
 
 interface MatchContext {
-  member: Member;
+  member: MatchingMember;
   criteria: Criteria;
   portrait: PortraitVersion;
 }
@@ -160,8 +170,12 @@ export class Matching {
   constructor(
     private readonly db: Database,
     private readonly now: () => Date,
-    private readonly agentEngine: AgentEngine,
     private readonly agentJobs: AgentJobs,
+    private readonly matchingDefinition: AgentEngine["matchingDefinition"],
+    private readonly matchingMembers: MatchingMembers,
+    private readonly matchingPortraits: MatchingPortraits,
+    private readonly matchingModeration: MatchingModeration,
+    private readonly matchingConnections: MatchingConnections,
   ) {}
 
   async settings() {
@@ -188,13 +202,20 @@ export class Matching {
     actorId: string,
     input: { candidateCapacity: number; minimumReciprocalScore: number },
   ) {
+    await this.settings();
     const at = this.now();
     const updated = await this.db.transaction(async (transaction) => {
       await transaction.execute(
         sql`select pg_advisory_xact_lock(hashtext('matching-settings'))`,
       );
-      const current = await this.settings();
-      const updated = (
+      const current = (
+        await transaction
+          .select()
+          .from(matchingSettings)
+          .where(eq(matchingSettings.id, 1))
+          .limit(1)
+      )[0]!;
+      const saved = (
         await transaction
           .update(matchingSettings)
           .set({ ...input, updatedBy: actorId, updatedAt: at })
@@ -209,12 +230,17 @@ export class Matching {
         ...input,
         createdAt: at,
       });
-      return updated;
+      return saved;
     });
     const affected = await this.db
       .selectDistinct({ memberId: candidateRecommendations.memberId })
       .from(candidateRecommendations)
-      .where(eq(candidateRecommendations.status, "pending"));
+      .where(
+        or(
+          eq(candidateRecommendations.status, "pending"),
+          eq(candidateRecommendations.status, "rechecking"),
+        ),
+      );
     for (const { memberId } of affected) {
       await this.recheckForMember(memberId);
     }
@@ -228,32 +254,9 @@ export class Matching {
       .orderBy(desc(matchingSettingsAudits.createdAt));
   }
 
-  private async latestCriteria(memberId: string) {
-    return (
-      await this.db
-        .select()
-        .from(matchCriteriaVersions)
-        .where(eq(matchCriteriaVersions.memberId, memberId))
-        .orderBy(desc(matchCriteriaVersions.version))
-        .limit(1)
-    )[0];
-  }
-
   private async qualification(memberId: string) {
     const reasons: string[] = [];
-    const member = (
-      await this.db
-        .select()
-        .from(members)
-        .where(
-          and(
-            eq(members.id, memberId),
-            eq(members.role, "member"),
-            isNull(members.deletedAt),
-          ),
-        )
-        .limit(1)
-    )[0];
+    const member = await this.matchingMembers.byId(memberId);
     if (!member) return { eligible: false, reasons: ["account_unavailable"] };
     if (
       !member.nickname ||
@@ -265,110 +268,64 @@ export class Matching {
     ) {
       reasons.push("profile_incomplete");
     }
-    const criteria = await this.latestCriteria(memberId);
-    if (!criteria) reasons.push("match_criteria_missing");
-    const state = (
-      await this.db
-        .select()
-        .from(portraitMemberStates)
-        .where(eq(portraitMemberStates.memberId, memberId))
-        .limit(1)
-    )[0];
-    const portrait = state?.publishedVersionId
-      ? (
-          await this.db
-            .select()
-            .from(portraitVersions)
-            .where(eq(portraitVersions.id, state.publishedVersionId))
-            .limit(1)
-        )[0]
-      : undefined;
-    if (!portrait) reasons.push("portrait_not_published");
+    if (!member.criteria) reasons.push("match_criteria_missing");
+    const published = await this.matchingPortraits.published(memberId);
+    if (!published) reasons.push("portrait_not_published");
     if (
-      portrait &&
+      published &&
       PORTRAIT_DIMENSIONS.some(
         (dimension) =>
           !["medium", "high"].includes(
-            portrait.matchProfile.dimensions[dimension]?.confidence,
+            published.version.matchProfile.dimensions[dimension]?.confidence,
           ),
       )
     ) {
       reasons.push("portrait_dimensions_incomplete");
     }
-    if (portrait) {
-      const answers = await this.db
-        .select({
-          rating: portraitCalibrationAnswers.rating,
-          criticalFabrication: portraitCalibrationAnswers.criticalFabrication,
-        })
-        .from(portraitCalibrationScenarios)
-        .innerJoin(
-          portraitCalibrationAnswers,
-          eq(
-            portraitCalibrationAnswers.scenarioId,
-            portraitCalibrationScenarios.id,
-          ),
-        )
-        .where(
-          eq(portraitCalibrationScenarios.portraitVersionId, portrait.id),
-        );
+    if (published) {
       if (
-        answers.length !== 10 ||
-        answers.filter(({ rating }) => rating === "like").length < 8
+        published.calibration.length !== 10 ||
+        published.calibration.filter(({ rating }) => rating === "like").length <
+          8
       ) {
         reasons.push("calibration_incomplete");
       }
-      if (answers.some(({ criticalFabrication }) => criticalFabrication)) {
+      if (
+        published.calibration.some(
+          ({ criticalFabrication }) => criticalFabrication,
+        )
+      ) {
         reasons.push("critical_fabrication");
       }
     }
-    const activeConnection = (
-      await this.db
-        .select({ id: memberConnections.id })
-        .from(memberConnections)
-        .where(
-          and(
-            eq(memberConnections.status, "active"),
-            or(
-              eq(memberConnections.memberAId, memberId),
-              eq(memberConnections.memberBId, memberId),
-            ),
-          ),
-        )
-        .limit(1)
-    )[0];
-    if (activeConnection) reasons.push("current_contact");
+    if (await this.matchingConnections.hasCurrent(memberId)) {
+      reasons.push("current_contact");
+    }
     return {
       eligible: reasons.length === 0,
       reasons,
       context:
         reasons.length === 0
-          ? ({ member, criteria: criteria!, portrait: portrait! } satisfies MatchContext)
+          ? ({
+              member,
+              criteria: member.criteria!,
+              portrait: published!.version,
+            } satisfies MatchContext)
           : undefined,
     };
   }
 
-  private async blocked(memberAId: string, memberBId: string) {
-    return Boolean(
-      (
-        await this.db
-          .select({ blockerMemberId: memberBlocks.blockerMemberId })
-          .from(memberBlocks)
-          .where(
-            or(
-              and(
-                eq(memberBlocks.blockerMemberId, memberAId),
-                eq(memberBlocks.blockedMemberId, memberBId),
-              ),
-              and(
-                eq(memberBlocks.blockerMemberId, memberBId),
-                eq(memberBlocks.blockedMemberId, memberAId),
-              ),
-            ),
-          )
-          .limit(1)
-      )[0],
-    );
+  private async screenPair(memberA: MatchContext, memberB: MatchContext) {
+    if (
+      await this.matchingModeration.blocked(
+        memberA.member.id,
+        memberB.member.id,
+      )
+    ) {
+      return undefined;
+    }
+    const input = pairInput(memberA, memberB, this.now());
+    return deterministicPairStatus(input) === "pass" ? input : undefined;
   }
 
   private async cachedEvaluation(memberA: MatchContext, memberB: MatchContext) {
@@ -391,153 +348,8 @@ export class Matching {
     )[0];
   }
 
-  private async evaluate(memberA: MatchContext, memberB: MatchContext) {
-    const cached = await this.cachedEvaluation(memberA, memberB);
-    if (cached) return cached;
-    const createdAt = this.now();
-    const definition = this.agentEngine.matchingDefinition;
-    const job = await this.db.transaction((transaction) =>
-      this.agentJobs.create(transaction, {
-        id: randomUUID(),
-        role: definition.role,
-        task: definition.task,
-        definitionVersion: definition.version,
-        promptVersion: definition.promptVersion,
-        schemaVersion: definition.schemaVersion,
-        memberId: memberA.member.id,
-        profileVersionId: memberA.portrait.id,
-        status: "pending",
-        retryCount: 0,
-        switchedModel: false,
-        quotaRefunded: false,
-        createdAt,
-      }),
-    );
-    const claimed = await this.agentJobs.claim(
-      job.id,
-      createdAt,
-      new Date(createdAt.getTime() + 2 * 60_000),
-    );
-    if (!claimed) throw new MatchingError("MATCHING_UNAVAILABLE", 503);
-    try {
-      const run = await this.agentEngine.evaluatePair(
-        pairInput(memberA, memberB, createdAt),
-        (attempts) =>
-          this.agentJobs.recordAttempts(claimed, attempts, this.now(), definition),
-      );
-      await this.db.transaction((transaction) =>
-        this.agentJobs.complete(
-          transaction,
-          claimed,
-          null,
-          Math.max(0, run.attempts.length - 1),
-          run.attempts.some((attempt) => attempt.switchedModel),
-          this.now(),
-        ),
-      );
-      return (
-        await this.db
-          .insert(pairEvaluations)
-          .values({
-            id: randomUUID(),
-            memberAId: memberA.member.id,
-            memberBId: memberB.member.id,
-            portraitVersionAId: memberA.portrait.id,
-            portraitVersionBId: memberB.portrait.id,
-            criteriaVersionAId: memberA.criteria.id,
-            criteriaVersionBId: memberB.criteria.id,
-            rubricVersion: MATCHING_RUBRIC_VERSION,
-            result: run.value,
-            createdAt,
-          })
-          .returning()
-      )[0]!;
-    } catch (error) {
-      const failure =
-        error instanceof AgentRunError
-          ? error
-          : new AgentRunError("MATCHING_FAILED");
-      await this.db.transaction((transaction) =>
-        this.agentJobs.fail(
-          transaction,
-          claimed,
-          failure.code,
-          failure.retryCount,
-          failure.switchedModel,
-          false,
-          this.now(),
-        ),
-      );
-      throw new MatchingError("MATCHING_UNAVAILABLE", 503);
-    }
-  }
-
-  private async addFollowupQuestions(
-    evaluation: typeof pairEvaluations.$inferSelect,
-    memberA: MatchContext,
-    memberB: MatchContext,
-  ) {
-    const values: (typeof matchingFollowupQuestions.$inferInsert)[] = [];
-    for (const item of evaluation.result.dimensions) {
-      if (item.hardBoundaryStatus !== "needs_more_information") continue;
-      const a = memberA.portrait.matchProfile.dimensions[item.dimension];
-      const b = memberB.portrait.matchProfile.dimensions[item.dimension];
-      if (
-        a.confidence === "high" &&
-        a.hardBoundary?.trim() &&
-        !b.selfTendency?.trim()
-      ) {
-        values.push({
-          id: randomUUID(),
-          memberId: memberB.member.id,
-          pairEvaluationId: evaluation.id,
-          questionKey: item.dimension,
-          question: DIMENSION_QUESTIONS[item.dimension],
-          createdAt: this.now(),
-        });
-      }
-      if (
-        b.confidence === "high" &&
-        b.hardBoundary?.trim() &&
-        !a.selfTendency?.trim()
-      ) {
-        values.push({
-          id: randomUUID(),
-          memberId: memberA.member.id,
-          pairEvaluationId: evaluation.id,
-          questionKey: item.dimension,
-          question: DIMENSION_QUESTIONS[item.dimension],
-          createdAt: this.now(),
-        });
-      }
-    }
-    if (
-      evaluation.result.structuredConditionStatus === "needs_more_information"
-    ) {
-      for (const context of [memberA, memberB]) {
-        values.push({
-          id: randomUUID(),
-          memberId: context.member.id,
-          pairEvaluationId: evaluation.id,
-          questionKey: "occupation",
-          question: "请补充职业安排会怎样影响你对长期关系的期待和边界。",
-          createdAt: this.now(),
-        });
-      }
-    }
-    if (values.length) {
-      await this.db
-        .insert(matchingFollowupQuestions)
-        .values(values)
-        .onConflictDoNothing();
-    }
-  }
-
-  private exactRecommendationCondition(
-    memberA: MatchContext,
-    memberB: MatchContext,
-  ) {
-    return and(
+  private pairVersionCondition(memberA: MatchContext, memberB: MatchContext) {
+    const direct = and(
       eq(candidateRecommendations.memberId, memberA.member.id),
       eq(candidateRecommendations.candidateMemberId, memberB.member.id),
       eq(candidateRecommendations.memberPortraitVersionId, memberA.portrait.id),
@@ -551,9 +363,27 @@ export class Matching {
         memberB.criteria.id,
       ),
     );
+    const reverse = and(
+      eq(candidateRecommendations.memberId, memberB.member.id),
+      eq(candidateRecommendations.candidateMemberId, memberA.member.id),
+      eq(candidateRecommendations.memberPortraitVersionId, memberB.portrait.id),
+      eq(
+        candidateRecommendations.candidatePortraitVersionId,
+        memberA.portrait.id,
+      ),
+      eq(candidateRecommendations.memberCriteriaVersionId, memberB.criteria.id),
+      eq(
+        candidateRecommendations.candidateCriteriaVersionId,
+        memberA.criteria.id,
+      ),
+    );
+    return and(
+      ne(candidateRecommendations.status, "removed"),
+      or(direct, reverse),
+    );
   }
 
-  private async hasExactRecommendation(
+  private async hasPairVersionRecommendation(
     memberA: MatchContext,
     memberB: MatchContext,
     excludingId?: string,
@@ -565,7 +395,7 @@ export class Matching {
           .from(candidateRecommendations)
           .where(
             and(
-              this.exactRecommendationCondition(memberA, memberB),
+              this.pairVersionCondition(memberA, memberB),
               excludingId
                 ? ne(candidateRecommendations.id, excludingId)
                 : undefined,
@@ -574,6 +404,122 @@ export class Matching {
           .limit(1)
       )[0],
     );
+  }
+
+  private async enqueueEvaluation(
+    memberA: MatchContext,
+    memberB: MatchContext,
+    options: { runDate?: string; recommendationId?: string },
+  ) {
+    const input = pairInput(memberA, memberB, this.now());
+    const cached = await this.cachedEvaluation(memberA, memberB);
+    const at = this.now();
+    const base = {
+      id: randomUUID(),
+      memberId: memberA.member.id,
+      candidateMemberId: memberB.member.id,
+      runDate: options.runDate,
+      recommendationId: options.recommendationId,
+      pairEvaluationId: cached?.id,
+      memberPortraitVersionId: memberA.portrait.id,
+      candidatePortraitVersionId: memberB.portrait.id,
+      memberCriteriaVersionId: memberA.criteria.id,
+      candidateCriteriaVersionId: memberB.criteria.id,
+      input,
+      status: cached ? ("completed" as const) : ("pending" as const),
+      createdAt: at,
+      updatedAt: at,
+    };
+    if (cached) {
+      return (
+        await this.db.insert(recommendationPairJobs).values(base).returning()
+      )[0]!;
+    }
+    return this.db.transaction(async (transaction) => {
+      const job = await this.agentJobs.enqueueMatching({
+        transaction,
+        memberId: memberA.member.id,
+        profileVersionId: memberA.portrait.id,
+        definition: this.matchingDefinition,
+        createdAt: at,
+      });
+      return (
+        await transaction
+          .insert(recommendationPairJobs)
+          .values({ ...base, agentJobId: job.id })
+          .returning()
+      )[0]!;
+    });
+  }
+
+  private async addFollowupQuestions(
+    evaluation: typeof pairEvaluations.$inferSelect,
+    input: PairEvaluationInput,
+    memberAId: string,
+    memberBId: string,
+  ) {
+    const values: (typeof matchingFollowupQuestions.$inferInsert)[] = [];
+    for (const item of evaluation.result.dimensions) {
+      if (item.hardBoundaryStatus !== "needs_more_information") continue;
+      const a = input.memberA.matchProfile.dimensions[item.dimension];
+      const b = input.memberB.matchProfile.dimensions[item.dimension];
+      if (a.confidence === "high" && a.hardBoundary?.trim()) {
+        values.push({
+          id: randomUUID(),
+          memberId: memberBId,
+          pairEvaluationId: evaluation.id,
+          questionKey: item.dimension,
+          question: DIMENSION_QUESTIONS[item.dimension],
+          createdAt: this.now(),
+        });
+      }
+      if (b.confidence === "high" && b.hardBoundary?.trim()) {
+        values.push({
+          id: randomUUID(),
+          memberId: memberAId,
+          pairEvaluationId: evaluation.id,
+          questionKey: item.dimension,
+          question: DIMENSION_QUESTIONS[item.dimension],
+          createdAt: this.now(),
+        });
+      }
+    }
+    if (
+      evaluation.result.structuredConditionStatus === "needs_more_information"
+    ) {
+      if (
+        input.memberA.structuredCriteria.occupationMode === "required" &&
+        input.memberA.structuredCriteria.occupationRequirement
+      ) {
+        values.push({
+          id: randomUUID(),
+          memberId: memberBId,
+          pairEvaluationId: evaluation.id,
+          questionKey: "occupation",
+          question: "请补充职业安排会怎样影响你对长期关系的期待和边界。",
+          createdAt: this.now(),
+        });
+      }
+      if (
+        input.memberB.structuredCriteria.occupationMode === "required" &&
+        input.memberB.structuredCriteria.occupationRequirement
+      ) {
+        values.push({
+          id: randomUUID(),
+          memberId: memberAId,
+          pairEvaluationId: evaluation.id,
+          questionKey: "occupation",
+          question: "请补充职业安排会怎样影响你对长期关系的期待和边界。",
+          createdAt: this.now(),
+        });
+      }
+    }
+    if (values.length) {
+      await this.db
+        .insert(matchingFollowupQuestions)
+        .values(values)
+        .onConflictDoNothing();
+    }
   }
 
   private async reserveDailyRun(memberId: string) {
@@ -620,7 +566,7 @@ export class Matching {
     return runDate;
   }
 
-  private async finishDailyRun(
+  private async markDailyRun(
     memberId: string,
     runDate: string,
     status: "completed" | "failed",
@@ -639,17 +585,131 @@ export class Matching {
       );
   }
 
+  private async evaluationById(id: string) {
+    return (
+      await this.db
+        .select()
+        .from(pairEvaluations)
+        .where(eq(pairEvaluations.id, id))
+        .limit(1)
+    )[0];
+  }
+
+  private contextMatchesRequest(
+    context: MatchContext,
+    request: typeof recommendationPairJobs.$inferSelect,
+    side: "member" | "candidate",
+  ) {
+    return (
+      context.portrait.id === request[`${side}PortraitVersionId`] &&
+      context.criteria.id === request[`${side}CriteriaVersionId`]
+    );
+  }
+
+  private async finalizeDailyRun(memberId: string, runDate: string) {
+    const requests = await this.db
+      .select()
+      .from(recommendationPairJobs)
+      .where(
+        and(
+          eq(recommendationPairJobs.memberId, memberId),
+          eq(recommendationPairJobs.runDate, runDate),
+        ),
+      );
+    if (requests.some(({ status }) => status === "pending")) return false;
+    const settings = await this.settings();
+    const existing = await this.db
+      .select({ id: candidateRecommendations.id })
+      .from(candidateRecommendations)
+      .where(
+        and(
+          eq(candidateRecommendations.memberId, memberId),
+          eq(candidateRecommendations.status, "pending"),
+        ),
+      );
+    const available = Math.max(
+      0,
+      settings.candidateCapacity - existing.length,
+    );
+    const eligible: {
+      request: typeof recommendationPairJobs.$inferSelect;
+      evaluation: typeof pairEvaluations.$inferSelect;
+    }[] = [];
+    for (const request of requests) {
+      if (request.status !== "completed" || !request.pairEvaluationId) continue;
+      const evaluation = await this.evaluationById(request.pairEvaluationId);
+      if (!evaluation) continue;
+      await this.addFollowupQuestions(
+        evaluation,
+        request.input,
+        request.memberId,
+        request.candidateMemberId,
+      );
+      if (
+        evaluation.result.eligibility !== "eligible" ||
+        evaluation.result.reciprocalScore < settings.minimumReciprocalScore
+      ) {
+        continue;
+      }
+      const [member, candidate] = await Promise.all([
+        this.qualification(request.memberId),
+        this.qualification(request.candidateMemberId),
+      ]);
+      if (!member.eligible || !candidate.eligible) continue;
+      if (
+        !this.contextMatchesRequest(member.context!, request, "member") ||
+        !this.contextMatchesRequest(candidate.context!, request, "candidate") ||
+        !(await this.screenPair(member.context!, candidate.context!)) ||
+        (await this.hasPairVersionRecommendation(
+          member.context!,
+          candidate.context!,
+        ))
+      ) {
+        continue;
+      }
+      eligible.push({ request, evaluation });
+    }
+    eligible.sort(
+      (left, right) =>
+        right.evaluation.result.reciprocalScore -
+        left.evaluation.result.reciprocalScore,
+    );
+    const at = this.now();
+    for (const { request, evaluation } of eligible.slice(0, available)) {
+      await this.db
+        .insert(candidateRecommendations)
+        .values({
+          id: randomUUID(),
+          memberId: request.memberId,
+          candidateMemberId: request.candidateMemberId,
+          pairEvaluationId: evaluation.id,
+          memberPortraitVersionId: request.memberPortraitVersionId,
+          candidatePortraitVersionId: request.candidatePortraitVersionId,
+          memberCriteriaVersionId: request.memberCriteriaVersionId,
+          candidateCriteriaVersionId: request.candidateCriteriaVersionId,
+          reason: evaluation.result.safeRecommendationReason,
+          status: "pending",
+          createdAt: at,
+          updatedAt: at,
+        })
+        .onConflictDoNothing();
+    }
+    await this.markDailyRun(memberId, runDate, "completed");
+    return true;
+  }
+
   async generate(memberId: string) {
-    const member = await this.qualification(memberId);
-    if (!member.eligible) {
+    const qualificationResult = await this.qualification(memberId);
+    if (!qualificationResult.eligible) {
       throw new MatchingError(
         "RECOMMENDATION_NOT_ELIGIBLE",
         409,
-        member.reasons,
+        qualificationResult.reasons,
       );
     }
     const runDate = await this.reserveDailyRun(memberId);
     try {
+      await this.recheckForMember(memberId);
       const settings = await this.settings();
       const pending = await this.db
         .select({ id: candidateRecommendations.id })
@@ -660,134 +720,83 @@ export class Matching {
             eq(candidateRecommendations.status, "pending"),
           ),
         );
-      const available = Math.max(
-        0,
-        settings.candidateCapacity - pending.length,
-      );
-      if (available) {
-        const candidates = await this.db
-          .select({ id: members.id })
-          .from(members)
-          .where(
-            and(
-              ne(members.id, memberId),
-              eq(members.role, "member"),
-              isNull(members.deletedAt),
-            ),
-          );
-        const evaluated: {
-          context: MatchContext;
-          evaluation: typeof pairEvaluations.$inferSelect;
-        }[] = [];
-        // ponytail: linear MVP scan; preselect/rank in SQL when the member pool makes this slow.
+      if (pending.length < settings.candidateCapacity) {
+        const candidates = await this.matchingMembers.candidates(memberId);
+        // ponytail: linear MVP scan; preselect in SQL when the member pool makes this slow.
         for (const candidate of candidates) {
-          const qualified = await this.qualification(candidate.id);
-          if (!qualified.eligible) continue;
-          const candidateContext = qualified.context!;
-          if (await this.blocked(memberId, candidate.id)) continue;
-          if (
-            deterministicPairStatus(
-              pairInput(member.context!, candidateContext, this.now()),
-            ) !== "pass"
-          ) {
-            continue;
-          }
-          if (
-            await this.hasExactRecommendation(member.context!, candidateContext)
-          ) {
-            continue;
-          }
-          const evaluation = await this.evaluate(
-            member.context!,
-            candidateContext,
+          const candidateQualification = await this.qualification(candidate.id);
+          if (!candidateQualification.eligible) continue;
+          const input = await this.screenPair(
+            qualificationResult.context!,
+            candidateQualification.context!,
           );
-          if (evaluation.result.eligibility === "needs_more_information") {
-            await this.addFollowupQuestions(
-              evaluation,
-              member.context!,
-              candidateContext,
-            );
-          }
           if (
-            evaluation.result.eligibility === "eligible" &&
-            evaluation.result.reciprocalScore >=
-              settings.minimumReciprocalScore
+            !input ||
+            (await this.hasPairVersionRecommendation(
+              qualificationResult.context!,
+              candidateQualification.context!,
+            ))
           ) {
-            evaluated.push({ context: candidateContext, evaluation });
+            continue;
           }
-        }
-        evaluated.sort(
-          (left, right) =>
-            right.evaluation.result.reciprocalScore -
-            left.evaluation.result.reciprocalScore,
-        );
-        const createdAt = this.now();
-        for (const { context, evaluation } of evaluated.slice(0, available)) {
-          await this.db.insert(candidateRecommendations).values({
-            id: randomUUID(),
-            memberId,
-            candidateMemberId: context.member.id,
-            pairEvaluationId: evaluation.id,
-            memberPortraitVersionId: member.context!.portrait.id,
-            candidatePortraitVersionId: context.portrait.id,
-            memberCriteriaVersionId: member.context!.criteria.id,
-            candidateCriteriaVersionId: context.criteria.id,
-            reason: evaluation.result.safeRecommendationReason,
-            status: "pending",
-            createdAt,
-            updatedAt: createdAt,
-          });
+          await this.enqueueEvaluation(
+            qualificationResult.context!,
+            candidateQualification.context!,
+            { runDate },
+          );
         }
       }
-      await this.finishDailyRun(memberId, runDate, "completed");
+      await this.finalizeDailyRun(memberId, runDate);
       return this.state(memberId);
     } catch (error) {
-      await this.finishDailyRun(memberId, runDate, "failed");
+      await this.markDailyRun(memberId, runDate, "failed");
       throw error;
     }
   }
 
   private async cards(memberId: string) {
     const rows = await this.db
-      .select({
-        recommendation: candidateRecommendations,
-        candidate: members,
-      })
+      .select({ recommendation: candidateRecommendations })
       .from(candidateRecommendations)
-      .innerJoin(
-        members,
-        eq(members.id, candidateRecommendations.candidateMemberId),
-      )
       .where(
         and(
           eq(candidateRecommendations.memberId, memberId),
           eq(candidateRecommendations.status, "pending"),
-          isNull(members.deletedAt),
         ),
       )
       .orderBy(asc(candidateRecommendations.createdAt));
-    return rows.map(({ recommendation, candidate }) => ({
-      id: recommendation.id,
-      memberId: candidate.id,
-      avatarText: candidate.nickname?.trim().slice(0, 1) || "爱",
-      nickname: candidate.nickname!,
-      age: ageOn(candidate.birthDate, this.now()),
-      heightCm: candidate.heightCm!,
-      city: candidate.city!,
-      occupation: candidate.occupation!,
-      reason: recommendation.reason,
-    }));
+    const cards = [];
+    for (const { recommendation } of rows) {
+      const candidate = await this.matchingMembers.byId(
+        recommendation.candidateMemberId,
+      );
+      if (!candidate) continue;
+      cards.push({
+        id: recommendation.id,
+        avatarText: candidate.nickname?.trim().slice(0, 1) || "爱",
+        nickname: candidate.nickname!,
+        age: ageOn(candidate.birthDate, this.now()),
+        heightCm: candidate.heightCm!,
+        city: candidate.city!,
+        occupation: candidate.occupation!,
+        reason: recommendation.reason,
+      });
+    }
+    return cards;
   }
 
   async state(memberId: string) {
     await this.recheckForMember(memberId);
-    const [qualification, settings, candidates, questions, dailyRun] =
+    const [qualificationResult, settings, candidates, questions, dailyRun] =
       await Promise.all([
         this.qualification(memberId),
         this.settings(),
         this.cards(memberId),
         this.db
-          .select({ id: matchingFollowupQuestions.id, question: matchingFollowupQuestions.question })
+          .select({
+            id: matchingFollowupQuestions.id,
+            question: matchingFollowupQuestions.question,
+          })
           .from(matchingFollowupQuestions)
           .where(eq(matchingFollowupQuestions.memberId, memberId))
           .orderBy(asc(matchingFollowupQuestions.createdAt)),
@@ -802,10 +811,11 @@ export class Matching {
           )
           .limit(1),
       ]);
+    const runStatus = dailyRun[0]?.status;
     return {
       eligibility: {
-        eligible: qualification.eligible,
-        reasons: qualification.reasons,
+        eligible: qualificationResult.eligible,
+        reasons: qualificationResult.reasons,
       },
       capacity: settings.candidateCapacity,
       remainingCapacity: Math.max(
@@ -813,8 +823,11 @@ export class Matching {
         settings.candidateCapacity - candidates.length,
       ),
       dailyFetchAvailable:
-        qualification.eligible &&
-        !["running", "completed"].includes(dailyRun[0]?.status ?? ""),
+        qualificationResult.eligible &&
+        runStatus !== "running" &&
+        runStatus !== "completed",
+      generating: runStatus === "running",
+      generationFailed: runStatus === "failed",
       candidates,
       followupQuestions: questions,
     };
@@ -838,88 +851,144 @@ export class Matching {
     );
   }
 
+  private sameRequestVersions(
+    recommendation: typeof candidateRecommendations.$inferSelect,
+    member: MatchContext,
+    candidate: MatchContext,
+  ) {
+    return (
+      recommendation.memberPortraitVersionId === member.portrait.id &&
+      recommendation.candidatePortraitVersionId === candidate.portrait.id &&
+      recommendation.memberCriteriaVersionId === member.criteria.id &&
+      recommendation.candidateCriteriaVersionId === candidate.criteria.id
+    );
+  }
+
+  private async applyRecheck(
+    request: typeof recommendationPairJobs.$inferSelect,
+  ) {
+    if (!request.recommendationId || !request.pairEvaluationId) return;
+    const [evaluation, member, candidate, settings] = await Promise.all([
+      this.evaluationById(request.pairEvaluationId),
+      this.qualification(request.memberId),
+      this.qualification(request.candidateMemberId),
+      this.settings(),
+    ]);
+    if (!evaluation || !member.eligible || !candidate.eligible) {
+      await this.removeRecommendation(request.recommendationId);
+      return;
+    }
+    await this.addFollowupQuestions(
+      evaluation,
+      request.input,
+      request.memberId,
+      request.candidateMemberId,
+    );
+    const stillCurrent =
+      this.contextMatchesRequest(member.context!, request, "member") &&
+      this.contextMatchesRequest(candidate.context!, request, "candidate");
+    const keep =
+      stillCurrent &&
+      Boolean(await this.screenPair(member.context!, candidate.context!)) &&
+      evaluation.result.eligibility === "eligible" &&
+      evaluation.result.reciprocalScore >= settings.minimumReciprocalScore;
+    if (!keep) {
+      await this.removeRecommendation(request.recommendationId);
+      return;
+    }
+    await this.db
+      .update(candidateRecommendations)
+      .set({
+        pairEvaluationId: evaluation.id,
+        memberPortraitVersionId: request.memberPortraitVersionId,
+        candidatePortraitVersionId: request.candidatePortraitVersionId,
+        memberCriteriaVersionId: request.memberCriteriaVersionId,
+        candidateCriteriaVersionId: request.candidateCriteriaVersionId,
+        reason: evaluation.result.safeRecommendationReason,
+        status: "pending",
+        updatedAt: this.now(),
+      })
+      .where(eq(candidateRecommendations.id, request.recommendationId));
+  }
+
+  private async removeRecommendation(id: string) {
+    await this.db
+      .update(candidateRecommendations)
+      .set({ status: "removed", updatedAt: this.now() })
+      .where(eq(candidateRecommendations.id, id));
+  }
+
   async recheckForMember(changedMemberId: string) {
     const settings = await this.settings();
-    const pending = await this.db
+    const recommendations = await this.db
       .select()
       .from(candidateRecommendations)
       .where(
         and(
-          eq(candidateRecommendations.status, "pending"),
+          or(
+            eq(candidateRecommendations.status, "pending"),
+            eq(candidateRecommendations.status, "rechecking"),
+          ),
           or(
             eq(candidateRecommendations.memberId, changedMemberId),
             eq(candidateRecommendations.candidateMemberId, changedMemberId),
           ),
         ),
       );
-    for (const recommendation of pending) {
+    for (const recommendation of recommendations) {
       const [member, candidate] = await Promise.all([
         this.qualification(recommendation.memberId),
         this.qualification(recommendation.candidateMemberId),
       ]);
-      let keep = member.eligible && candidate.eligible;
-      if (keep) {
-        keep = !(await this.blocked(
-          recommendation.memberId,
-          recommendation.candidateMemberId,
-        ));
+      if (
+        !member.eligible ||
+        !candidate.eligible ||
+        !(await this.screenPair(member.context!, candidate.context!))
+      ) {
+        await this.removeRecommendation(recommendation.id);
+        continue;
       }
-      if (keep) {
-        keep =
-          deterministicPairStatus(
-            pairInput(member.context!, candidate.context!, this.now()),
-          ) === "pass";
-      }
-      try {
-        const exactExists =
-          keep &&
-          (await this.hasExactRecommendation(
-            member.context!,
-            candidate.context!,
-            recommendation.id,
-          ));
-        if (exactExists) keep = false;
-        if (keep) {
-          const evaluation = await this.evaluate(
-            member.context!,
-            candidate.context!,
-          );
-          keep =
-            evaluation.result.eligibility === "eligible" &&
-            evaluation.result.reciprocalScore >=
-              settings.minimumReciprocalScore;
-          if (keep) {
-            await this.db
-              .update(candidateRecommendations)
-              .set({
-                pairEvaluationId: evaluation.id,
-                memberPortraitVersionId: member.context!.portrait.id,
-                candidatePortraitVersionId: candidate.context!.portrait.id,
-                memberCriteriaVersionId: member.context!.criteria.id,
-                candidateCriteriaVersionId: candidate.context!.criteria.id,
-                reason: evaluation.result.safeRecommendationReason,
-                updatedAt: this.now(),
-              })
-              .where(eq(candidateRecommendations.id, recommendation.id));
-            continue;
-          }
-          if (evaluation.result.eligibility === "needs_more_information") {
-            await this.addFollowupQuestions(
-              evaluation,
-              member.context!,
-              candidate.context!,
-            );
-          }
+      if (this.sameRequestVersions(recommendation, member.context!, candidate.context!)) {
+        const evaluation = await this.evaluationById(
+          recommendation.pairEvaluationId,
+        );
+        if (
+          !evaluation ||
+          evaluation.result.eligibility !== "eligible" ||
+          evaluation.result.reciprocalScore < settings.minimumReciprocalScore
+        ) {
+          await this.removeRecommendation(recommendation.id);
+        } else if (recommendation.status === "rechecking") {
+          await this.db
+            .update(candidateRecommendations)
+            .set({ status: "pending", updatedAt: this.now() })
+            .where(eq(candidateRecommendations.id, recommendation.id));
         }
-      } catch {
-        keep = false;
+        continue;
       }
-      if (!keep) {
+      const active = (
         await this.db
-          .update(candidateRecommendations)
-          .set({ status: "removed", updatedAt: this.now() })
-          .where(eq(candidateRecommendations.id, recommendation.id));
-      }
+          .select({ id: recommendationPairJobs.id })
+          .from(recommendationPairJobs)
+          .where(
+            and(
+              eq(recommendationPairJobs.recommendationId, recommendation.id),
+              eq(recommendationPairJobs.status, "pending"),
+            ),
+          )
+          .limit(1)
+      )[0];
+      if (active) continue;
+      await this.db
+        .update(candidateRecommendations)
+        .set({ status: "rechecking", updatedAt: this.now() })
+        .where(eq(candidateRecommendations.id, recommendation.id));
+      const request = await this.enqueueEvaluation(
+        member.context!,
+        candidate.context!,
+        { recommendationId: recommendation.id },
+      );
+      if (request.status === "completed") await this.applyRecheck(request);
     }
     const kept = await this.db
       .select({
@@ -944,10 +1013,126 @@ export class Matching {
         left.createdAt.getTime() - right.createdAt.getTime(),
     );
     for (const extra of kept.slice(settings.candidateCapacity)) {
-      await this.db
-        .update(candidateRecommendations)
-        .set({ status: "removed", updatedAt: this.now() })
-        .where(eq(candidateRecommendations.id, extra.id));
+      await this.removeRecommendation(extra.id);
     }
+  }
+
+  async processNextEvaluationJob(agentEngine: AgentEngine) {
+    const candidate = await this.agentJobs.nextMatchingJob(this.now());
+    if (!candidate) return false;
+    const startedAt = this.now();
+    const claimed = await this.agentJobs.claim(
+      candidate.id,
+      startedAt,
+      new Date(startedAt.getTime() + JOB_LEASE_MS),
+      { retryFailed: true },
+    );
+    if (!claimed) return true;
+    const heartbeat = setInterval(() => {
+      const at = this.now();
+      void this.agentJobs
+        .heartbeat(claimed, new Date(at.getTime() + JOB_LEASE_MS))
+        .catch(() => undefined);
+    }, JOB_HEARTBEAT_MS);
+    heartbeat.unref();
+    const request = (
+      await this.db
+        .select()
+        .from(recommendationPairJobs)
+        .where(eq(recommendationPairJobs.agentJobId, claimed.id))
+        .limit(1)
+    )[0];
+    try {
+      if (!request) throw new Error("MATCHING_INPUT_MISSING");
+      let completedRequest = request;
+      if (request.status !== "completed" || !request.pairEvaluationId) {
+        const run = await agentEngine.evaluatePair(request.input, (attempts) =>
+          this.agentJobs.recordAttempts(
+            claimed,
+            attempts,
+            this.now(),
+            agentEngine.matchingDefinition,
+          ),
+        );
+        completedRequest = await this.db.transaction(async (transaction) => {
+          const evaluation = (
+            await transaction
+              .insert(pairEvaluations)
+              .values({
+                id: randomUUID(),
+                memberAId: request.memberId,
+                memberBId: request.candidateMemberId,
+                portraitVersionAId: request.memberPortraitVersionId,
+                portraitVersionBId: request.candidatePortraitVersionId,
+                criteriaVersionAId: request.memberCriteriaVersionId,
+                criteriaVersionBId: request.candidateCriteriaVersionId,
+                agentJobId: claimed.id,
+                rubricVersion: MATCHING_RUBRIC_VERSION,
+                result: run.value,
+                createdAt: this.now(),
+              })
+              .returning()
+          )[0]!;
+          return (
+            await transaction
+              .update(recommendationPairJobs)
+              .set({
+                pairEvaluationId: evaluation.id,
+                status: "completed",
+                updatedAt: this.now(),
+              })
+              .where(eq(recommendationPairJobs.id, request.id))
+              .returning()
+          )[0]!;
+        });
+      }
+      if (completedRequest.recommendationId) {
+        await this.applyRecheck(completedRequest);
+      } else if (completedRequest.runDate) {
+        await this.finalizeDailyRun(
+          completedRequest.memberId,
+          completedRequest.runDate,
+        );
+      }
+      await this.db.transaction(async (transaction) => {
+        const completed = await this.agentJobs.complete(
+          transaction,
+          claimed,
+          null,
+          claimed.retryCount,
+          claimed.switchedModel,
+          this.now(),
+        );
+        if (!completed) throw new Error("AGENT_JOB_LEASE_LOST");
+      });
+    } catch (error) {
+      const runError = error instanceof AgentRunError ? error : undefined;
+      const retryCount = claimed.retryCount + 1;
+      await this.db.transaction((transaction) =>
+        this.agentJobs.fail(
+          transaction,
+          claimed,
+          runError?.code ?? "MODEL_REQUEST_FAILED",
+          retryCount,
+          claimed.switchedModel || (runError?.switchedModel ?? false),
+          false,
+          this.now(),
+        ),
+      );
+      if (request && retryCount >= MAX_JOB_ATTEMPTS) {
+        await this.db
+          .update(recommendationPairJobs)
+          .set({ status: "failed", updatedAt: this.now() })
+          .where(eq(recommendationPairJobs.id, request.id));
+        if (request.recommendationId) {
+          await this.removeRecommendation(request.recommendationId);
+        } else if (request.runDate) {
+          await this.finalizeDailyRun(request.memberId, request.runDate);
+        }
+      }
+    } finally {
+      clearInterval(heartbeat);
+    }
+    return true;
   }
 }
