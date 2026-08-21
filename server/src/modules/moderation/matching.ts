@@ -1,30 +1,42 @@
-import { and, eq, or } from "drizzle-orm";
+import { and, eq, inArray, or } from "drizzle-orm";
 import type { Database } from "../../db.js";
 import { memberBlocks } from "./schema.js";
 
 export class MatchingModeration {
   constructor(private readonly db: Database) {}
 
+  async blockedCandidates(memberId: string, candidateIds: string[]) {
+    const result = new Set<string>();
+    if (!candidateIds.length) return result;
+    const rows = await this.db
+      .select({
+        blockerMemberId: memberBlocks.blockerMemberId,
+        blockedMemberId: memberBlocks.blockedMemberId,
+      })
+      .from(memberBlocks)
+      .where(
+        or(
+          and(
+            eq(memberBlocks.blockerMemberId, memberId),
+            inArray(memberBlocks.blockedMemberId, candidateIds),
+          ),
+          and(
+            eq(memberBlocks.blockedMemberId, memberId),
+            inArray(memberBlocks.blockerMemberId, candidateIds),
+          ),
+        ),
+      );
+    for (const row of rows) {
+      result.add(
+        row.blockerMemberId === memberId
+          ? row.blockedMemberId
+          : row.blockerMemberId,
+      );
+    }
+    return result;
+  }
+
   async blocked(memberAId: string, memberBId: string) {
-    return Boolean(
-      (
-        await this.db
-          .select({ blockerMemberId: memberBlocks.blockerMemberId })
-          .from(memberBlocks)
-          .where(
-            or(
-              and(
-                eq(memberBlocks.blockerMemberId, memberAId),
-                eq(memberBlocks.blockedMemberId, memberBId),
-              ),
-              and(
-                eq(memberBlocks.blockerMemberId, memberBId),
-                eq(memberBlocks.blockedMemberId, memberAId),
-              ),
-            ),
-          )
-          .limit(1)
-      )[0],
-    );
+    return (await this.blockedCandidates(memberAId, [memberBId])).has(memberBId);
   }
 }

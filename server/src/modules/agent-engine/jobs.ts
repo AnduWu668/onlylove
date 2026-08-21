@@ -169,42 +169,24 @@ export class AgentJobs {
   }
 
   async nextCalibrationJob(at: Date) {
-    return (
-      await this.db
-        .select()
-        .from(agentJobs)
-        .where(
-          and(
-            eq(agentJobs.task, "reply_as_twin"),
-            or(
-              eq(agentJobs.status, "pending"),
-              and(
-                eq(agentJobs.status, "failed"),
-                lt(agentJobs.retryCount, MAX_JOB_ATTEMPTS),
-              ),
-              and(
-                eq(agentJobs.status, "running"),
-                or(
-                  isNull(agentJobs.leaseExpiresAt),
-                  lte(agentJobs.leaseExpiresAt, at),
-                ),
-              ),
-            ),
-          ),
-        )
-        .orderBy(asc(agentJobs.createdAt))
-        .limit(1)
-    )[0];
+    return this.nextTaskJob("reply_as_twin", at);
   }
 
   async nextMatchingJob(at: Date) {
+    return this.nextTaskJob("evaluate_pair", at);
+  }
+
+  private async nextTaskJob(
+    task: "reply_as_twin" | "evaluate_pair",
+    at: Date,
+  ) {
     return (
       await this.db
         .select()
         .from(agentJobs)
         .where(
           and(
-            eq(agentJobs.task, "evaluate_pair"),
+            eq(agentJobs.task, task),
             or(
               eq(agentJobs.status, "pending"),
               and(

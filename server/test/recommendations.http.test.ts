@@ -298,7 +298,7 @@ describe("Candidate recommendations HTTP seam", () => {
         heightCm: 178,
         city: "上海",
         occupation: "工程师",
-        reason: "你们可以通过进一步交流，确认彼此在重要关系议题上的期待。",
+        reason: "你们都愿意讨论重要关系议题，可以进一步了解彼此。",
       },
     ]);
     const auditPool = new Pool({ connectionString: databaseUrl });
@@ -383,6 +383,43 @@ describe("Candidate recommendations HTTP seam", () => {
     expect(first.statusCode).toBe(200);
     expect(first.json().candidates).toHaveLength(1);
     expect(first.json().remainingCapacity).toBe(4);
+
+    const compatibleChange = await app.inject({
+      method: "PUT",
+      url: "/api/member/profile",
+      headers: { cookie: memberCookie },
+      payload: {
+        profile: {
+          nickname: "成员甲",
+          birthDate: "1992-04-12",
+          gender: "female",
+          heightCm: 165,
+          city: "上海",
+          occupation: "产品设计师",
+        },
+        matchCriteria: {
+          desiredGender: "male",
+          ageMinimum: 25,
+          ageMaximum: 45,
+          ageMode: "required",
+          heightMinimumCm: 151,
+          heightMaximumCm: 195,
+          heightMode: "required",
+          acceptableCities: ["上海"],
+          occupationRequirement: null,
+          occupationMode: null,
+        },
+      },
+    });
+    expect(compatibleChange.statusCode).toBe(200);
+    const whileRechecking = await app.inject({
+      method: "GET",
+      url: "/api/member/recommendations",
+      headers: { cookie: memberCookie },
+    });
+    expect(whileRechecking.json().candidates).toEqual([]);
+    expect(whileRechecking.json().remainingCapacity).toBe(4);
+    await worker.drain();
 
     const duplicate = await app.inject({
       method: "POST",

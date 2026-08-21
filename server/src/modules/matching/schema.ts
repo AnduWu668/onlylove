@@ -63,7 +63,9 @@ export const pairEvaluations = pgTable(
     criteriaVersionBId: uuid("criteria_version_b_id")
       .notNull()
       .references(() => matchCriteriaVersions.id),
-    agentJobId: uuid("agent_job_id").references(() => agentJobs.id),
+    agentJobId: uuid("agent_job_id")
+      .notNull()
+      .references(() => agentJobs.id),
     rubricVersion: varchar("rubric_version", { length: 80 }).notNull(),
     result: jsonb("result").$type<PairEvaluationResult>().notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),

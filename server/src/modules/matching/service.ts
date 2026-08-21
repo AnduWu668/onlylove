@@ -5,6 +5,7 @@ import {
   asc,
   desc,
   eq,
+  inArray,
   ne,
   or,
   sql,
@@ -45,15 +46,30 @@ import {
 } from "./schema.js";
 
 const DEFAULT_CANDIDATE_CAPACITY = 5;
-const DEFAULT_MINIMUM_RECIPROCAL_SCORE = 60;
 const MATCHING_RUBRIC_VERSION = "matching-rubric-v0";
 const MATCHING_RUBRIC = readFileSync(
   new URL("../../../../agent/matching-rubric.md", import.meta.url),
   "utf8",
 ).trim();
+const MATCHING_THRESHOLD = JSON.parse(
+  readFileSync(
+    new URL("../../../../agent/matching-threshold.json", import.meta.url),
+    "utf8",
+  ),
+) as {
+  rubricVersion: string;
+  minimumReciprocalScore: number;
+};
+if (
+  MATCHING_THRESHOLD.rubricVersion !== MATCHING_RUBRIC_VERSION ||
+  !Number.isFinite(MATCHING_THRESHOLD.minimumReciprocalScore)
+) {
+  throw new Error("匹配阈值与评判规则版本不一致");
+}
 const JOB_LEASE_MS = 2 * 60_000;
 const JOB_HEARTBEAT_MS = 30_000;
 const MAX_JOB_ATTEMPTS = 3;
+const CAPACITY_STATUSES = ["pending", "rechecking"] as const;
 
 type Criteria = NonNullable<MatchingMember["criteria"]>;
 type PortraitVersion = PublishedMatchingPortrait["version"];
@@ -62,6 +78,12 @@ interface MatchContext {
   member: MatchingMember;
   criteria: Criteria;
   portrait: PortraitVersion;
+}
+
+interface Qualification {
+  eligible: boolean;
+  reasons: string[];
+  context?: MatchContext;
 }
 
 export class MatchingError extends Error {
@@ -185,7 +207,7 @@ export class Matching {
       .values({
         id: 1,
         candidateCapacity: DEFAULT_CANDIDATE_CAPACITY,
-        minimumReciprocalScore: DEFAULT_MINIMUM_RECIPROCAL_SCORE,
+        minimumReciprocalScore: MATCHING_THRESHOLD.minimumReciprocalScore,
         updatedAt: at,
       })
       .onConflictDoNothing({ target: matchingSettings.id });
@@ -254,65 +276,84 @@ export class Matching {
       .orderBy(desc(matchingSettingsAudits.createdAt));
   }
 
-  private async qualification(memberId: string) {
-    const reasons: string[] = [];
-    const member = await this.matchingMembers.byId(memberId);
-    if (!member) return { eligible: false, reasons: ["account_unavailable"] };
-    if (
-      !member.nickname ||
-      !member.birthDate ||
-      !member.gender ||
-      !member.heightCm ||
-      !member.city ||
-      !member.occupation
-    ) {
-      reasons.push("profile_incomplete");
-    }
-    if (!member.criteria) reasons.push("match_criteria_missing");
-    const published = await this.matchingPortraits.published(memberId);
-    if (!published) reasons.push("portrait_not_published");
-    if (
-      published &&
-      PORTRAIT_DIMENSIONS.some(
-        (dimension) =>
-          !["medium", "high"].includes(
-            published.version.matchProfile.dimensions[dimension]?.confidence,
-          ),
-      )
-    ) {
-      reasons.push("portrait_dimensions_incomplete");
-    }
-    if (published) {
-      if (
-        published.calibration.length !== 10 ||
-        published.calibration.filter(({ rating }) => rating === "like").length <
-          8
-      ) {
-        reasons.push("calibration_incomplete");
+  private async qualifications(memberIds: string[]) {
+    const ids = [...new Set(memberIds)];
+    const [members, portraits, currentContacts] = await Promise.all([
+      this.matchingMembers.byIds(ids),
+      this.matchingPortraits.publishedFor(ids),
+      this.matchingConnections.membersWithCurrent(ids),
+    ]);
+    const byId = new Map(members.map((member) => [member.id, member]));
+    const result = new Map<string, Qualification>();
+    for (const memberId of ids) {
+      const reasons: string[] = [];
+      const member = byId.get(memberId);
+      if (!member) {
+        result.set(memberId, {
+          eligible: false,
+          reasons: ["account_unavailable"],
+        });
+        continue;
       }
       if (
-        published.calibration.some(
-          ({ criticalFabrication }) => criticalFabrication,
+        !member.nickname ||
+        !member.birthDate ||
+        !member.gender ||
+        !member.heightCm ||
+        !member.city ||
+        !member.occupation
+      ) {
+        reasons.push("profile_incomplete");
+      }
+      if (!member.criteria) reasons.push("match_criteria_missing");
+      const published = portraits.get(memberId);
+      if (!published) reasons.push("portrait_not_published");
+      if (
+        published &&
+        PORTRAIT_DIMENSIONS.some(
+          (dimension) =>
+            !["medium", "high"].includes(
+              published.version.matchProfile.dimensions[dimension]?.confidence,
+            ),
         )
       ) {
-        reasons.push("critical_fabrication");
+        reasons.push("portrait_dimensions_incomplete");
       }
+      if (published) {
+        if (
+          published.calibration.length !== 10 ||
+          published.calibration.filter(({ rating }) => rating === "like")
+            .length < 8
+        ) {
+          reasons.push("calibration_incomplete");
+        }
+        if (
+          published.calibration.some(
+            ({ criticalFabrication }) => criticalFabrication,
+          )
+        ) {
+          reasons.push("critical_fabrication");
+        }
+      }
+      if (currentContacts.has(memberId)) reasons.push("current_contact");
+      result.set(memberId, {
+        eligible: reasons.length === 0,
+        reasons,
+        context:
+          reasons.length === 0
+            ? ({
+                member,
+                criteria: member.criteria!,
+                portrait: published!.version,
+              } satisfies MatchContext)
+            : undefined,
+      });
     }
-    if (await this.matchingConnections.hasCurrent(memberId)) {
-      reasons.push("current_contact");
-    }
-    return {
-      eligible: reasons.length === 0,
-      reasons,
-      context:
-        reasons.length === 0
-          ? ({
-              member,
-              criteria: member.criteria!,
-              portrait: published!.version,
-            } satisfies MatchContext)
-          : undefined,
-    };
+    return result;
+  }
+
+  private async qualification(memberId: string) {
+    return (await this.qualifications([memberId])).get(memberId)!;
   }
 
   private async screenPair(memberA: MatchContext, memberB: MatchContext) {
@@ -324,6 +365,10 @@ export class Matching {
     ) {
       return undefined;
     }
+    return this.deterministicPair(memberA, memberB);
+  }
+
+  private deterministicPair(memberA: MatchContext, memberB: MatchContext) {
     const input = pairInput(memberA, memberB, this.now());
     return deterministicPairStatus(input) === "pass" ? input : undefined;
   }
@@ -386,21 +431,13 @@ export class Matching {
   private async hasPairVersionRecommendation(
     memberA: MatchContext,
     memberB: MatchContext,
-    excludingId?: string,
   ) {
     return Boolean(
       (
         await this.db
           .select({ id: candidateRecommendations.id })
           .from(candidateRecommendations)
-          .where(
-            and(
-              this.pairVersionCondition(memberA, memberB),
-              excludingId
-                ? ne(candidateRecommendations.id, excludingId)
-                : undefined,
-            ),
-          )
+          .where(this.pairVersionCondition(memberA, memberB))
           .limit(1)
       )[0],
     );
@@ -624,7 +661,7 @@ export class Matching {
       .where(
         and(
           eq(candidateRecommendations.memberId, memberId),
-          eq(candidateRecommendations.status, "pending"),
+          inArray(candidateRecommendations.status, [...CAPACITY_STATUSES]),
         ),
       );
     const available = Math.max(
@@ -635,6 +672,16 @@ export class Matching {
       request: typeof recommendationPairJobs.$inferSelect;
       evaluation: typeof pairEvaluations.$inferSelect;
     }[] = [];
+    const qualificationById = await this.qualifications(
+      requests.flatMap((request) => [
+        request.memberId,
+        request.candidateMemberId,
+      ]),
+    );
+    const blockedCandidates = await this.matchingModeration.blockedCandidates(
+      memberId,
+      requests.map(({ candidateMemberId }) => candidateMemberId),
+    );
     for (const request of requests) {
       if (request.status !== "completed" || !request.pairEvaluationId) continue;
       const evaluation = await this.evaluationById(request.pairEvaluationId);
@@ -651,15 +698,14 @@ export class Matching {
       ) {
         continue;
       }
-      const [member, candidate] = await Promise.all([
-        this.qualification(request.memberId),
-        this.qualification(request.candidateMemberId),
-      ]);
+      const member = qualificationById.get(request.memberId)!;
+      const candidate = qualificationById.get(request.candidateMemberId)!;
       if (!member.eligible || !candidate.eligible) continue;
       if (
         !this.contextMatchesRequest(member.context!, request, "member") ||
         !this.contextMatchesRequest(candidate.context!, request, "candidate") ||
-        !(await this.screenPair(member.context!, candidate.context!)) ||
+        blockedCandidates.has(request.candidateMemberId) ||
+        !this.deterministicPair(member.context!, candidate.context!) ||
         (await this.hasPairVersionRecommendation(
           member.context!,
           candidate.context!,
@@ -711,26 +757,34 @@ export class Matching {
     try {
       await this.recheckForMember(memberId);
       const settings = await this.settings();
-      const pending = await this.db
+      const occupying = await this.db
         .select({ id: candidateRecommendations.id })
         .from(candidateRecommendations)
         .where(
           and(
             eq(candidateRecommendations.memberId, memberId),
-            eq(candidateRecommendations.status, "pending"),
+            inArray(candidateRecommendations.status, [...CAPACITY_STATUSES]),
           ),
         );
-      if (pending.length < settings.candidateCapacity) {
+      if (occupying.length < settings.candidateCapacity) {
         const candidates = await this.matchingMembers.candidates(memberId);
+        const qualificationById = await this.qualifications(
+          candidates.map(({ id }) => id),
+        );
+        const blockedCandidates = await this.matchingModeration.blockedCandidates(
+          memberId,
+          candidates.map(({ id }) => id),
+        );
         // ponytail: linear MVP scan; preselect in SQL when the member pool makes this slow.
         for (const candidate of candidates) {
-          const candidateQualification = await this.qualification(candidate.id);
+          const candidateQualification = qualificationById.get(candidate.id)!;
           if (!candidateQualification.eligible) continue;
-          const input = await this.screenPair(
+          const input = this.deterministicPair(
             qualificationResult.context!,
             candidateQualification.context!,
           );
           if (
+            blockedCandidates.has(candidate.id) ||
             !input ||
             (await this.hasPairVersionRecommendation(
               qualificationResult.context!,
@@ -765,11 +819,13 @@ export class Matching {
         ),
       )
       .orderBy(asc(candidateRecommendations.createdAt));
+    const members = await this.matchingMembers.byIds(
+      rows.map(({ recommendation }) => recommendation.candidateMemberId),
+    );
+    const byId = new Map(members.map((member) => [member.id, member]));
     const cards = [];
     for (const { recommendation } of rows) {
-      const candidate = await this.matchingMembers.byId(
-        recommendation.candidateMemberId,
-      );
+      const candidate = byId.get(recommendation.candidateMemberId);
       if (!candidate) continue;
       cards.push({
         id: recommendation.id,
@@ -787,11 +843,26 @@ export class Matching {
 
   async state(memberId: string) {
     await this.recheckForMember(memberId);
-    const [qualificationResult, settings, candidates, questions, dailyRun] =
-      await Promise.all([
+    const [
+      qualificationResult,
+      settings,
+      candidates,
+      occupying,
+      questions,
+      dailyRun,
+    ] = await Promise.all([
         this.qualification(memberId),
         this.settings(),
         this.cards(memberId),
+        this.db
+          .select({ id: candidateRecommendations.id })
+          .from(candidateRecommendations)
+          .where(
+            and(
+              eq(candidateRecommendations.memberId, memberId),
+              inArray(candidateRecommendations.status, [...CAPACITY_STATUSES]),
+            ),
+          ),
         this.db
           .select({
             id: matchingFollowupQuestions.id,
@@ -820,7 +891,7 @@ export class Matching {
       capacity: settings.candidateCapacity,
       remainingCapacity: Math.max(
         0,
-        settings.candidateCapacity - candidates.length,
+        settings.candidateCapacity - occupying.length,
       ),
       dailyFetchAvailable:
         qualificationResult.eligible &&
@@ -868,12 +939,13 @@ export class Matching {
     request: typeof recommendationPairJobs.$inferSelect,
   ) {
     if (!request.recommendationId || !request.pairEvaluationId) return;
-    const [evaluation, member, candidate, settings] = await Promise.all([
+    const [evaluation, qualificationById, settings] = await Promise.all([
       this.evaluationById(request.pairEvaluationId),
-      this.qualification(request.memberId),
-      this.qualification(request.candidateMemberId),
+      this.qualifications([request.memberId, request.candidateMemberId]),
       this.settings(),
     ]);
+    const member = qualificationById.get(request.memberId)!;
+    const candidate = qualificationById.get(request.candidateMemberId)!;
     if (!evaluation || !member.eligible || !candidate.eligible) {
       await this.removeRecommendation(request.recommendationId);
       return;
@@ -935,20 +1007,43 @@ export class Matching {
           ),
         ),
       );
+    const qualificationById = await this.qualifications(
+      recommendations.flatMap((recommendation) => [
+        recommendation.memberId,
+        recommendation.candidateMemberId,
+      ]),
+    );
+    const otherMemberId = (
+      recommendation: typeof candidateRecommendations.$inferSelect,
+    ) =>
+      recommendation.memberId === changedMemberId
+        ? recommendation.candidateMemberId
+        : recommendation.memberId;
+    const blockedMembers = await this.matchingModeration.blockedCandidates(
+      changedMemberId,
+      recommendations.map(otherMemberId),
+    );
     for (const recommendation of recommendations) {
-      const [member, candidate] = await Promise.all([
-        this.qualification(recommendation.memberId),
-        this.qualification(recommendation.candidateMemberId),
-      ]);
+      const member = qualificationById.get(recommendation.memberId)!;
+      const candidate = qualificationById.get(
+        recommendation.candidateMemberId,
+      )!;
       if (
         !member.eligible ||
         !candidate.eligible ||
-        !(await this.screenPair(member.context!, candidate.context!))
+        blockedMembers.has(otherMemberId(recommendation)) ||
+        !this.deterministicPair(member.context!, candidate.context!)
       ) {
         await this.removeRecommendation(recommendation.id);
         continue;
       }
-      if (this.sameRequestVersions(recommendation, member.context!, candidate.context!)) {
+      if (
+        this.sameRequestVersions(
+          recommendation,
+          member.context!,
+          candidate.context!,
+        )
+      ) {
         const evaluation = await this.evaluationById(
           recommendation.pairEvaluationId,
         );
@@ -1004,7 +1099,7 @@ export class Matching {
       .where(
         and(
           eq(candidateRecommendations.memberId, changedMemberId),
-          eq(candidateRecommendations.status, "pending"),
+          inArray(candidateRecommendations.status, [...CAPACITY_STATUSES]),
         ),
       );
     kept.sort(

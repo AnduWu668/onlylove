@@ -14,8 +14,8 @@ const email = ref("");
 const invitations = ref<Invitation[]>([]);
 const busy = ref(false);
 const error = ref("");
-const candidateCapacity = ref(5);
-const minimumReciprocalScore = ref(60);
+const candidateCapacity = ref<number | null>(null);
+const minimumReciprocalScore = ref<number | null>(null);
 const settingsSuccess = ref("");
 
 const statusText: Record<Invitation["status"], string> = {
@@ -181,7 +181,7 @@ function formatDate(value: string) {
           <label for="minimum-reciprocal-score">最低互惠适合度</label>
           <input id="minimum-reciprocal-score" v-model.number="minimumReciprocalScore" type="number" min="0" max="100" step="0.01" required />
         </div>
-        <button type="submit" :disabled="busy">保存推荐配置</button>
+        <button type="submit" :disabled="busy || candidateCapacity === null || minimumReciprocalScore === null">保存推荐配置</button>
       </form>
       <p v-if="settingsSuccess" class="save-success" role="status">{{ settingsSuccess }}</p>
     </section>

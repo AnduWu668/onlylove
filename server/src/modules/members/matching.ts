@@ -1,38 +1,89 @@
-import { and, desc, eq, isNull, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, ne } from "drizzle-orm";
 import type { Database } from "../../db.js";
 import { matchCriteriaVersions, members } from "./schema.js";
 
-export type MatchingMember = typeof members.$inferSelect & {
-  criteria: typeof matchCriteriaVersions.$inferSelect | undefined;
+type MatchingCriteria = Pick<
+  typeof matchCriteriaVersions.$inferSelect,
+  | "id"
+  | "version"
+  | "desiredGender"
+  | "ageMinimum"
+  | "ageMaximum"
+  | "ageMode"
+  | "heightMinimumCm"
+  | "heightMaximumCm"
+  | "heightMode"
+  | "acceptableCities"
+  | "occupationRequirement"
+  | "occupationMode"
+>;
+
+export interface MatchingMember {
+  id: string;
+  nickname: string | null;
+  birthDate: string | null;
+  gender: "female" | "male" | null;
+  heightCm: number | null;
+  city: string | null;
+  occupation: string | null;
+  criteria: MatchingCriteria | undefined;
+}
+
+const memberFields = {
+  id: members.id,
+  nickname: members.nickname,
+  birthDate: members.birthDate,
+  gender: members.gender,
+  heightCm: members.heightCm,
+  city: members.city,
+  occupation: members.occupation,
+};
+
+const criteriaFields = {
+  id: matchCriteriaVersions.id,
+  memberId: matchCriteriaVersions.memberId,
+  version: matchCriteriaVersions.version,
+  desiredGender: matchCriteriaVersions.desiredGender,
+  ageMinimum: matchCriteriaVersions.ageMinimum,
+  ageMaximum: matchCriteriaVersions.ageMaximum,
+  ageMode: matchCriteriaVersions.ageMode,
+  heightMinimumCm: matchCriteriaVersions.heightMinimumCm,
+  heightMaximumCm: matchCriteriaVersions.heightMaximumCm,
+  heightMode: matchCriteriaVersions.heightMode,
+  acceptableCities: matchCriteriaVersions.acceptableCities,
+  occupationRequirement: matchCriteriaVersions.occupationRequirement,
+  occupationMode: matchCriteriaVersions.occupationMode,
 };
 
 export class MatchingMembers {
   constructor(private readonly db: Database) {}
 
-  async byId(memberId: string): Promise<MatchingMember | undefined> {
-    const member = (
-      await this.db
-        .select()
-        .from(members)
-        .where(
-          and(
-            eq(members.id, memberId),
-            eq(members.role, "member"),
-            isNull(members.deletedAt),
-          ),
-        )
-        .limit(1)
-    )[0];
-    if (!member) return undefined;
-    const criteria = (
-      await this.db
-        .select()
-        .from(matchCriteriaVersions)
-        .where(eq(matchCriteriaVersions.memberId, memberId))
-        .orderBy(desc(matchCriteriaVersions.version))
-        .limit(1)
-    )[0];
-    return { ...member, criteria };
+  async byIds(memberIds: string[]): Promise<MatchingMember[]> {
+    if (!memberIds.length) return [];
+    const rows = await this.db
+      .select(memberFields)
+      .from(members)
+      .where(
+        and(
+          inArray(members.id, memberIds),
+          eq(members.role, "member"),
+          isNull(members.deletedAt),
+        ),
+      );
+    if (!rows.length) return [];
+    const criteria = await this.db
+      .select(criteriaFields)
+      .from(matchCriteriaVersions)
+      .where(inArray(matchCriteriaVersions.memberId, rows.map(({ id }) => id)))
+      .orderBy(desc(matchCriteriaVersions.version));
+    const latest = new Map<string, MatchingCriteria>();
+    for (const { memberId, ...value } of criteria) {
+      if (!latest.has(memberId)) latest.set(memberId, value);
+    }
+    return rows.map((member) => ({
+      ...member,
+      criteria: latest.get(member.id),
+    }));
   }
 
   candidates(excludingMemberId: string) {
