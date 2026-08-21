@@ -143,6 +143,23 @@ export function interviewPlanningPriority(
   return `published_common_weakness:${commonWeakness}`;
 }
 
+export function portraitExtractionPrompt(
+  currentDraft: PortraitDraftContent,
+  evidenceMessages: readonly {
+    id: string;
+    content: string;
+    sequence: number;
+  }[],
+) {
+  return JSON.stringify({
+    instruction:
+      "只依据 evidenceMessages 更新完整八维画像草稿。没有证据时保持原值或低置信度；矛盾写入 contradictions；每个结论只引用实际支持它的消息 id。",
+    schemaVersion: PORTRAIT_SCHEMA_VERSION,
+    currentDraft,
+    evidenceMessages,
+  });
+}
+
 function visibleState(memberId: string, answered: number, progress: number) {
   return {
     fixedInterview: {
@@ -355,13 +372,10 @@ export class Portraits {
       };
     }
 
-    const prompt = JSON.stringify({
-      instruction:
-        "只依据 evidenceMessages 更新完整八维画像草稿。没有证据时保持原值或低置信度；矛盾写入 contradictions；每个结论只引用实际支持它的消息 id。",
-      schemaVersion: PORTRAIT_SCHEMA_VERSION,
-      currentDraft: current?.content ?? emptyPortraitDraft(),
-      evidenceMessages: newEvidence,
-    });
+    const prompt = portraitExtractionPrompt(
+      current?.content ?? emptyPortraitDraft(),
+      newEvidence,
+    );
     let attempts: AgentAttemptResult[] = [];
     try {
       const extracted = await agentEngine.extractPortrait(

@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { Type, type Static, type TSchema } from "typebox";
+import { Value } from "typebox/value";
 import {
   FIXED_INTERVIEW_QUESTIONS,
   PORTRAIT_DIMENSIONS,
@@ -11,10 +13,90 @@ import {
   interviewPlanningPriority,
 } from "../server/src/modules/portraits/service.js";
 
-const load = async (name: string) =>
-  JSON.parse(await readFile(new URL(name, import.meta.url), "utf8")) as any[];
-const interview = await load("interview-cases.json");
-const extraction = await load("extraction-cases.json");
+const nonemptyString = Type.String({ minLength: 1 });
+const evidenceMessageSchema = Type.Object(
+  {
+    id: nonemptyString,
+    content: nonemptyString,
+    sequence: Type.Integer({ minimum: 1 }),
+  },
+  { additionalProperties: false },
+);
+const interviewCaseSchema = Type.Object(
+  {
+    id: nonemptyString,
+    category: Type.Union([
+      Type.Literal("leading_options"),
+      Type.Literal("correction"),
+      Type.Literal("low_confidence"),
+      Type.Literal("contradiction"),
+    ]),
+    input: nonemptyString,
+    referenceOptions: Type.Optional(Type.Array(nonemptyString)),
+    invariants: Type.Array(nonemptyString, { minItems: 1 }),
+  },
+  { additionalProperties: false },
+);
+const extractionCaseSchema = Type.Union([
+  Type.Object(
+    {
+      id: nonemptyString,
+      category: Type.Union([
+        Type.Literal("eight_dimensions"),
+        Type.Literal("evidence_reference"),
+      ]),
+      evidenceMessages: Type.Array(evidenceMessageSchema),
+      invariants: Type.Array(nonemptyString, { minItems: 1 }),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      id: nonemptyString,
+      category: Type.Literal("fact_hallucination"),
+      evidenceMessages: Type.Array(evidenceMessageSchema),
+      forbiddenClaims: Type.Array(nonemptyString, { minItems: 1 }),
+      candidateOutputs: Type.Array(
+        Type.Object(
+          { text: nonemptyString, shouldPass: Type.Boolean() },
+          { additionalProperties: false },
+        ),
+        { minItems: 1 },
+      ),
+      invariants: Type.Array(nonemptyString, { minItems: 1 }),
+    },
+    { additionalProperties: false },
+  ),
+]);
+
+export type InterviewCase = Static<typeof interviewCaseSchema>;
+export type ExtractionCase = Static<typeof extractionCaseSchema>;
+
+async function loadCases<T extends TSchema>(name: string, itemSchema: T) {
+  const value: unknown = JSON.parse(
+    await readFile(new URL(name, import.meta.url), "utf8"),
+  );
+  const schema = Type.Array(itemSchema);
+  const errors = [...Value.Errors(schema, value)];
+  assert.equal(
+    errors.length,
+    0,
+    errors
+      .slice(0, 5)
+      .map((error) => `${error.instancePath || "/"}: ${error.message}`)
+      .join("; "),
+  );
+  return value as Static<T>[];
+}
+
+export const interviewCases = await loadCases(
+  "interview-cases.json",
+  interviewCaseSchema,
+);
+export const extractionCases = await loadCases(
+  "extraction-cases.json",
+  extractionCaseSchema,
+);
 
 assert.equal(FIXED_INTERVIEW_QUESTIONS.length, 10);
 assert.deepEqual(
@@ -23,7 +105,11 @@ assert.deepEqual(
 );
 for (const [index, question] of FIXED_INTERVIEW_QUESTIONS.entries()) {
   assert(question.options.length >= 3 && question.options.length <= 4);
-  assert(!question.options.some((option) => /优质|正确|错误|推荐/.test(option.text)));
+  assert(
+    !question.options.some((option) =>
+      /优质|正确|错误|推荐/.test(option.text),
+    ),
+  );
   assert.notDeepEqual(
     publicQuestion("benchmark-member-a", index)?.options,
     publicQuestion("benchmark-member-b", index)?.options,
@@ -75,11 +161,12 @@ assert.equal(
   false,
 );
 
-const hallucinationCase = extraction.find(
+const hallucinationCase = extractionCases.find(
   (item) => item.category === "fact_hallucination",
-)!;
+);
+assert(hallucinationCase?.category === "fact_hallucination");
 for (const candidate of hallucinationCase.candidateOutputs) {
-  const passed = !hallucinationCase.forbiddenClaims.some((claim: string) =>
+  const passed: boolean = !hallucinationCase.forbiddenClaims.some((claim) =>
     candidate.text.includes(claim),
   );
   assert.equal(passed, candidate.shouldPass);
@@ -90,15 +177,23 @@ for (const category of [
   "correction",
   "low_confidence",
   "contradiction",
-]) {
-  assert(interview.some((item) => item.category === category), `missing ${category}`);
+] as const) {
+  assert(
+    interviewCases.some((item) => item.category === category),
+    `missing ${category}`,
+  );
 }
 for (const category of [
   "eight_dimensions",
   "evidence_reference",
   "fact_hallucination",
-]) {
-  assert(extraction.some((item) => item.category === category), `missing ${category}`);
+] as const) {
+  assert(
+    extractionCases.some((item) => item.category === category),
+    `missing ${category}`,
+  );
 }
 
-console.info(`portrait benchmark ok: ${interview.length + extraction.length} cases`);
+console.info(
+  `portrait eval inputs ok: ${interviewCases.length + extractionCases.length} cases`,
+);

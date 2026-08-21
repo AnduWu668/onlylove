@@ -9,7 +9,7 @@
     "id": "claims-reference-real-message",
     "category": "evidence_reference",
     "evidenceMessages": [
-      { "id": "11111111-1111-4111-8111-111111111111", "content": "争执后我通常需要半小时冷静，再回来把事情谈完。" }
+      { "id": "11111111-1111-4111-8111-111111111111", "content": "争执后我通常需要半小时冷静，再回来把事情谈完。", "sequence": 1 }
     ],
     "invariants": ["medium_or_high_has_evidence", "evidence_id_exists_in_input"]
   },
@@ -17,9 +17,9 @@
     "id": "unknown-family-plan-is-not-invented",
     "category": "fact_hallucination",
     "evidenceMessages": [
-      { "id": "22222222-2222-4222-8222-222222222222", "content": "我还没有想过以后住在哪座城市。" }
+      { "id": "22222222-2222-4222-8222-222222222222", "content": "我还没有想过以后住在哪座城市。", "sequence": 1 }
     ],
-    "forbiddenClaims": ["已经决定定居城市", "已与家人约定购房", "明确的生育计划"],
+    "forbiddenClaims": ["成员已经决定定居城市", "成员已与家人约定购房", "成员有明确的生育计划"],
     "candidateOutputs": [
       { "text": "定居城市仍然未知。", "shouldPass": true },
       { "text": "成员已经决定定居城市。", "shouldPass": false }
