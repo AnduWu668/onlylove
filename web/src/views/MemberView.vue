@@ -57,6 +57,7 @@ interface TwinConversationState {
 }
 
 type CalibrationRating = "like" | "partial" | "unlike";
+type OwnAgentRole = "interviewer" | "twin";
 
 interface PortraitLifecycleState {
   status:
@@ -128,13 +129,27 @@ const progressFeedback = ref("");
 const quotaRemaining = ref<number>();
 const interviewMessages = ref<InterviewMessage[]>([]);
 const twinMessages = ref<InterviewMessage[]>([]);
-let interviewEvents: EventSource | undefined;
-let twinEvents: EventSource | undefined;
 let portraitPoll: number | undefined;
-let interviewRetry:
-  | { clientMessageId: string; content: string }
-  | undefined;
-let twinRetry: { clientMessageId: string; content: string } | undefined;
+const ownAgentChats = {
+  interviewer: {
+    input: interviewInput,
+    sending: interviewSending,
+    error: interviewError,
+    messages: interviewMessages,
+    endpoint: "/api/member/interview/messages",
+  },
+  twin: {
+    input: twinInput,
+    sending: twinSending,
+    error: twinError,
+    messages: twinMessages,
+    endpoint: "/api/member/twin/messages",
+  },
+};
+const ownAgentEvents: Partial<Record<OwnAgentRole, EventSource>> = {};
+const ownAgentRetries: Partial<
+  Record<OwnAgentRole, { clientMessageId: string; content: string }>
+> = {};
 let portraitSubmitRequestId: string | undefined;
 const activeCalibrationScenario = computed(() =>
   portraitLifecycle.value?.status === "calibrating"
@@ -252,8 +267,7 @@ async function loadProfile() {
 
 onMounted(loadProfile);
 onUnmounted(() => {
-  interviewEvents?.close();
-  twinEvents?.close();
+  Object.values(ownAgentEvents).forEach((events) => events.close());
   if (portraitPoll !== undefined) window.clearTimeout(portraitPoll);
 });
 
@@ -433,7 +447,7 @@ async function loadInterview() {
       });
       interviewMessages.value.push(answer);
       interviewSending.value = true;
-      listenForInterview(data.autoFollowup.eventsUrl, answer, false);
+      listenForOwnAgent("interviewer", data.autoFollowup.eventsUrl, answer, false);
     }
     await loadPortraitLifecycle();
     interviewLoaded.value = true;
@@ -464,7 +478,7 @@ async function loadTwin() {
       });
       twinMessages.value.push(answer);
       twinSending.value = true;
-      listenForTwin(data.autoFollowup.eventsUrl, answer, false);
+      listenForOwnAgent("twin", data.autoFollowup.eventsUrl, answer, false);
     }
     twinLoaded.value = true;
   } catch {
@@ -517,7 +531,7 @@ async function submitFixedAnswer() {
       });
       interviewMessages.value.push(answer);
       interviewSending.value = true;
-      listenForInterview(data.autoFollowup.eventsUrl, answer, false);
+      listenForOwnAgent("interviewer", data.autoFollowup.eventsUrl, answer, false);
     }
   } catch {
     interviewError.value = "这道回答暂时没有保存，请稍后重试。";
@@ -538,131 +552,49 @@ function showTwinRole(role: "interviewer" | "twin") {
   if (role === "twin") void loadTwin();
 }
 
-function streamError(code?: string) {
+function ownAgentFailure(
+  role: OwnAgentRole,
+  code: string | undefined,
+  quotaReserved: boolean,
+) {
   if (code === "MODEL_NOT_CONFIGURED") {
-    return "画像访谈模型尚未配置，请联系管理员。";
+    return role === "interviewer"
+      ? "画像访谈模型尚未配置，请联系管理员。"
+      : "恋爱分身模型尚未配置，请联系管理员。";
   }
-  if (code === "INTERVIEW_IN_PROGRESS") return "上一条回答仍在生成中。";
+  if (!quotaReserved) {
+    return role === "interviewer"
+      ? "第一次动态追问生成失败，请稍后发送一条消息继续。"
+      : "上一次恋爱分身回答生成失败，请重新发送。";
+  }
   return "这次回答生成失败，消息额度已退回，请稍后重试。";
 }
 
-function listenForInterview(
-  eventsUrl: string,
-  answer: InterviewMessage,
-  quotaReserved = true,
-) {
-  interviewEvents?.close();
-  interviewEvents = new EventSource(eventsUrl);
-  interviewEvents.addEventListener("delta", (event) => {
-    const payload = JSON.parse((event as MessageEvent).data) as {
-      text: string;
-    };
-    answer.content += payload.text;
-  });
-  interviewEvents.addEventListener("progress", (event) => {
-    const payload = JSON.parse((event as MessageEvent).data) as {
-      completed: number;
-      total: number;
-      feedback: string;
-    };
-    if (portraitInterview.value) {
-      portraitInterview.value.progress = {
-        completed: payload.completed,
-        total: payload.total,
-      };
-    }
-    progressFeedback.value = payload.feedback;
-  });
-  interviewEvents.addEventListener("done", () => {
-    interviewEvents?.close();
-    interviewEvents = undefined;
-    interviewSending.value = false;
-  });
-  interviewEvents.addEventListener("error", (event) => {
-    if (!(event instanceof MessageEvent) || !event.data) return;
-    const code = (JSON.parse(event.data) as { code?: string }).code;
-    interviewError.value = quotaReserved
-      ? streamError(code)
-      : code === "MODEL_NOT_CONFIGURED"
-        ? streamError(code)
-        : "第一次动态追问生成失败，请稍后发送一条消息继续。";
-    interviewMessages.value = interviewMessages.value.filter(
-      (message) => message.id !== answer.id,
-    );
-    interviewEvents?.close();
-    interviewEvents = undefined;
-    interviewSending.value = false;
-  });
-}
-
-async function sendInterview() {
-  const content = interviewInput.value.trim();
-  if (!content || interviewSending.value) return;
-  interviewSending.value = true;
-  interviewError.value = "";
-  interviewInput.value = "";
-  const clientMessageId =
-    interviewRetry?.content === content
-      ? interviewRetry.clientMessageId
-      : crypto.randomUUID();
-  interviewRetry = undefined;
-  interviewMessages.value.push({
-    id: clientMessageId,
-    role: "member",
-    content,
-  });
-  const answer = reactive({
-    id: `pending-${clientMessageId}`,
-    role: "agent" as const,
-    content: "",
-  });
-  interviewMessages.value.push(answer);
-  const rollback = () => {
-    interviewMessages.value = interviewMessages.value.filter(
-      (message) => message.id !== clientMessageId && message.id !== answer.id,
-    );
-    if (!interviewInput.value) interviewInput.value = content;
-  };
-
-  try {
-    const response = await fetch("/api/member/interview/messages", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ clientMessageId, content }),
-    });
-    const data = await jsonOrUndefined<{
-      eventsUrl?: string;
-      quotaRemaining?: number;
-      code?: string;
-    }>(response);
-    if (!response.ok || !data?.eventsUrl) {
-      interviewError.value = streamError(data?.code);
-      rollback();
-      interviewSending.value = false;
-      return;
-    }
-    quotaRemaining.value = data.quotaRemaining;
-    listenForInterview(data.eventsUrl, answer);
-  } catch {
-    interviewError.value = "网络中断，消息已恢复，请再次发送。";
-    interviewRetry = { clientMessageId, content };
-    rollback();
-    interviewSending.value = false;
+function postFailure(role: OwnAgentRole, code?: string) {
+  if (role === "interviewer") {
+    if (code === "INTERVIEW_IN_PROGRESS") return "上一条回答仍在生成中。";
+    return ownAgentFailure(role, code, true);
   }
+  return code === "TWIN_IN_PROGRESS"
+    ? "上一条恋爱分身回答仍在生成中。"
+    : "这条消息暂时无法发送，请稍后重试。";
 }
 
-function listenForTwin(
+function listenForOwnAgent(
+  role: OwnAgentRole,
   eventsUrl: string,
   answer: InterviewMessage,
   quotaReserved = true,
 ) {
-  twinEvents?.close();
-  twinEvents = new EventSource(eventsUrl);
-  twinEvents.addEventListener("delta", (event) => {
+  const chat = ownAgentChats[role];
+  ownAgentEvents[role]?.close();
+  const events = new EventSource(eventsUrl);
+  ownAgentEvents[role] = events;
+  events.addEventListener("delta", (event) => {
     const payload = JSON.parse((event as MessageEvent).data) as { text: string };
     answer.content += payload.text;
   });
-  twinEvents.addEventListener("progress", (event) => {
+  events.addEventListener("progress", (event) => {
     const payload = JSON.parse((event as MessageEvent).data) as {
       completed: number;
       total: number;
@@ -676,56 +608,51 @@ function listenForTwin(
     }
     progressFeedback.value = payload.feedback;
   });
-  twinEvents.addEventListener("done", () => {
-    twinEvents?.close();
-    twinEvents = undefined;
-    twinSending.value = false;
+  events.addEventListener("done", () => {
+    events.close();
+    delete ownAgentEvents[role];
+    chat.sending.value = false;
   });
-  twinEvents.addEventListener("error", (event) => {
+  events.addEventListener("error", (event) => {
     if (!(event instanceof MessageEvent) || !event.data) return;
     const code = (JSON.parse(event.data) as { code?: string }).code;
-    twinError.value =
-      code === "MODEL_NOT_CONFIGURED"
-        ? "恋爱分身模型尚未配置，请联系管理员。"
-        : quotaReserved
-          ? "这次回答生成失败，消息额度已退回，请稍后重试。"
-          : "上一次恋爱分身回答生成失败，请重新发送。";
-    twinMessages.value = twinMessages.value.filter(
+    chat.error.value = ownAgentFailure(role, code, quotaReserved);
+    chat.messages.value = chat.messages.value.filter(
       (message) => message.id !== answer.id,
     );
-    twinEvents?.close();
-    twinEvents = undefined;
-    twinSending.value = false;
+    events.close();
+    delete ownAgentEvents[role];
+    chat.sending.value = false;
   });
 }
 
-async function sendTwin() {
-  const content = twinInput.value.trim();
-  if (!content || twinSending.value) return;
-  twinSending.value = true;
-  twinError.value = "";
-  twinInput.value = "";
+async function sendOwnAgent(role: OwnAgentRole) {
+  const chat = ownAgentChats[role];
+  const content = chat.input.value.trim();
+  if (!content || chat.sending.value) return;
+  chat.sending.value = true;
+  chat.error.value = "";
+  chat.input.value = "";
+  const retry = ownAgentRetries[role];
   const clientMessageId =
-    twinRetry?.content === content
-      ? twinRetry.clientMessageId
-      : crypto.randomUUID();
-  twinRetry = undefined;
-  twinMessages.value.push({ id: clientMessageId, role: "member", content });
+    retry?.content === content ? retry.clientMessageId : crypto.randomUUID();
+  delete ownAgentRetries[role];
+  chat.messages.value.push({ id: clientMessageId, role: "member", content });
   const answer = reactive<InterviewMessage>({
     id: `pending-${clientMessageId}`,
     role: "agent",
     content: "",
   });
-  twinMessages.value.push(answer);
+  chat.messages.value.push(answer);
   const rollback = () => {
-    twinMessages.value = twinMessages.value.filter(
+    chat.messages.value = chat.messages.value.filter(
       (message) => message.id !== clientMessageId && message.id !== answer.id,
     );
-    if (!twinInput.value) twinInput.value = content;
+    if (!chat.input.value) chat.input.value = content;
   };
 
   try {
-    const response = await fetch("/api/member/twin/messages", {
+    const response = await fetch(chat.endpoint, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ clientMessageId, content }),
@@ -736,21 +663,18 @@ async function sendTwin() {
       code?: string;
     }>(response);
     if (!response.ok || !data?.eventsUrl) {
-      twinError.value =
-        data?.code === "TWIN_IN_PROGRESS"
-          ? "上一条恋爱分身回答仍在生成中。"
-          : "这条消息暂时无法发送，请稍后重试。";
+      chat.error.value = postFailure(role, data?.code);
       rollback();
-      twinSending.value = false;
+      chat.sending.value = false;
       return;
     }
     quotaRemaining.value = data.quotaRemaining;
-    listenForTwin(data.eventsUrl, answer);
+    listenForOwnAgent(role, data.eventsUrl, answer);
   } catch {
-    twinError.value = "网络中断，消息已恢复，请再次发送。";
-    twinRetry = { clientMessageId, content };
+    chat.error.value = "网络中断，消息已恢复，请再次发送。";
+    ownAgentRetries[role] = { clientMessageId, content };
     rollback();
-    twinSending.value = false;
+    chat.sending.value = false;
   }
 }
 
@@ -834,7 +758,12 @@ async function submitCalibrationAnswer() {
       });
       interviewMessages.value.push(answer);
       interviewSending.value = true;
-      listenForInterview(data.correctionFollowup.eventsUrl, answer, false);
+      listenForOwnAgent(
+        "interviewer",
+        data.correctionFollowup.eventsUrl,
+        answer,
+        false,
+      );
     }
     calibrationRating.value = undefined;
     calibrationCorrection.value = "";
@@ -1043,7 +972,10 @@ async function withdrawPortrait() {
         <p v-if="quotaRemaining !== undefined" class="quota-note">
           今日还可发送 {{ quotaRemaining }} 条
         </p>
-        <form class="interview-composer twin-composer" @submit.prevent="sendTwin">
+        <form
+          class="interview-composer twin-composer"
+          @submit.prevent="sendOwnAgent('twin')"
+        >
           <label class="sr-only" for="twin-message">恋爱分身消息</label>
           <textarea
             id="twin-message"
@@ -1079,7 +1011,7 @@ async function withdrawPortrait() {
             <button
               class="submit-portrait"
               type="button"
-              :disabled="portraitActionPending || interviewSending"
+              :disabled="portraitActionPending || interviewSending || twinSending"
               @click="submitPortraitVersion"
             >
               {{ portraitActionPending ? "提交中…" : "提交本次理解" }}
@@ -1178,7 +1110,7 @@ async function withdrawPortrait() {
               <button
                 class="submit-portrait"
                 type="button"
-                :disabled="portraitActionPending || interviewSending"
+                :disabled="portraitActionPending || interviewSending || twinSending"
                 @click="submitPortraitVersion"
               >
                 提交新的理解版本
@@ -1206,7 +1138,7 @@ async function withdrawPortrait() {
               <button
                 class="submit-portrait quiet-action"
                 type="button"
-                :disabled="portraitActionPending"
+                :disabled="portraitActionPending || interviewSending || twinSending"
                 @click="submitPortraitVersion"
               >
                 提交新的理解版本
@@ -1251,7 +1183,10 @@ async function withdrawPortrait() {
         <p v-if="quotaRemaining !== undefined" class="quota-note">
           今日还可发送 {{ quotaRemaining }} 条
         </p>
-        <form class="interview-composer" @submit.prevent="sendInterview">
+        <form
+          class="interview-composer"
+          @submit.prevent="sendOwnAgent('interviewer')"
+        >
           <label class="sr-only" for="interview-message">访谈消息</label>
           <textarea
             id="interview-message"

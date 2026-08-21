@@ -126,8 +126,12 @@ export class InterviewConversations {
     );
   }
 
-  memberEvidence(conversationId: string, throughSequence: number) {
-    return this.db
+  memberEvidence(
+    conversationId: string,
+    throughSequence: number,
+    database: Database | DatabaseTransaction = this.db,
+  ) {
+    return database
       .select({
         id: conversationMessages.id,
         content: conversationMessages.content,
@@ -163,7 +167,7 @@ export class InterviewConversations {
 
   async conversationIdForMember(
     memberId: string,
-    type: "INTERVIEW",
+    type: "INTERVIEW" | "TWIN",
   ) {
     return (
       await this.db

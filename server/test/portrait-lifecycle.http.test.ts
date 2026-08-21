@@ -871,6 +871,18 @@ describe("portrait submission, calibration, and publication HTTP seam", () => {
     });
     expect(submitted.statusCode).toBe(202);
     expect(submitted.json()).toMatchObject({ quotaRemaining: 98 });
+    const blockedWhileCorrecting = await app.inject({
+      method: "POST",
+      url: "/api/member/portrait/versions",
+      headers: { cookie },
+      payload: {
+        clientRequestId: "47d44460-e56f-4083-9f39-f1db6fac773a",
+      },
+    });
+    expect(blockedWhileCorrecting.statusCode).toBe(409);
+    expect(blockedWhileCorrecting.json()).toEqual({
+      code: "PORTRAIT_DRAFT_UPDATING",
+    });
     const events = await app.inject({
       method: "GET",
       url: submitted.json().eventsUrl,

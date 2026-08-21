@@ -1073,11 +1073,15 @@ export class Portraits {
         await this.interviewConversations.agentQuestionsForMember(memberId)
       ).map((message) => message.content),
     ];
-    const interviewConversationId =
-      await this.interviewConversations.conversationIdForMember(
-        memberId,
-        "INTERVIEW",
-      );
+    const conversationIds = (
+      await Promise.all([
+        this.interviewConversations.conversationIdForMember(
+          memberId,
+          "INTERVIEW",
+        ),
+        this.interviewConversations.conversationIdForMember(memberId, "TWIN"),
+      ])
+    ).filter((id): id is string => Boolean(id));
     const result = await this.db.transaction(async (transaction) => {
       await transaction.execute(
         sql`select pg_advisory_xact_lock(hashtext(${memberId}))`,
@@ -1102,17 +1106,16 @@ export class Portraits {
         };
       }
 
-      if (interviewConversationId) {
-        const latestJob = await generation.agentJobs.latestForConversation(
-          interviewConversationId,
-          transaction,
-        );
-        if (latestJob && ["pending", "running"].includes(latestJob.status)) {
-          throw new PortraitInputError("PORTRAIT_DRAFT_UPDATING");
-        }
-        if (latestJob?.status === "failed") {
-          throw new PortraitInputError("PORTRAIT_DRAFT_UPDATE_FAILED");
-        }
+      const latestJobs = await Promise.all(
+        conversationIds.map((conversationId) =>
+          generation.agentJobs.latestForConversation(conversationId, transaction),
+        ),
+      );
+      if (latestJobs.some((job) => job && ["pending", "running"].includes(job.status))) {
+        throw new PortraitInputError("PORTRAIT_DRAFT_UPDATING");
+      }
+      if (latestJobs.some((job) => job?.status === "failed")) {
+        throw new PortraitInputError("PORTRAIT_DRAFT_UPDATE_FAILED");
       }
 
       const state = (
@@ -1404,84 +1407,93 @@ export class Portraits {
     agentEngine: AgentEngine,
     recordAttempts: (attempts: AgentAttemptResult[]) => Promise<void>,
   ) {
-    const [savedDraft, messages] = await Promise.all([
-      this.db
-        .select()
-        .from(portraitDrafts)
-        .where(eq(portraitDrafts.memberId, memberId))
-        .limit(1),
-      this.interviewConversations.memberEvidence(
-        conversationId,
-        throughSequence,
-      ),
-    ]);
-    const current = savedDraft[0];
-    const newEvidence = messages.filter(
-      (message) => message.sequence > (current?.lastMessageSequence ?? 0),
-    );
-    if (!newEvidence.length) {
-      return {
-        completed: current?.completedDimensions ?? 0,
-        newlyConfident: false,
-      };
-    }
-
-    const prompt = portraitExtractionPrompt(
-      current?.content ?? emptyPortraitDraft(),
-      newEvidence,
-    );
     let attempts: AgentAttemptResult[] = [];
     try {
-      const extracted = await agentEngine.extractPortrait(
-        prompt,
-        portraitDraftSchema,
-        async () => undefined,
-      );
-      attempts = extracted.attempts;
-      const content = extracted.value as PortraitDraftContent;
-      const validEvidence = new Set(messages.map((message) => message.id));
-      const newEvidenceIds = new Set(newEvidence.map((message) => message.id));
-      const previousContent = current?.content ?? emptyPortraitDraft();
-      const assessment = assessPortraitDraft(
-        content,
-        previousContent,
-        validEvidence,
-        newEvidenceIds,
-      );
-      if (!assessment.valid) {
-        attempts.at(-1)!.error = "PORTRAIT_EVIDENCE_INVALID";
-        throw new AgentRunError("PORTRAIT_EVIDENCE_INVALID", attempts);
-      }
-      await recordAttempts(attempts);
-      const completed = assessment.completed;
-      const savedAt = this.now();
-      await this.db
-        .insert(portraitDrafts)
-        .values({
-          memberId,
-          schemaVersion: PORTRAIT_SCHEMA_VERSION,
-          plannerVersion: QUESTION_PLANNER_VERSION,
+      // ponytail: one per-member DB lock keeps draft merges lossless; switch to
+      // optimistic retries if model latency limits throughput.
+      const result = await this.db.transaction(async (transaction) => {
+        await transaction.execute(
+          sql`select pg_advisory_xact_lock(hashtext(${memberId}))`,
+        );
+        const [savedDraft, messages] = await Promise.all([
+          transaction
+            .select()
+            .from(portraitDrafts)
+            .where(eq(portraitDrafts.memberId, memberId))
+            .limit(1),
+          this.interviewConversations.memberEvidence(
+            conversationId,
+            throughSequence,
+            transaction,
+          ),
+        ]);
+        const current = savedDraft[0];
+        const newEvidence = messages.filter(
+          (message) => message.sequence > (current?.lastMessageSequence ?? 0),
+        );
+        if (!newEvidence.length) {
+          return {
+            completed: current?.completedDimensions ?? 0,
+            newlyConfident: false,
+          };
+        }
+
+        const extracted = await agentEngine.extractPortrait(
+          portraitExtractionPrompt(
+            current?.content ?? emptyPortraitDraft(),
+            newEvidence,
+          ),
+          portraitDraftSchema,
+          async () => undefined,
+        );
+        attempts = extracted.attempts;
+        const content = extracted.value as PortraitDraftContent;
+        const validEvidence = new Set(messages.map((message) => message.id));
+        const newEvidenceIds = new Set(
+          newEvidence.map((message) => message.id),
+        );
+        const assessment = assessPortraitDraft(
           content,
-          completedDimensions: completed,
-          lastMessageSequence: throughSequence,
-          createdAt: current?.createdAt ?? savedAt,
-          updatedAt: savedAt,
-        })
-        .onConflictDoUpdate({
-          target: portraitDrafts.memberId,
-          set: {
+          current?.content ?? emptyPortraitDraft(),
+          validEvidence,
+          newEvidenceIds,
+        );
+        if (!assessment.valid) {
+          attempts.at(-1)!.error = "PORTRAIT_EVIDENCE_INVALID";
+          throw new AgentRunError("PORTRAIT_EVIDENCE_INVALID", attempts);
+        }
+        const completed = assessment.completed;
+        const savedAt = this.now();
+        await transaction
+          .insert(portraitDrafts)
+          .values({
+            memberId,
             schemaVersion: PORTRAIT_SCHEMA_VERSION,
             plannerVersion: QUESTION_PLANNER_VERSION,
             content,
             completedDimensions: completed,
             lastMessageSequence: throughSequence,
+            createdAt: current?.createdAt ?? savedAt,
             updatedAt: savedAt,
-          },
-        });
-      return {
-        completed,
-        newlyConfident: assessment.newlyConfident,
-      };
+          })
+          .onConflictDoUpdate({
+            target: portraitDrafts.memberId,
+            set: {
+              schemaVersion: PORTRAIT_SCHEMA_VERSION,
+              plannerVersion: QUESTION_PLANNER_VERSION,
+              content,
+              completedDimensions: completed,
+              lastMessageSequence: throughSequence,
+              updatedAt: savedAt,
+            },
+          });
+        return {
+          completed,
+          newlyConfident: assessment.newlyConfident,
+        };
+      });
+      await recordAttempts(attempts);
+      return result;
     } catch (error) {
       if (error instanceof AgentRunError) attempts = error.attempts;
       await recordAttempts(attempts);

@@ -276,7 +276,7 @@ describe("Agent Engine continueInterview seam", () => {
         {
           reply: "我会先确认两个人各自不能放弃的部分，再讨论可逆的尝试。",
           promptIncludes: ["伴侣收到外地工作机会"],
-          systemPromptIncludes: ["只允许表达提供的分身上下文", "长期计划需要共同决定"],
+          systemPromptIncludes: ["长期计划需要共同决定"],
         },
       ],
     });

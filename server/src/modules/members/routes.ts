@@ -250,7 +250,7 @@ function publicMember(member: Member) {
   return { email: member.email, role: member.role };
 }
 
-function publicProfile(member: Member) {
+export function publicProfile(member: Member) {
   return {
     nickname: member.nickname ?? "",
     birthDate: member.birthDate ?? "",
@@ -259,10 +259,6 @@ function publicProfile(member: Member) {
     city: member.city ?? "",
     occupation: member.occupation ?? "",
   };
-}
-
-export function publicProfileForMember(member: Member) {
-  return publicProfile(member);
 }
 
 function publicMatchCriteria(

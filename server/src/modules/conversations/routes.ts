@@ -10,7 +10,7 @@ import {
   adminForRequest,
   interviewContextForMember,
   memberForRequest,
-  publicProfileForMember,
+  publicProfile,
   superAdminForRequest,
 } from "../members/routes.js";
 import {
@@ -727,7 +727,7 @@ export function registerConversationsRoutes(
         stream,
         job,
         {
-          memberProfile: publicProfileForMember(member),
+          memberProfile: publicProfile(member),
           matchCriteria: null,
         },
         options,
