@@ -565,6 +565,154 @@ button:disabled {
   text-align: center;
 }
 
+.portrait-lifecycle {
+  display: grid;
+  gap: 14px;
+  padding: 20px;
+  border: 1px solid rgb(91 52 57 / 11%);
+  border-radius: 22px;
+  background: #eee5da;
+}
+
+.portrait-lifecycle h2 {
+  margin: 0;
+  color: #443437;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 21px;
+  line-height: 1.45;
+}
+
+.portrait-lifecycle > p {
+  margin: 0;
+  color: #796b69;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.portrait-version-heading,
+.portrait-version-heading > div,
+.calibration-progress {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.portrait-version-heading > div {
+  justify-content: flex-start;
+  color: #7b6769;
+  font-size: 12px;
+}
+
+.portrait-version-heading strong,
+.calibration-progress strong {
+  color: #6f1831;
+}
+
+.published-badge {
+  padding: 5px 8px;
+  border-radius: 999px;
+  color: #326246;
+  background: #e2ebe1;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.published-note {
+  padding: 10px 12px;
+  border-radius: 12px;
+  color: #6f1831 !important;
+  background: rgb(255 250 243 / 66%);
+}
+
+.portrait-lifecycle button {
+  width: 100%;
+}
+
+.calibration-form {
+  display: grid;
+  gap: 15px;
+}
+
+.calibration-progress {
+  color: #7b6769;
+  font-size: 12px;
+}
+
+.twin-prediction {
+  padding: 14px;
+  border-left: 3px solid #6f1831;
+  border-radius: 4px 13px 13px 4px;
+  background: #fffaf3;
+}
+
+.twin-prediction span {
+  color: #8a6f70;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.twin-prediction p {
+  margin: 7px 0 0;
+  color: #4e3c3f;
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.calibration-ratings {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.calibration-ratings legend {
+  grid-column: 1 / -1;
+  margin-bottom: 3px;
+  color: #604f50;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.calibration-ratings label {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding: 11px 5px;
+  border: 1px solid rgb(91 52 57 / 12%);
+  border-radius: 12px;
+  background: rgb(255 250 243 / 66%);
+  cursor: pointer;
+}
+
+.calibration-ratings input,
+.critical-fabrication input {
+  width: 18px;
+  min-height: 18px;
+  margin: 0;
+  accent-color: #6f1831;
+}
+
+.calibration-correction {
+  display: grid;
+  gap: 7px;
+}
+
+.critical-fabrication {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #7f293f;
+}
+
+.withdraw-portrait {
+  border: 1px solid #b28e92;
+  color: #6f1831;
+  background: transparent;
+}
+
 .interview-panel {
   display: grid;
   gap: 14px;

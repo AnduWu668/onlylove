@@ -50,6 +50,20 @@
       "when": 1787236766753,
       "tag": "0006_naive_gravity",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1787289817389,
+      "tag": "0007_handy_calypso",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1787289942525,
+      "tag": "0008_natural_iron_lad",
+      "breakpoints": true
     }
   ]
 }

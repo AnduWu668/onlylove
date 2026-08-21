@@ -829,4 +829,234 @@ describe("OnlyLove UI seam", () => {
     );
     expect(wrapper.text()).not.toContain("第二条发送失败后要恢复。");
   });
+
+  it("submits the portrait and collects focused calibration feedback", async () => {
+    vi.stubGlobal("crypto", {
+      randomUUID: () => "a76d2b06-7d47-4616-a8cd-6ceff86528ef",
+    });
+    const scenario = {
+      id: "d9d4c6c7-ef3e-47de-bbf0-e0367ad67957",
+      number: 1,
+      dimensions: ["long_term_planning"],
+      prompt: "伴侣收到外地三年的理想工作机会，你会怎样一起决定？",
+      prediction: "我可能会先讨论这件事对两个人长期计划的影响。",
+      answer: null,
+    };
+    let portrait: any = {
+      status: "draft",
+      submittedVersion: null,
+      publishedVersion: null,
+    };
+    const request = vi.fn(async (url: string, options?: RequestInit) => {
+      if (url === "/api/session") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            member: { email: "member@example.com", role: "member" },
+          }),
+        };
+      }
+      if (url === "/api/member/profile") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ profile: {}, matchCriteria: null }),
+        };
+      }
+      if (url === "/api/member/interview") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            messages: [],
+            fixedInterview: {
+              answered: 10,
+              total: 10,
+              completed: true,
+              question: null,
+            },
+            progress: { completed: 8, total: 8 },
+          }),
+        };
+      }
+      if (url === "/api/member/portrait" && !options?.method) {
+        return { ok: true, status: 200, json: async () => portrait };
+      }
+      if (url === "/api/member/portrait/versions") {
+        portrait = {
+          status: "calibrating",
+          submittedVersion: { id: "version-1", version: 1 },
+          publishedVersion: null,
+          calibration: {
+            answered: 0,
+            total: 10,
+            likeCount: 0,
+            criticalFabrication: false,
+            canPublish: false,
+            scenarios: [scenario],
+          },
+        };
+        return { ok: true, status: 201, json: async () => portrait };
+      }
+      if (url === `/api/member/portrait/calibration/${scenario.id}`) {
+        portrait = {
+          ...portrait,
+          status: "needs_more_understanding",
+          message: "分身还需要继续了解你",
+          calibration: {
+            ...portrait.calibration,
+            answered: 10,
+            likeCount: 7,
+            criticalFabrication: true,
+            scenarios: [{ ...scenario, answer: { rating: "partial" } }],
+          },
+        };
+        return { ok: true, status: 200, json: async () => portrait };
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", request);
+    const router = createRouter({ history: createMemoryHistory(), routes });
+    const wrapper = mount(App, { global: { plugins: [router] } });
+    await router.push("/app");
+    await router.isReady();
+    await flushPromises();
+    await wrapper
+      .findAll("nav button")
+      .find((button) => button.text().includes("我的分身"))!
+      .trigger("click");
+    await flushPromises();
+
+    await wrapper.get("button.submit-portrait").trigger("click");
+    await flushPromises();
+    expect(request).toHaveBeenCalledWith(
+      "/api/member/portrait/versions",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining("a76d2b06-7d47-4616-a8cd-6ceff86528ef"),
+      }),
+    );
+    expect(wrapper.text()).toContain(scenario.prompt);
+    expect(wrapper.text()).toContain(scenario.prediction);
+    expect(wrapper.text()).toContain("像我");
+    expect(wrapper.text()).toContain("部分像我");
+    expect(wrapper.text()).toContain("不像我");
+
+    await wrapper.get('input[value="partial"]').setValue(true);
+    await wrapper
+      .get(".calibration-correction textarea")
+      .setValue("我会先确认双方各自不能放弃的部分。");
+    await wrapper.get('input[name="critical-fabrication"]').setValue(true);
+    await wrapper.get("form.calibration-form").trigger("submit");
+    await flushPromises();
+    expect(request).toHaveBeenCalledWith(
+      `/api/member/portrait/calibration/${scenario.id}`,
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining(
+          '"correction":"我会先确认双方各自不能放弃的部分。"',
+        ),
+      }),
+    );
+    expect(wrapper.text()).toContain("分身还需要继续了解你");
+  });
+
+  it("keeps the old version visible while publishing and withdrawing the new one", async () => {
+    const ready = {
+      status: "ready_to_publish",
+      submittedVersion: { id: "version-2", version: 2 },
+      publishedVersion: { id: "version-1", version: 1 },
+      calibration: {
+        answered: 10,
+        total: 10,
+        likeCount: 8,
+        criticalFabrication: false,
+        canPublish: true,
+        scenarios: [],
+      },
+    };
+    let portrait: any = ready;
+    const request = vi.fn(async (url: string, options?: RequestInit) => {
+      if (url === "/api/session") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            member: { email: "member@example.com", role: "member" },
+          }),
+        };
+      }
+      if (url === "/api/member/profile") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ profile: {}, matchCriteria: null }),
+        };
+      }
+      if (url === "/api/member/interview") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            messages: [],
+            fixedInterview: {
+              answered: 10,
+              total: 10,
+              completed: true,
+              question: null,
+            },
+            progress: { completed: 8, total: 8 },
+          }),
+        };
+      }
+      if (url === "/api/member/portrait" && !options?.method) {
+        return { ok: true, status: 200, json: async () => portrait };
+      }
+      if (url === "/api/member/portrait/publish" && options?.method === "POST") {
+        portrait = {
+          ...ready,
+          status: "published",
+          publishedVersion: ready.submittedVersion,
+        };
+        return { ok: true, status: 200, json: async () => portrait };
+      }
+      if (url === "/api/member/portrait/publish" && options?.method === "DELETE") {
+        portrait = { ...ready, publishedVersion: null };
+        return { ok: true, status: 200, json: async () => portrait };
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", request);
+    const router = createRouter({ history: createMemoryHistory(), routes });
+    const wrapper = mount(App, { global: { plugins: [router] } });
+    await router.push("/app");
+    await router.isReady();
+    await flushPromises();
+    await wrapper
+      .findAll("nav button")
+      .find((button) => button.text().includes("我的分身"))!
+      .trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("已发布的 v1 继续服务");
+    await wrapper.get("button.publish-portrait").trigger("click");
+    await flushPromises();
+    expect(request).toHaveBeenCalledWith(
+      "/api/member/portrait/publish",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining('"versionId":"version-2"'),
+      }),
+    );
+    expect(wrapper.text()).toContain("v2 已发布");
+
+    await wrapper.get("button.withdraw-portrait").trigger("click");
+    await flushPromises();
+    expect(request).toHaveBeenCalledWith(
+      "/api/member/portrait/publish",
+      expect.objectContaining({ method: "DELETE" }),
+    );
+    expect(wrapper.text()).toContain("校准已通过，等待你主动发布");
+  });
 });

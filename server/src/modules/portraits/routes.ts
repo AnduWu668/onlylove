@@ -3,7 +3,12 @@ import type { Database } from "../../db.js";
 import type { AgentEngine } from "../agent-engine/engine.js";
 import type { AgentJobs } from "../agent-engine/jobs.js";
 import { memberForRequest } from "../members/routes.js";
-import { PortraitInputError, type FixedAnswerInput, Portraits } from "./service.js";
+import {
+  type CalibrationAnswerInput,
+  PortraitInputError,
+  type FixedAnswerInput,
+  Portraits,
+} from "./service.js";
 
 export function registerPortraitsRoutes(
   app: FastifyInstance,
@@ -19,6 +24,124 @@ export function registerPortraitsRoutes(
     const member = await memberForRequest(request, options.db, options.now());
     if (!member) return reply.code(401).send({ code: "UNAUTHENTICATED" });
     return options.portraits.interviewState(member.id);
+  });
+
+  app.get("/api/member/portrait", async (request, reply) => {
+    const member = await memberForRequest(request, options.db, options.now());
+    if (!member) return reply.code(401).send({ code: "UNAUTHENTICATED" });
+    return options.portraits.memberState(member.id);
+  });
+
+  app.post<{ Body: { clientRequestId: string } }>(
+    "/api/member/portrait/versions",
+    {
+      schema: {
+        body: {
+          type: "object",
+          additionalProperties: false,
+          required: ["clientRequestId"],
+          properties: {
+            clientRequestId: { type: "string", format: "uuid" },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const member = await memberForRequest(request, options.db, options.now());
+      if (!member) return reply.code(401).send({ code: "UNAUTHENTICATED" });
+      try {
+        const result = await options.portraits.submitVersion(
+          member.id,
+          request.body.clientRequestId,
+        );
+        return reply.code(result.created ? 201 : 200).send(result.state);
+      } catch (error) {
+        if (error instanceof PortraitInputError) {
+          return reply.code(409).send({ code: error.code });
+        }
+        throw error;
+      }
+    },
+  );
+
+  app.post<{
+    Params: { scenarioId: string };
+    Body: CalibrationAnswerInput;
+  }>(
+    "/api/member/portrait/calibration/:scenarioId",
+    {
+      schema: {
+        params: {
+          type: "object",
+          additionalProperties: false,
+          required: ["scenarioId"],
+          properties: { scenarioId: { type: "string", format: "uuid" } },
+        },
+        body: {
+          type: "object",
+          additionalProperties: false,
+          required: ["rating", "correction", "criticalFabrication"],
+          properties: {
+            rating: { type: "string", enum: ["like", "partial", "unlike"] },
+            correction: { type: "string", maxLength: 2_000 },
+            criticalFabrication: { type: "boolean" },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const member = await memberForRequest(request, options.db, options.now());
+      if (!member) return reply.code(401).send({ code: "UNAUTHENTICATED" });
+      try {
+        return await options.portraits.submitCalibrationAnswer(
+          member.id,
+          request.params.scenarioId,
+          request.body,
+        );
+      } catch (error) {
+        if (error instanceof PortraitInputError) {
+          const status = error.code === "CALIBRATION_SCENARIO_NOT_FOUND" ? 404 :
+            error.code === "PORTRAIT_VERSION_REQUIRED" ? 409 : 400;
+          return reply.code(status).send({ code: error.code });
+        }
+        throw error;
+      }
+    },
+  );
+
+  app.post<{ Body: { versionId: string } }>(
+    "/api/member/portrait/publish",
+    {
+      schema: {
+        body: {
+          type: "object",
+          additionalProperties: false,
+          required: ["versionId"],
+          properties: { versionId: { type: "string", format: "uuid" } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const member = await memberForRequest(request, options.db, options.now());
+      if (!member) return reply.code(401).send({ code: "UNAUTHENTICATED" });
+      try {
+        return await options.portraits.publishVersion(
+          member.id,
+          request.body.versionId,
+        );
+      } catch (error) {
+        if (error instanceof PortraitInputError) {
+          return reply.code(409).send({ code: error.code });
+        }
+        throw error;
+      }
+    },
+  );
+
+  app.delete("/api/member/portrait/publish", async (request, reply) => {
+    const member = await memberForRequest(request, options.db, options.now());
+    if (!member) return reply.code(401).send({ code: "UNAUTHENTICATED" });
+    return options.portraits.withdrawPublishedVersion(member.id);
   });
 
   app.post<{ Body: FixedAnswerInput }>(
