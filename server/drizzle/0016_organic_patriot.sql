@@ -1,0 +1,1 @@
+ALTER TABLE "pair_evaluations" ALTER COLUMN "agent_job_id" SET NOT NULL;

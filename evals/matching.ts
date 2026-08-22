@@ -214,6 +214,16 @@ assert.equal(
 );
 export const matchingSuite = rawSuite as Static<typeof matchingSuiteSchema>;
 export type MatchingCase = (typeof matchingSuite.cases)[number];
+const matchingThreshold = JSON.parse(
+  await readFile(new URL("../agent/matching-threshold.json", import.meta.url), "utf8"),
+) as {
+  benchmarkSuiteVersion: string;
+  rubricVersion: string;
+  observedRecommendedMinimum: number;
+  minimumReciprocalScore: number;
+};
+assert.equal(matchingThreshold.benchmarkSuiteVersion, matchingSuite.schemaVersion);
+assert.equal(matchingThreshold.rubricVersion, matchingSuite.rubricVersion);
 
 export const matchingRubric = await readFile(
   new URL("../agent/matching-rubric.md", import.meta.url),
@@ -363,6 +373,7 @@ export function assertMatchingResult(
 
 export function assertMatchingRanking(
   results: { item: MatchingCase; result: PairEvaluationResult }[],
+  verifyThreshold = false,
 ) {
   const groups = new Map<
     string,
@@ -387,6 +398,23 @@ export function assertMatchingRanking(
         `${group}: rank ${ranked[index - 1]!.item.expected.rank} must score above rank ${ranked[index]!.item.expected.rank}`,
       );
     }
+  }
+  if (verifyThreshold) {
+    const recommendedMinimum = Math.min(
+      ...results
+        .filter(({ item }) => item.expected.rank === 1)
+        .map(({ result }) => result.reciprocalScore),
+    );
+    assert.equal(
+      matchingThreshold.observedRecommendedMinimum,
+      recommendedMinimum,
+      "matching threshold benchmark observation is stale",
+    );
+    assert.equal(
+      matchingThreshold.minimumReciprocalScore,
+      Math.floor(recommendedMinimum),
+      "initial matching threshold must derive from benchmark distribution",
+    );
   }
 }
 

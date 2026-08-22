@@ -473,7 +473,7 @@ try {
         await benchmarkMatching(engine, item, deterministic),
       );
     }
-    assertMatchingRanking(matchingResults);
+    assertMatchingRanking(matchingResults, deterministic);
     caseCount += matchingSuite.cases.length;
   }
 } finally {

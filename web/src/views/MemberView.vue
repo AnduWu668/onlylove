@@ -91,6 +91,26 @@ interface PortraitLifecycleState {
   };
 }
 
+interface RecommendationState {
+  eligibility: { eligible: boolean; reasons: string[] };
+  capacity: number;
+  remainingCapacity: number;
+  dailyFetchAvailable: boolean;
+  generating?: boolean;
+  generationFailed?: boolean;
+  candidates: {
+    id: string;
+    avatarText: string;
+    nickname: string;
+    age: number;
+    heightCm: number;
+    city: string;
+    occupation: string;
+    reason: string;
+  }[];
+  followupQuestions: { id: string; question: string }[];
+}
+
 const router = useRouter();
 const member = ref<{ email: string; role: string }>();
 const loading = ref(true);
@@ -129,7 +149,12 @@ const progressFeedback = ref("");
 const quotaRemaining = ref<number>();
 const interviewMessages = ref<InterviewMessage[]>([]);
 const twinMessages = ref<InterviewMessage[]>([]);
+const recommendations = ref<RecommendationState>();
+const recommendationsLoading = ref(false);
+const recommendationsPending = ref(false);
+const recommendationsError = ref("");
 let portraitPoll: number | undefined;
+let recommendationPoll: number | undefined;
 const ownAgentChats = {
   interviewer: {
     input: interviewInput,
@@ -269,6 +294,7 @@ onMounted(loadProfile);
 onUnmounted(() => {
   Object.values(ownAgentEvents).forEach((events) => events.close());
   if (portraitPoll !== undefined) window.clearTimeout(portraitPoll);
+  if (recommendationPoll !== undefined) window.clearTimeout(recommendationPoll);
 });
 
 async function signOut() {
@@ -369,10 +395,92 @@ async function save() {
     }
     version.value = data.matchCriteria.version;
     success.value = `已保存，择偶条件版本 v${version.value}`;
+    if (recommendations.value) await loadRecommendations();
   } catch {
     error.value = "资料未保存，请稍后重试。";
   } finally {
     saving.value = false;
+  }
+}
+
+async function loadRecommendations() {
+  recommendationsLoading.value = true;
+  recommendationsError.value = "";
+  try {
+    const response = await fetch("/api/member/recommendations");
+    const data = response.ok
+      ? await jsonOrUndefined<RecommendationState>(response)
+      : undefined;
+    if (!data) throw new Error();
+    recommendations.value = data;
+    if (recommendationPoll !== undefined) {
+      window.clearTimeout(recommendationPoll);
+    }
+    if (data.generating) {
+      recommendationPoll = window.setTimeout(
+        () => void loadRecommendations(),
+        1_000,
+      );
+    }
+  } catch {
+    recommendationsError.value = "暂时无法读取候选推荐，请稍后重试。";
+  } finally {
+    recommendationsLoading.value = false;
+  }
+}
+
+async function fetchRecommendations() {
+  recommendationsPending.value = true;
+  recommendationsError.value = "";
+  try {
+    const response = await fetch("/api/member/recommendations", {
+      method: "POST",
+    });
+    const data = response.ok
+      ? await jsonOrUndefined<RecommendationState>(response)
+      : undefined;
+    if (!data) {
+      recommendationsError.value =
+        response.status === 409
+          ? "今天已经主动获取过推荐，明天再来看看。"
+          : "暂时无法生成推荐，请稍后重试。";
+      return;
+    }
+    recommendations.value = data;
+    if (data.generating) {
+      recommendationPoll = window.setTimeout(
+        () => void loadRecommendations(),
+        1_000,
+      );
+    }
+  } catch {
+    recommendationsError.value = "暂时无法生成推荐，请稍后重试。";
+  } finally {
+    recommendationsPending.value = false;
+  }
+}
+
+async function skipCandidate(id: string) {
+  recommendationsPending.value = true;
+  recommendationsError.value = "";
+  try {
+    const response = await fetch(`/api/member/recommendations/${id}/skip`, {
+      method: "POST",
+    });
+    if (!response.ok) throw new Error();
+    if (recommendations.value) {
+      recommendations.value = {
+        ...recommendations.value,
+        remainingCapacity: recommendations.value.remainingCapacity + 1,
+        candidates: recommendations.value.candidates.filter(
+          (candidate) => candidate.id !== id,
+        ),
+      };
+    }
+  } catch {
+    recommendationsError.value = "暂时无法跳过这位候选，请稍后重试。";
+  } finally {
+    recommendationsPending.value = false;
   }
 }
 
@@ -545,6 +653,7 @@ function showTab(
 ) {
   activeTab.value = tab;
   if (tab === "twin") void loadInterview();
+  if (tab === "recommendations") void loadRecommendations();
 }
 
 function showTwinRole(role: "interviewer" | "twin") {
@@ -1387,9 +1496,80 @@ async function withdrawPortrait() {
     </form>
     </template>
 
+    <template v-else-if="activeTab === 'recommendations'">
+      <section class="recommendations-intro">
+        <p class="step-label">候选推荐</p>
+        <h1>值得进一步了解的人</h1>
+        <p>双方的明确条件会先由代码过滤，再经过配对评估；没有达到阈值时宁可留空。</p>
+      </section>
+
+      <p v-if="recommendationsLoading" class="loading-state">正在读取候选…</p>
+      <section
+        v-else-if="recommendations && !recommendations.eligibility.eligible"
+        class="recommendations-empty"
+      >
+        <h2>分身还没准备好参与推荐</h2>
+        <p>请先完善八个关系维度，通过至少 8/10 的校准、确认没有关键事实捏造并主动发布分身。</p>
+        <button type="button" @click="showTab('twin')">继续完善我的分身</button>
+      </section>
+      <template v-else-if="recommendations">
+        <section v-if="recommendations.followupQuestions.length" class="matching-followups">
+          <h2>还需要了解你</h2>
+          <p>这些问题不会暴露任何候选人，只用于补足你的匹配边界。</p>
+          <ul>
+            <li v-for="item in recommendations.followupQuestions" :key="item.id">
+              {{ item.question }}
+            </li>
+          </ul>
+        </section>
+
+        <div class="recommendation-toolbar">
+          <p>还可保留 {{ recommendations.remainingCapacity }}/{{ recommendations.capacity }} 位候选</p>
+          <button
+            v-if="recommendations.dailyFetchAvailable && recommendations.remainingCapacity > 0"
+            class="fetch-recommendations"
+            type="button"
+            :disabled="recommendationsPending"
+            @click="fetchRecommendations"
+          >
+            {{ recommendationsPending ? "评估中…" : "获取今日推荐" }}
+          </button>
+          <span v-else>{{ recommendations.generating ? "正在评估…" : "今日已获取" }}</span>
+        </div>
+
+        <p v-if="recommendations.generating" class="loading-state">配对评估正在后台进行，完成后会自动刷新。</p>
+        <section v-else-if="recommendations.candidates.length" class="candidate-list" aria-label="候选推荐列表">
+          <article v-for="candidate in recommendations.candidates" :key="candidate.id" class="candidate-card">
+            <div class="candidate-heading">
+              <span class="candidate-avatar" aria-hidden="true">{{ candidate.avatarText }}</span>
+              <div>
+                <h2>{{ candidate.nickname }}</h2>
+                <p>{{ candidate.age }} 岁 · {{ candidate.heightCm }} cm</p>
+                <p>{{ candidate.city }} · {{ candidate.occupation }}</p>
+              </div>
+            </div>
+            <p class="candidate-reason">{{ candidate.reason }}</p>
+            <button
+              class="skip-candidate"
+              type="button"
+              :disabled="recommendationsPending"
+              @click="skipCandidate(candidate.id)"
+            >
+              跳过这位候选
+            </button>
+          </article>
+        </section>
+        <section v-else class="recommendations-empty">
+          <h2>暂时没有达到条件的候选</h2>
+          <p>这里不会展示全市场，也不会用低于最低互惠适合度的人补足数量。</p>
+        </section>
+      </template>
+      <p v-if="recommendationsError" class="form-error" role="alert">{{ recommendationsError }}</p>
+    </template>
+
     <section v-else class="coming-soon">
       <p class="step-label">ONLYLOVE</p>
-      <h1>{{ activeTab === "recommendations" ? "候选推荐" : "联系" }}</h1>
+      <h1>联系</h1>
       <p>这部分会在后续 MVP 切片中开放。</p>
     </section>
 

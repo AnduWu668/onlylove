@@ -1,9 +1,18 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import type { FastifyInstance } from "fastify";
 import { Pool } from "pg";
 import { createApp } from "../src/app.js";
 import { loadRootEnv } from "../src/env.js";
 import { MemoryMailer } from "../src/modules/members/mailer.js";
+import { Matching } from "../src/modules/matching/service.js";
 
 loadRootEnv();
 const configuredTestUrl = process.env.TEST_DATABASE_URL;
@@ -667,6 +676,61 @@ describe("Members HTTP seam", () => {
       profile: { nickname: "林夏夏" },
       matchCriteria: { version: 2, ageMinimum: null, ageMode: null },
     });
+  });
+
+  it("returns the saved profile when recommendation recheck fails after commit", async () => {
+    const cookie = await signInMember("saved-profile@onlylove.test");
+    const recheck = vi
+      .spyOn(Matching.prototype, "recheckForMember")
+      .mockRejectedValueOnce(new Error("test recheck failure"));
+    const profile = {
+      nickname: "已保存成员",
+      birthDate: "1990-01-01",
+      gender: "female",
+      heightCm: 165,
+      city: "上海",
+      occupation: "设计师",
+    } as const;
+    const matchCriteria = {
+      desiredGender: "male",
+      ageMinimum: 28,
+      ageMaximum: 38,
+      ageMode: "required",
+      heightMinimumCm: null,
+      heightMaximumCm: null,
+      heightMode: null,
+      acceptableCities: ["上海"],
+      occupationRequirement: null,
+      occupationMode: null,
+    } as const;
+
+    try {
+      const response = await app.inject({
+        method: "PUT",
+        url: "/api/member/profile",
+        headers: { cookie },
+        payload: { profile, matchCriteria },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        profile,
+        matchCriteria: { ...matchCriteria, version: 1 },
+      });
+
+      const pool = new Pool({ connectionString: databaseUrl });
+      const stored = await pool.query<{ nickname: string; versions: string }>(
+        `SELECT m.nickname, COUNT(c.id)::text AS versions
+           FROM members m
+           LEFT JOIN match_criteria_versions c ON c.member_id = m.id
+          WHERE m.email = $1
+          GROUP BY m.nickname`,
+        ["saved-profile@onlylove.test"],
+      );
+      await pool.end();
+      expect(stored.rows[0]).toEqual({ nickname: "已保存成员", versions: "1" });
+    } finally {
+      recheck.mockRestore();
+    }
   });
 
   it("validates the adult heterosexual profile boundary on the server", async () => {

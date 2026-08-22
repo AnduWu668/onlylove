@@ -1,0 +1,7 @@
+{
+  "benchmarkSuiteVersion": "matching-benchmark-v0",
+  "rubricVersion": "matching-rubric-v0",
+  "derivation": "floor of the lowest reciprocal score among benchmark rank-1 pairs",
+  "observedRecommendedMinimum": 60.98,
+  "minimumReciprocalScore": 60
+}

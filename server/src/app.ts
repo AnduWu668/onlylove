@@ -6,6 +6,7 @@ import {
   type AgentModelOptions,
 } from "./modules/agent-engine/engine.js";
 import { AgentJobs } from "./modules/agent-engine/jobs.js";
+import { MatchingConnections } from "./modules/connections/matching.js";
 import { registerConversationsRoutes } from "./modules/conversations/routes.js";
 import { InterviewConversations } from "./modules/conversations/interview.js";
 import type { Mailer } from "./modules/members/mailer.js";
@@ -13,7 +14,12 @@ import {
   bootstrapSuperAdmin,
   registerMembersRoutes,
 } from "./modules/members/routes.js";
+import { MatchingMembers } from "./modules/members/matching.js";
+import { MatchingModeration } from "./modules/moderation/matching.js";
+import { registerMatchingRoutes } from "./modules/matching/routes.js";
+import { Matching } from "./modules/matching/service.js";
 import { registerPortraitsRoutes } from "./modules/portraits/routes.js";
+import { MatchingPortraits } from "./modules/portraits/matching.js";
 import { Portraits } from "./modules/portraits/service.js";
 
 export interface AppOptions {
@@ -38,6 +44,16 @@ export async function createApp(options: AppOptions) {
   const agentJobs = new AgentJobs(db);
   const interviewConversations = new InterviewConversations(db);
   const portraits = new Portraits(db, now, interviewConversations, agentJobs);
+  const matching = new Matching(
+    db,
+    now,
+    agentJobs,
+    agentEngine.matchingDefinition,
+    new MatchingMembers(db),
+    new MatchingPortraits(db),
+    new MatchingModeration(db),
+    new MatchingConnections(db),
+  );
 
   await migrateDatabase(db);
   await bootstrapSuperAdmin(db, options.superAdminEmail, now());
@@ -49,6 +65,7 @@ export async function createApp(options: AppOptions) {
     now,
     otpSecret: options.otpSecret,
     production: options.production ?? false,
+    recheckRecommendations: (memberId) => matching.recheckForMember(memberId),
   });
   registerPortraitsRoutes(app, {
     agentEngine,
@@ -64,6 +81,7 @@ export async function createApp(options: AppOptions) {
     now,
     portraits,
   });
+  registerMatchingRoutes(app, { db, now, matching });
   app.addHook("onClose", async () => {
     agentEngine.close();
     await pool.end();

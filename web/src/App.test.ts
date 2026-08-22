@@ -1216,4 +1216,150 @@ describe("OnlyLove UI seam", () => {
     expect(wrapper.text()).toContain("我是 AI 恋爱分身");
     expect(wrapper.text()).toContain("今日还可发送 99 条");
   });
+
+  it("fetches, displays and skips safe candidate cards", async () => {
+    let candidates = [
+      {
+        id: "recommendation-1",
+        avatarText: "北",
+        nickname: "北川",
+        age: 36,
+        heightCm: 178,
+        city: "上海",
+        occupation: "工程师",
+        reason: "你们可以通过进一步交流，确认彼此在重要关系议题上的期待。",
+      },
+    ];
+    let fetchedToday = false;
+    const state = () => ({
+      eligibility: { eligible: true, reasons: [] },
+      capacity: 5,
+      remainingCapacity: 5 - candidates.length,
+      dailyFetchAvailable: !fetchedToday,
+      candidates,
+      followupQuestions: [],
+    });
+    const request = vi.fn(async (url: string, options?: RequestInit) => {
+      if (url === "/api/session") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            member: { email: "member@example.com", role: "member" },
+          }),
+        };
+      }
+      if (url === "/api/member/profile") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ profile: {}, matchCriteria: null }),
+        };
+      }
+      if (url === "/api/member/recommendations" && options?.method === "POST") {
+        fetchedToday = true;
+        return { ok: true, status: 200, json: async () => state() };
+      }
+      if (url === "/api/member/recommendations") {
+        return { ok: true, status: 200, json: async () => state() };
+      }
+      if (
+        url === "/api/member/recommendations/recommendation-1/skip" &&
+        options?.method === "POST"
+      ) {
+        candidates = [];
+        return { ok: true, status: 204, json: async () => undefined };
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", request);
+    const router = createRouter({ history: createMemoryHistory(), routes });
+    const wrapper = mount(App, { global: { plugins: [router] } });
+    await router.push("/app");
+    await router.isReady();
+    await flushPromises();
+    await wrapper
+      .findAll("nav button")
+      .find((button) => button.text().includes("候选推荐"))!
+      .trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("北川");
+    expect(wrapper.text()).toContain("36 岁 · 178 cm");
+    expect(wrapper.text()).toContain("上海 · 工程师");
+    expect(wrapper.get(".candidate-card").text()).not.toContain("member@example.com");
+    await wrapper.get("button.fetch-recommendations").trigger("click");
+    await flushPromises();
+    expect(request).toHaveBeenCalledWith(
+      "/api/member/recommendations",
+      expect.objectContaining({ method: "POST" }),
+    );
+    await wrapper.get("button.skip-candidate").trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("暂时没有达到条件的候选");
+  });
+
+  it("lets a super administrator update matching capacity and threshold", async () => {
+    const request = vi.fn(async (url: string, options?: RequestInit) => {
+      if (url === "/api/session") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            member: { email: "admin@example.com", role: "super_admin" },
+          }),
+        };
+      }
+      if (url === "/api/admin/invitations") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ invitations: [] }),
+        };
+      }
+      if (url === "/api/admin/matching-settings" && options?.method === "PUT") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            candidateCapacity: 3,
+            minimumReciprocalScore: 72,
+          }),
+        };
+      }
+      if (url === "/api/admin/matching-settings") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            candidateCapacity: 5,
+            minimumReciprocalScore: 60,
+          }),
+        };
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", request);
+    const router = createRouter({ history: createMemoryHistory(), routes });
+    await router.push("/admin");
+    await router.isReady();
+    const wrapper = mount(App, { global: { plugins: [router] } });
+    await flushPromises();
+
+    await wrapper.get("#candidate-capacity").setValue(3);
+    await wrapper.get("#minimum-reciprocal-score").setValue(72);
+    await wrapper.get("form.matching-settings-form").trigger("submit");
+    await flushPromises();
+    expect(request).toHaveBeenCalledWith(
+      "/api/admin/matching-settings",
+      expect.objectContaining({
+        method: "PUT",
+        body: JSON.stringify({
+          candidateCapacity: 3,
+          minimumReciprocalScore: 72,
+        }),
+      }),
+    );
+    expect(wrapper.text()).toContain("推荐配置已保存");
+  });
 });

@@ -100,6 +100,36 @@ export class AgentJobs {
     });
   }
 
+  enqueueMatching(values: {
+    transaction: DatabaseTransaction;
+    memberId: string;
+    profileVersionId: string;
+    definition: {
+      role: "match_evaluator";
+      task: "evaluate_pair";
+      version: string;
+      promptVersion: string;
+      schemaVersion: string;
+    };
+    createdAt: Date;
+  }) {
+    return this.create(values.transaction, {
+      id: randomUUID(),
+      role: values.definition.role,
+      task: values.definition.task,
+      definitionVersion: values.definition.version,
+      promptVersion: values.definition.promptVersion,
+      schemaVersion: values.definition.schemaVersion,
+      memberId: values.memberId,
+      profileVersionId: values.profileVersionId,
+      status: "pending",
+      retryCount: 0,
+      switchedModel: false,
+      quotaRefunded: false,
+      createdAt: values.createdAt,
+    });
+  }
+
   calibrationJobsForVersion(profileVersionId: string) {
     return this.db
       .select()
@@ -139,13 +169,24 @@ export class AgentJobs {
   }
 
   async nextCalibrationJob(at: Date) {
+    return this.nextTaskJob("reply_as_twin", at);
+  }
+
+  async nextMatchingJob(at: Date) {
+    return this.nextTaskJob("evaluate_pair", at);
+  }
+
+  private async nextTaskJob(
+    task: "reply_as_twin" | "evaluate_pair",
+    at: Date,
+  ) {
     return (
       await this.db
         .select()
         .from(agentJobs)
         .where(
           and(
-            eq(agentJobs.task, "reply_as_twin"),
+            eq(agentJobs.task, task),
             or(
               eq(agentJobs.status, "pending"),
               and(
