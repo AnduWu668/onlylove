@@ -49,6 +49,12 @@ export interface ConversationsOptions {
     candidateMemberId?: string,
     transaction?: DatabaseTransaction,
   ) => Promise<string | undefined>;
+  requesterForTwinConversation: (
+    memberId: string,
+    contactRequestId: string,
+    requesterMemberId?: string,
+    transaction?: DatabaseTransaction,
+  ) => Promise<string | undefined>;
   now: () => Date;
   portraits: Portraits;
 }
@@ -624,7 +630,9 @@ async function reserveCandidateTwinMessage(
       )
       .limit(1)
   )[0];
-  if (!conversation?.recommendationId) return { notFound: true as const };
+  if (!conversation?.recommendationId && !conversation?.contactRequestId) {
+    return { notFound: true as const };
+  }
   const quotaDate = beijingDate(input.submittedAt);
   return options.db.transaction(async (transaction) => {
     await transaction.execute(
@@ -647,17 +655,26 @@ async function reserveCandidateTwinMessage(
         )
         .limit(1)
     )[0];
-    if (!current?.profileVersionId || !current.recommendationId) {
+    if (
+      !current?.profileVersionId ||
+      (!current.recommendationId && !current.contactRequestId)
+    ) {
       return { notFound: true as const };
     }
-    if (
-      !(await options.candidateForTwinConversation(
-        input.visitorMemberId,
-        current.recommendationId,
-        current.memberId,
-        transaction,
-      ))
-    ) {
+    const candidateAvailable = current.recommendationId
+      ? await options.candidateForTwinConversation(
+          input.visitorMemberId,
+          current.recommendationId,
+          current.memberId,
+          transaction,
+        )
+      : await options.requesterForTwinConversation(
+          input.visitorMemberId,
+          current.contactRequestId!,
+          current.memberId,
+          transaction,
+        );
+    if (!candidateAvailable) {
       return { unavailable: true as const };
     }
     if (
@@ -948,6 +965,110 @@ export function registerConversationsRoutes(
       });
       if (!result) {
         return reply.code(409).send({ code: "TWIN_NOT_PUBLISHED" });
+      }
+      const state = await candidateConversationState(
+        options,
+        result.conversation,
+        "visitor",
+      );
+      if (!state) {
+        return reply.code(409).send({ code: "TWIN_CONTEXT_NOT_AVAILABLE" });
+      }
+      return reply.code(result.created ? 201 : 200).send(state);
+    },
+  );
+
+  app.post<{
+    Params: { id: string };
+    Body: { consentToOwnerVisibility: true };
+  }>(
+    "/api/member/contact-requests/:id/twin-conversation",
+    {
+      schema: {
+        params: {
+          type: "object",
+          additionalProperties: false,
+          required: ["id"],
+          properties: { id: { type: "string", format: "uuid" } },
+        },
+        body: {
+          type: "object",
+          additionalProperties: false,
+          required: ["consentToOwnerVisibility"],
+          properties: {
+            consentToOwnerVisibility: { type: "boolean", const: true },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const openedAt = now();
+      const member = await memberForRequest(request, db, openedAt);
+      if (!member) return reply.code(401).send({ code: "UNAUTHENTICATED" });
+      const requesterMemberId = await options.requesterForTwinConversation(
+        member.id,
+        request.params.id,
+      );
+      if (!requesterMemberId) {
+        return reply.code(404).send({ code: "CONTACT_REQUEST_NOT_FOUND" });
+      }
+      const result = await db.transaction(async (transaction) => {
+        await transaction.execute(
+          sql`select pg_advisory_xact_lock(hashtext(${`${member.id}:${request.params.id}:contact-twin`}))`,
+        );
+        if (
+          !(await options.requesterForTwinConversation(
+            member.id,
+            request.params.id,
+            requesterMemberId,
+            transaction,
+          ))
+        ) {
+          return undefined;
+        }
+        const existing = (
+          await transaction
+            .select()
+            .from(conversations)
+            .where(
+              and(
+                eq(conversations.visitorMemberId, member.id),
+                eq(conversations.contactRequestId, request.params.id),
+                isNull(conversations.recommendationId),
+              ),
+            )
+            .limit(1)
+        )[0];
+        if (existing) return { conversation: existing, created: false };
+        const pinned = await options.portraits.twinContext(
+          requesterMemberId,
+          undefined,
+          transaction,
+        );
+        if (!pinned) return undefined;
+        const conversation = (
+          await transaction
+            .insert(conversations)
+            .values({
+              id: randomUUID(),
+              type: "TWIN",
+              memberId: requesterMemberId,
+              visitorMemberId: member.id,
+              contactRequestId: request.params.id,
+              anonymousCode: randomUUID()
+                .replaceAll("-", "")
+                .slice(0, 12)
+                .toUpperCase(),
+              visibilityConsentAt: openedAt,
+              profileVersionId: pinned.profileVersion.id,
+              createdAt: openedAt,
+            })
+            .returning()
+        )[0]!;
+        return { conversation, created: true };
+      });
+      if (!result) {
+        return reply.code(409).send({ code: "REQUESTER_TWIN_UNAVAILABLE" });
       }
       const state = await candidateConversationState(
         options,

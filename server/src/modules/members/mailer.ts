@@ -2,10 +2,17 @@ import nodemailer from "nodemailer";
 
 export interface Mailer {
   sendOtp(email: string, code: string): Promise<void>;
+  sendContactRequest?(email: string, requesterNickname: string): Promise<void>;
+  sendContactAccepted?(email: string, nickname: string): Promise<void>;
 }
 
 export class MemoryMailer implements Mailer {
   readonly messages: Array<{ to: string; code: string }> = [];
+  readonly notifications: Array<{
+    to: string;
+    type: "contact_request" | "contact_accepted";
+    nickname: string;
+  }> = [];
 
   async sendOtp(email: string, code: string) {
     this.messages.push({ to: email, code });
@@ -14,11 +21,35 @@ export class MemoryMailer implements Mailer {
   lastCodeFor(email: string) {
     return this.messages.findLast((message) => message.to === email)?.code;
   }
+
+  async sendContactRequest(email: string, requesterNickname: string) {
+    this.notifications.push({
+      to: email,
+      type: "contact_request",
+      nickname: requesterNickname,
+    });
+  }
+
+  async sendContactAccepted(email: string, nickname: string) {
+    this.notifications.push({
+      to: email,
+      type: "contact_accepted",
+      nickname,
+    });
+  }
 }
 
 export class ConsoleMailer implements Mailer {
   async sendOtp(email: string, code: string) {
     console.info(`[OnlyLove] ${email} 验证码：${code}`);
+  }
+
+  async sendContactRequest(email: string, requesterNickname: string) {
+    console.info(`[OnlyLove] ${email} 收到来自 ${requesterNickname} 的联系请求`);
+  }
+
+  async sendContactAccepted(email: string, nickname: string) {
+    console.info(`[OnlyLove] ${email} 已与 ${nickname} 建立联系`);
   }
 }
 
@@ -48,6 +79,24 @@ export class SmtpMailer implements Mailer {
       to: email,
       subject: "OnlyLove 邮箱验证码",
       text: `你的 OnlyLove 验证码是 ${code}，十分钟内有效。`,
+    });
+  }
+
+  async sendContactRequest(email: string, requesterNickname: string) {
+    await this.transport.sendMail({
+      from: this.from,
+      to: email,
+      subject: "OnlyLove 新的联系请求",
+      text: `${requesterNickname} 希望与你进一步了解。登录 OnlyLove 查看候选卡并处理请求。`,
+    });
+  }
+
+  async sendContactAccepted(email: string, nickname: string) {
+    await this.transport.sendMail({
+      from: this.from,
+      to: email,
+      subject: "OnlyLove 已建立联系",
+      text: `你已与 ${nickname} 建立联系，可以在 OnlyLove 开始真人交流。`,
     });
   }
 }

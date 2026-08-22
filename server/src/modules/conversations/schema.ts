@@ -25,6 +25,7 @@ export const conversations = pgTable(
       .references(() => members.id),
     visitorMemberId: uuid("visitor_member_id").references(() => members.id),
     recommendationId: uuid("recommendation_id"),
+    contactRequestId: uuid("contact_request_id"),
     anonymousCode: varchar("anonymous_code", { length: 16 }),
     visibilityConsentAt: timestamp("visibility_consent_at", {
       withTimezone: true,
@@ -39,6 +40,9 @@ export const conversations = pgTable(
     uniqueIndex("conversations_visitor_recommendation_unique")
       .on(table.visitorMemberId, table.recommendationId)
       .where(sql`${table.visitorMemberId} is not null`),
+    uniqueIndex("conversations_visitor_contact_request_unique")
+      .on(table.visitorMemberId, table.contactRequestId)
+      .where(sql`${table.contactRequestId} is not null`),
     uniqueIndex("conversations_anonymous_code_unique").on(table.anonymousCode),
     index("conversations_owner_visitor_index").on(
       table.memberId,

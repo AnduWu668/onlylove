@@ -128,6 +128,43 @@ interface CandidateTwinConversationState {
   autoFollowup?: { jobId: string; eventsUrl: string };
 }
 
+type ContactRequestStatus =
+  | "pending"
+  | "accepted"
+  | "rejected"
+  | "expired"
+  | "cancelled";
+
+interface ContactCandidate {
+  avatarText: string;
+  nickname: string;
+  age: number | null;
+  heightCm: number | null;
+  city: string;
+  occupation: string;
+  reason?: string;
+}
+
+interface ContactRequestState {
+  id: string;
+  status: ContactRequestStatus;
+  createdAt: string;
+  expiresAt: string;
+  resolutionMessage?: string;
+  conversation?: { id: string; anonymousCode: string };
+  candidate: ContactCandidate;
+}
+
+interface ConnectionsState {
+  incoming: ContactRequestState[];
+  outgoing: ContactRequestState[];
+  currentConnection: {
+    id: string;
+    createdAt: string;
+    candidate: Omit<ContactCandidate, "reason"> | null;
+  } | null;
+}
+
 const router = useRouter();
 const member = ref<{ email: string; role: string }>();
 const loading = ref(true);
@@ -171,6 +208,8 @@ const recommendationsLoading = ref(false);
 const recommendationsPending = ref(false);
 const recommendationsError = ref("");
 const candidateTwinCandidate = ref<CandidateRecommendation>();
+const candidateTwinEndpoint = ref("");
+const candidateTwinRecommendation = ref<CandidateRecommendation>();
 const candidateTwinConsent = ref(false);
 const candidateTwinConversation = ref<CandidateTwinConversationState>();
 const candidateTwinOpening = ref(false);
@@ -178,6 +217,12 @@ const candidateTwinSending = ref(false);
 const candidateTwinInput = ref("");
 const candidateTwinError = ref("");
 const candidateTwinQuotaRemaining = ref<number>();
+const contactRequestPending = ref(false);
+const contactRequestSent = ref(false);
+const connections = ref<ConnectionsState>();
+const connectionsLoading = ref(false);
+const connectionsPending = ref(false);
+const connectionsError = ref("");
 const ownedCandidateConversations = ref<CandidateTwinConversationState[]>([]);
 const ownedCandidateConversationsLoading = ref(false);
 const ownedCandidateConversationsLoaded = ref(false);
@@ -517,22 +562,33 @@ async function skipCandidate(id: string) {
   }
 }
 
-function requestCandidateTwin(candidate: CandidateRecommendation) {
+function requestCandidateTwin(
+  candidate: CandidateRecommendation,
+  endpoint = `/api/member/recommendations/${candidate.id}/twin-conversation`,
+  canRequestContact = true,
+) {
   candidateTwinCandidate.value = candidate;
+  candidateTwinEndpoint.value = endpoint;
+  candidateTwinRecommendation.value = canRequestContact ? candidate : undefined;
   candidateTwinConsent.value = false;
   candidateTwinError.value = "";
+  contactRequestSent.value = false;
 }
 
 function closeCandidateTwin() {
   candidateTwinEvents?.close();
   candidateTwinEvents = undefined;
   candidateTwinCandidate.value = undefined;
+  candidateTwinEndpoint.value = "";
+  candidateTwinRecommendation.value = undefined;
   candidateTwinConversation.value = undefined;
   candidateTwinConsent.value = false;
   candidateTwinInput.value = "";
   candidateTwinSending.value = false;
   candidateTwinError.value = "";
   candidateTwinQuotaRemaining.value = undefined;
+  contactRequestPending.value = false;
+  contactRequestSent.value = false;
 }
 
 async function openCandidateTwin() {
@@ -543,14 +599,11 @@ async function openCandidateTwin() {
   candidateTwinOpening.value = true;
   candidateTwinError.value = "";
   try {
-    const response = await fetch(
-      `/api/member/recommendations/${candidate.id}/twin-conversation`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ consentToOwnerVisibility: true }),
-      },
-    );
+    const response = await fetch(candidateTwinEndpoint.value, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ consentToOwnerVisibility: true }),
+    });
     const data = response.ok
       ? await jsonOrUndefined<CandidateTwinConversationState>(response)
       : undefined;
@@ -572,6 +625,100 @@ async function openCandidateTwin() {
   } finally {
     candidateTwinOpening.value = false;
   }
+}
+
+async function createContactRequest() {
+  const recommendation = candidateTwinRecommendation.value;
+  if (!recommendation || contactRequestPending.value) return;
+  contactRequestPending.value = true;
+  candidateTwinError.value = "";
+  try {
+    const response = await fetch(
+      `/api/member/recommendations/${recommendation.id}/contact-request`,
+      { method: "POST" },
+    );
+    if (!response.ok) throw new Error();
+    contactRequestSent.value = true;
+    if (recommendations.value) {
+      recommendations.value = {
+        ...recommendations.value,
+        remainingCapacity: recommendations.value.remainingCapacity + 1,
+        candidates: recommendations.value.candidates.filter(
+          ({ id }) => id !== recommendation.id,
+        ),
+      };
+    }
+  } catch {
+    candidateTwinError.value = "联系请求暂时没有发送，请确认双方状态后重试。";
+  } finally {
+    contactRequestPending.value = false;
+  }
+}
+
+async function loadConnections() {
+  if (connectionsLoading.value) return;
+  connectionsLoading.value = true;
+  connectionsError.value = "";
+  try {
+    const response = await fetch("/api/member/contact-requests");
+    const data = response.ok
+      ? await jsonOrUndefined<ConnectionsState>(response)
+      : undefined;
+    if (!data) throw new Error();
+    connections.value = data;
+  } catch {
+    connectionsError.value = "暂时无法读取联系状态，请稍后重试。";
+  } finally {
+    connectionsLoading.value = false;
+  }
+}
+
+function openRequesterTwin(request: ContactRequestState) {
+  requestCandidateTwin(
+    {
+      id: request.id,
+      ...request.candidate,
+      age: request.candidate.age ?? 0,
+      heightCm: request.candidate.heightCm ?? 0,
+      reason: request.candidate.reason ?? "",
+    },
+    `/api/member/contact-requests/${request.id}/twin-conversation`,
+    false,
+  );
+}
+
+async function resolveContactRequest(
+  request: ContactRequestState,
+  action: "accept" | "reject",
+) {
+  if (connectionsPending.value) return;
+  connectionsPending.value = true;
+  connectionsError.value = "";
+  try {
+    const response = await fetch(
+      `/api/member/contact-requests/${request.id}/${action}`,
+      { method: "POST" },
+    );
+    if (!response.ok) throw new Error();
+    await loadConnections();
+  } catch {
+    connectionsError.value =
+      action === "accept"
+        ? "该请求目前无法接受，可能已经过期或双方状态已变化。"
+        : "该请求暂时无法拒绝，请稍后重试。";
+  } finally {
+    connectionsPending.value = false;
+  }
+}
+
+function contactStatus(status: ContactRequestStatus) {
+  return {
+    pending: "待处理",
+    accepted: "已接受",
+    rejected: "已拒绝",
+    expired: "已过期（不算拒绝）",
+    cancelled: "系统已取消",
+  }[status];
 }
 
 function listenForCandidateTwin(eventsUrl: string, answer: InterviewMessage) {
@@ -881,6 +1028,7 @@ function showTab(
   activeTab.value = tab;
   if (tab === "twin") void loadInterview();
   if (tab === "recommendations") void loadRecommendations();
+  if (tab === "connections") void loadConnections();
 }
 
 function showTwinRole(role: "interviewer" | "twin") {
@@ -1764,8 +1912,10 @@ async function withdrawPortrait() {
     </form>
     </template>
 
-    <template v-else-if="activeTab === 'recommendations'">
-      <section class="recommendations-intro">
+    <template
+      v-else-if="activeTab === 'recommendations' || activeTab === 'connections'"
+    >
+      <section v-if="activeTab === 'recommendations'" class="recommendations-intro">
         <p class="step-label">候选推荐</p>
         <h1>值得进一步了解的人</h1>
         <p>双方的明确条件会先由代码过滤，再经过配对评估；没有达到阈值时宁可留空。</p>
@@ -1786,7 +1936,7 @@ async function withdrawPortrait() {
             type="button"
             @click="closeCandidateTwin"
           >
-            返回候选
+            {{ activeTab === "recommendations" ? "返回候选" : "返回联系" }}
           </button>
         </div>
         <p class="candidate-twin-warning">
@@ -1814,6 +1964,24 @@ async function withdrawPortrait() {
         <p v-if="candidateTwinQuotaRemaining !== undefined" class="quota-note">
           今日还可发送 {{ candidateTwinQuotaRemaining }} 条
         </p>
+        <div
+          v-if="
+            candidateTwinRecommendation &&
+            candidateTwinConversation.messages.some(({ role }) => role === 'member')
+          "
+          class="contact-request-cta"
+        >
+          <p v-if="contactRequestSent" role="status">联系请求已发送，等待对方处理。</p>
+          <button
+            v-else
+            class="create-contact-request"
+            type="button"
+            :disabled="contactRequestPending || candidateTwinSending"
+            @click="createContactRequest"
+          >
+            {{ contactRequestPending ? "发送中…" : "发起真人联系" }}
+          </button>
+        </div>
         <form
           class="interview-composer candidate-twin-composer"
           @submit.prevent="sendCandidateTwinMessage"
@@ -1840,9 +2008,13 @@ async function withdrawPortrait() {
       <section v-else-if="candidateTwinCandidate" class="candidate-twin-consent">
         <p class="step-label">进入前确认</p>
         <h2>与{{ candidateTwinCandidate.nickname }}的恋爱分身交流</h2>
-        <p>
+        <p v-if="candidateTwinRecommendation">
           这是 AI 分身，不是本人。你的完整原文会提供给{{ candidateTwinCandidate.nickname }}只读查看，
           匿名阶段不会向对方显示你的账号或候选卡；开始会话也不会通知对方。
+        </p>
+        <p v-else>
+          这是 AI 分身，不是本人。你的完整原文会提供给{{ candidateTwinCandidate.nickname }}只读查看；
+          你已经从联系请求中看到对方的安全候选卡。
         </p>
         <label class="candidate-twin-consent-check" for="candidate-twin-consent">
           <input
@@ -1870,7 +2042,7 @@ async function withdrawPortrait() {
         </div>
       </section>
 
-      <template v-else>
+      <template v-else-if="activeTab === 'recommendations'">
       <p v-if="recommendationsLoading" class="loading-state">正在读取候选…</p>
       <section
         v-else-if="recommendations && !recommendations.eligibility.eligible"
@@ -1944,13 +2116,132 @@ async function withdrawPortrait() {
       </template>
       </template>
       <p v-if="recommendationsError" class="form-error" role="alert">{{ recommendationsError }}</p>
-    </template>
+      <template v-if="activeTab === 'connections'">
+        <section class="connections-intro recommendations-intro">
+          <p class="step-label">真人联系</p>
+          <h1>双方都同意，再开始交流</h1>
+          <p>联系请求只披露安全候选卡；同一时间最多保留一段当前联系。</p>
+        </section>
 
-    <section v-else class="coming-soon">
-      <p class="step-label">ONLYLOVE</p>
-      <h1>联系</h1>
-      <p>这部分会在后续 MVP 切片中开放。</p>
-    </section>
+        <p v-if="connectionsLoading" class="loading-state">正在读取联系状态…</p>
+        <template v-else-if="connections">
+          <section
+            v-if="connections.currentConnection?.candidate"
+            class="current-connection contact-request-card"
+          >
+            <p class="step-label">当前联系</p>
+            <div class="candidate-heading">
+              <span class="candidate-avatar" aria-hidden="true">
+                {{ connections.currentConnection.candidate.avatarText }}
+              </span>
+              <div>
+                <h2>已与{{ connections.currentConnection.candidate.nickname }}建立联系</h2>
+                <p>
+                  {{ connections.currentConnection.candidate.age }} 岁 ·
+                  {{ connections.currentConnection.candidate.heightCm }} cm
+                </p>
+                <p>
+                  {{ connections.currentConnection.candidate.city }} ·
+                  {{ connections.currentConnection.candidate.occupation }}
+                </p>
+              </div>
+            </div>
+          </section>
+
+          <section class="contact-request-list" aria-label="收到的联系请求">
+            <h2>收到的请求</h2>
+            <article
+              v-for="contactRequest in connections.incoming"
+              :key="contactRequest.id"
+              class="contact-request-card"
+            >
+              <div class="candidate-heading">
+                <span class="candidate-avatar" aria-hidden="true">
+                  {{ contactRequest.candidate.avatarText }}
+                </span>
+                <div>
+                  <h3>{{ contactRequest.candidate.nickname }}</h3>
+                  <p>
+                    {{ contactRequest.candidate.age }} 岁 ·
+                    {{ contactRequest.candidate.heightCm }} cm
+                  </p>
+                  <p>
+                    {{ contactRequest.candidate.city }} ·
+                    {{ contactRequest.candidate.occupation }}
+                  </p>
+                </div>
+                <span class="contact-status">{{ contactStatus(contactRequest.status) }}</span>
+              </div>
+              <p class="candidate-reason">{{ contactRequest.candidate.reason }}</p>
+              <p v-if="contactRequest.conversation" class="contact-conversation-code">
+                原匿名会话：会话 {{ contactRequest.conversation.anonymousCode }}
+              </p>
+              <p v-if="contactRequest.resolutionMessage" class="contact-resolution">
+                {{ contactRequest.resolutionMessage }}
+              </p>
+              <div v-if="contactRequest.status === 'pending'" class="candidate-actions">
+                <button
+                  class="contact-request-twin"
+                  type="button"
+                  :disabled="connectionsPending"
+                  @click="openRequesterTwin(contactRequest)"
+                >
+                  先与 TA 的恋爱分身聊聊
+                </button>
+                <button
+                  class="accept-contact-request"
+                  type="button"
+                  :disabled="connectionsPending"
+                  @click="resolveContactRequest(contactRequest, 'accept')"
+                >
+                  接受请求
+                </button>
+                <button
+                  class="reject-contact-request quiet-action"
+                  type="button"
+                  :disabled="connectionsPending"
+                  @click="resolveContactRequest(contactRequest, 'reject')"
+                >
+                  拒绝
+                </button>
+              </div>
+            </article>
+            <p v-if="!connections.incoming.length" class="empty-state">
+              暂时没有收到联系请求。
+            </p>
+          </section>
+
+          <section class="contact-request-list" aria-label="发出的联系请求">
+            <h2>发出的请求</h2>
+            <article
+              v-for="contactRequest in connections.outgoing"
+              :key="contactRequest.id"
+              class="contact-request-card"
+            >
+              <div class="candidate-heading">
+                <span class="candidate-avatar" aria-hidden="true">
+                  {{ contactRequest.candidate.avatarText }}
+                </span>
+                <div>
+                  <h3>{{ contactRequest.candidate.nickname }}</h3>
+                  <p>{{ contactRequest.candidate.city }} · {{ contactRequest.candidate.occupation }}</p>
+                </div>
+                <span class="contact-status">{{ contactStatus(contactRequest.status) }}</span>
+              </div>
+              <p v-if="contactRequest.resolutionMessage" class="contact-resolution">
+                {{ contactRequest.resolutionMessage }}
+              </p>
+            </article>
+            <p v-if="!connections.outgoing.length" class="empty-state">
+              还没有发出联系请求。
+            </p>
+          </section>
+        </template>
+        <p v-if="connectionsError" class="form-error" role="alert">
+          {{ connectionsError }}
+        </p>
+      </template>
+    </template>
 
     <nav class="member-nav" aria-label="成员导航">
       <button

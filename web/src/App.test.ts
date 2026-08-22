@@ -1578,6 +1578,209 @@ describe("OnlyLove UI seam", () => {
     expect(wrapper.find(".owned-candidate-conversations textarea").exists()).toBe(false);
   });
 
+  it("sends and handles contact requests from the member UI", async () => {
+    const candidate = {
+      id: "4ac4601b-4694-4da7-bd75-07f4330c94d5",
+      avatarText: "北",
+      nickname: "北川",
+      age: 36,
+      heightCm: 178,
+      city: "上海",
+      occupation: "工程师",
+      reason: "你们可以进一步了解。",
+    };
+    let connected = false;
+    const contactState = () => ({
+      incoming: [
+        {
+          id: "8caf3335-06ba-489f-8c5f-6dde88de541b",
+          status: connected ? "accepted" : "pending",
+          createdAt: "2026-08-22T08:00:00.000Z",
+          expiresAt: "2026-08-29T08:00:00.000Z",
+          conversation: {
+            id: "anonymous-conversation",
+            anonymousCode: "A1B2C3D4E5F6",
+          },
+          candidate: {
+            avatarText: "林",
+            nickname: "林夏",
+            age: 34,
+            heightCm: 165,
+            city: "上海",
+            occupation: "设计师",
+            reason: "你们都愿意认真讨论长期关系。",
+          },
+        },
+      ],
+      outgoing: [],
+      currentConnection: connected
+        ? {
+            id: "current-connection",
+            createdAt: "2026-08-22T08:00:00.000Z",
+            candidate: {
+              avatarText: "林",
+              nickname: "林夏",
+              age: 34,
+              heightCm: 165,
+              city: "上海",
+              occupation: "设计师",
+            },
+          }
+        : null,
+    });
+    const request = vi.fn(async (url: string, options?: RequestInit) => {
+      if (url === "/api/session") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            member: { email: "member@example.com", role: "member" },
+          }),
+        };
+      }
+      if (url === "/api/member/profile") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ profile: {}, matchCriteria: null }),
+        };
+      }
+      if (url === "/api/member/recommendations") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            eligibility: { eligible: true, reasons: [] },
+            capacity: 5,
+            remainingCapacity: 4,
+            dailyFetchAvailable: false,
+            candidates: [candidate],
+            followupQuestions: [],
+          }),
+        };
+      }
+      if (
+        url === `/api/member/recommendations/${candidate.id}/twin-conversation`
+      ) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            conversationId: "candidate-conversation",
+            anonymousCode: "Z9Y8X7W6V5U4",
+            profileVersion: { id: "portrait-version", version: 1 },
+            candidate,
+            canReply: true,
+            messages: [
+              { id: "message", role: "member", content: "我们聊过长期计划。" },
+            ],
+          }),
+        };
+      }
+      if (
+        url === `/api/member/recommendations/${candidate.id}/contact-request`
+      ) {
+        return {
+          ok: true,
+          status: 201,
+          json: async () => ({
+            id: "outgoing-request",
+            status: "pending",
+            createdAt: "2026-08-22T08:00:00.000Z",
+            expiresAt: "2026-08-29T08:00:00.000Z",
+          }),
+        };
+      }
+      if (url === "/api/member/contact-requests") {
+        return { ok: true, status: 200, json: async () => contactState() };
+      }
+      if (
+        url ===
+        "/api/member/contact-requests/8caf3335-06ba-489f-8c5f-6dde88de541b/twin-conversation"
+      ) {
+        return {
+          ok: true,
+          status: 201,
+          json: async () => ({
+            conversationId: "requester-twin-conversation",
+            anonymousCode: "Q1W2E3R4T5Y6",
+            profileVersion: { id: "requester-version", version: 1 },
+            candidate: contactState().incoming[0]!.candidate,
+            canReply: true,
+            messages: [],
+          }),
+        };
+      }
+      if (
+        url ===
+          "/api/member/contact-requests/8caf3335-06ba-489f-8c5f-6dde88de541b/accept" &&
+        options?.method === "POST"
+      ) {
+        connected = true;
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            connection: {
+              id: "current-connection",
+              createdAt: "2026-08-22T08:00:00.000Z",
+            },
+          }),
+        };
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", request);
+    const router = createRouter({ history: createMemoryHistory(), routes });
+    const wrapper = mount(App, { global: { plugins: [router] } });
+    await router.push("/app");
+    await router.isReady();
+    await flushPromises();
+
+    await wrapper
+      .findAll("nav button")
+      .find((button) => button.text().includes("候选推荐"))!
+      .trigger("click");
+    await flushPromises();
+    await wrapper.get("button.chat-candidate").trigger("click");
+    await wrapper.get("#candidate-twin-consent").setValue(true);
+    await wrapper.get("button.open-candidate-twin").trigger("click");
+    await flushPromises();
+    await wrapper.get("button.create-contact-request").trigger("click");
+    await flushPromises();
+    expect(request).toHaveBeenCalledWith(
+      `/api/member/recommendations/${candidate.id}/contact-request`,
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(wrapper.text()).toContain("联系请求已发送");
+
+    await wrapper.get("button.close-candidate-twin").trigger("click");
+    await wrapper
+      .findAll("nav button")
+      .find((button) => button.text().includes("联系"))!
+      .trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("会话 A1B2C3D4E5F6");
+    expect(wrapper.text()).toContain("林夏");
+    expect(wrapper.get(".contact-request-card").text()).not.toMatch(
+      /email|分数|隐藏标签/,
+    );
+
+    await wrapper.get("button.contact-request-twin").trigger("click");
+    await wrapper.get("#candidate-twin-consent").setValue(true);
+    await wrapper.get("button.open-candidate-twin").trigger("click");
+    await flushPromises();
+    expect(request).toHaveBeenCalledWith(
+      "/api/member/contact-requests/8caf3335-06ba-489f-8c5f-6dde88de541b/twin-conversation",
+      expect.objectContaining({ method: "POST" }),
+    );
+    await wrapper.get("button.close-candidate-twin").trigger("click");
+    await wrapper.get("button.accept-contact-request").trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("当前联系");
+    expect(wrapper.text()).toContain("已与林夏建立联系");
+  });
+
   it("lets a super administrator update matching and agent quota settings", async () => {
     const request = vi.fn(async (url: string, options?: RequestInit) => {
       if (url === "/api/session") {

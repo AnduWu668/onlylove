@@ -87,6 +87,7 @@ export const pairEvaluations = pgTable(
 export type CandidateRecommendationStatus =
   | "pending"
   | "rechecking"
+  | "requested"
   | "skipped"
   | "removed";
 

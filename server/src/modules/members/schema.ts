@@ -28,6 +28,7 @@ export const members = pgTable(
     city: varchar("city", { length: 60 }),
     occupation: varchar("occupation", { length: 80 }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    suspendedUntil: timestamp("suspended_until", { withTimezone: true }),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
   },
   (table) => [uniqueIndex("members_email_unique").on(table.email)],

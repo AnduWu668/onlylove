@@ -7,6 +7,8 @@ import {
 } from "./modules/agent-engine/engine.js";
 import { AgentJobs } from "./modules/agent-engine/jobs.js";
 import { MatchingConnections } from "./modules/connections/matching.js";
+import { registerConnectionsRoutes } from "./modules/connections/routes.js";
+import { Connections } from "./modules/connections/service.js";
 import { registerConversationsRoutes } from "./modules/conversations/routes.js";
 import { InterviewConversations } from "./modules/conversations/interview.js";
 import type { Mailer } from "./modules/members/mailer.js";
@@ -44,6 +46,7 @@ export async function createApp(options: AppOptions) {
   const agentJobs = new AgentJobs(db);
   const interviewConversations = new InterviewConversations(db);
   const portraits = new Portraits(db, now, interviewConversations, agentJobs);
+  const connections = new Connections(db, now, options.mailer);
   const matching = new Matching(
     db,
     now,
@@ -89,10 +92,23 @@ export async function createApp(options: AppOptions) {
         candidateId,
         transaction,
       ),
+    requesterForTwinConversation: (
+      memberId,
+      contactRequestId,
+      requesterMemberId,
+      transaction,
+    ) =>
+      connections.requesterForTwinConversation(
+        memberId,
+        contactRequestId,
+        requesterMemberId,
+        transaction,
+      ),
     db,
     now,
     portraits,
   });
+  registerConnectionsRoutes(app, { connections, db, now });
   registerMatchingRoutes(app, { db, now, matching });
   app.addHook("onClose", async () => {
     agentEngine.close();

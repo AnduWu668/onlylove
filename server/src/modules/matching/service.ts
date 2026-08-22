@@ -119,7 +119,7 @@ function beijingDate(value: Date) {
   return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
-function ageOn(birthDate: string | null, at: Date) {
+export function ageOn(birthDate: string | null, at: Date) {
   if (!birthDate) return null;
   const [year, month, day] = birthDate.split("-").map(Number);
   const current = beijingDateParts(at);

@@ -1228,6 +1228,84 @@ button:disabled {
   background: #e9dfd4;
 }
 
+.contact-request-cta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.contact-request-cta p {
+  margin: 0;
+  color: #6f1831;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.contact-request-cta button {
+  min-height: 42px;
+  padding-inline: 18px;
+}
+
+.contact-request-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.contact-request-list > h2 {
+  margin: 0;
+  color: #4b393c;
+  font-size: 18px;
+}
+
+.contact-request-card {
+  padding: 20px;
+  border: 1px solid rgb(91 52 57 / 11%);
+  border-radius: 22px;
+  background: #eee5da;
+}
+
+.contact-request-card .candidate-heading > div {
+  min-width: 0;
+  flex: 1;
+}
+
+.contact-request-card h2,
+.contact-request-card h3 {
+  margin: 0 0 6px;
+  color: #4b393c;
+  font-size: 19px;
+}
+
+.contact-status {
+  align-self: flex-start;
+  padding: 5px 8px;
+  border-radius: 999px;
+  color: #6f1831;
+  background: #e2d4ca;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.contact-conversation-code,
+.contact-resolution {
+  margin: 12px 0 0;
+  color: #796b69;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.contact-request-card .candidate-actions {
+  grid-template-columns: repeat(3, 1fr);
+  margin-top: 16px;
+}
+
+.current-connection {
+  border-color: rgb(111 24 49 / 25%);
+  background: #e9dfd4;
+}
+
 .owned-candidate-conversations {
   margin-bottom: 14px;
   background: rgb(238 229 218 / 70%);
@@ -1313,5 +1391,9 @@ button:disabled {
 
   .invitation-actions {
     grid-column: 1 / -1;
+  }
+
+  .contact-request-card .candidate-actions {
+    grid-template-columns: 1fr;
   }
 }
