@@ -1,6 +1,5 @@
 import { eq, inArray } from "drizzle-orm";
 import type { Database, DatabaseTransaction } from "../../db.js";
-import type { ModerationAction } from "../moderation/schema.js";
 import { members } from "./schema.js";
 
 export const PERMANENT_BAN_UNTIL = new Date("9999-12-31T23:59:59.999Z");
@@ -26,26 +25,14 @@ export class ModerationMembers {
       .where(inArray(members.id, memberIds));
   }
 
-  async applyDecision(
+  async setSuspension(
     memberId: string,
-    action: ModerationAction,
-    suspendedUntil: Date | undefined,
+    suspendedUntil: Date | null,
     database: DatabaseTransaction,
   ) {
-    if (action !== "suspended" && action !== "banned") return;
     await database
       .update(members)
-      .set({
-        suspendedUntil:
-          action === "banned" ? PERMANENT_BAN_UNTIL : suspendedUntil,
-      })
-      .where(eq(members.id, memberId));
-  }
-
-  async clearSuspension(memberId: string, database: DatabaseTransaction) {
-    await database
-      .update(members)
-      .set({ suspendedUntil: null })
+      .set({ suspendedUntil })
       .where(eq(members.id, memberId));
   }
 }

@@ -453,6 +453,13 @@ describe("Moderation HTTP seam", () => {
       caseId,
       actorMemberId: seeded.admin.memberId,
     });
+    const invitation = await app.inject({
+      method: "POST",
+      url: "/api/admin/invitations",
+      headers: { cookie: seeded.admin.cookie },
+      payload: { email: "new-member@onlylove.test" },
+    });
+    expect(invitation.statusCode).toBe(201);
   });
 
   it("resolves each case once, sends disclosure-limited notices, and creates a new appeal case", async () => {
@@ -620,5 +627,56 @@ describe("Moderation HTTP seam", () => {
     expect(recommendationsAfterReview.json().eligibility.reasons).not.toContain(
       "moderation_restricted",
     );
+  });
+
+  it("keeps unrelated case punishments when one punishment is appealed", async () => {
+    const seeded = await seedScenario();
+    const bannedCaseId = (await reportHumanMessage(seeded)).json().case.id as string;
+    const suspendedCaseId = (await reportHumanMessage(seeded)).json().case.id as string;
+    await app.inject({
+      method: "POST",
+      url: `/api/admin/moderation-cases/${bannedCaseId}/decision`,
+      headers: { cookie: seeded.admin.cookie },
+      payload: { action: "banned", reason: "严重且持续越过成员边界。" },
+    });
+    await app.inject({
+      method: "POST",
+      url: `/api/admin/moderation-cases/${suspendedCaseId}/decision`,
+      headers: { cookie: seeded.admin.cookie },
+      payload: {
+        action: "suspended",
+        reason: "另一起案件需要限期停用。",
+        suspendedUntil: new Date(now.getTime() + 7 * 86_400_000).toISOString(),
+      },
+    });
+
+    const appeal = await app.inject({
+      method: "POST",
+      url: `/api/member/moderation-cases/${suspendedCaseId}/appeal`,
+      headers: { cookie: seeded.reported.cookie },
+      payload: { reason: "申请复核限期处置。", evidence: "补充案件上下文。" },
+    });
+    await app.inject({
+      method: "POST",
+      url: `/api/admin/moderation-cases/${appeal.json().case.id}/decision`,
+      headers: { cookie: seeded.admin.cookie },
+      payload: { action: "dismissed", reason: "撤销这一起案件的限期处置。" },
+    });
+
+    const profile = await app.inject({
+      method: "GET",
+      url: "/api/member/profile",
+      headers: { cookie: seeded.reported.cookie },
+    });
+    expect(profile.statusCode).toBe(401);
+    const moderation = await app.inject({
+      method: "GET",
+      url: "/api/member/moderation",
+      headers: { cookie: seeded.reported.cookie },
+    });
+    expect(moderation.json()).toMatchObject({
+      accessRestricted: true,
+      suspendedUntil: "9999-12-31T23:59:59.999Z",
+    });
   });
 });

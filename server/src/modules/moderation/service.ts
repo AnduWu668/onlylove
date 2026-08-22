@@ -5,7 +5,10 @@ import type { ModerationConnections } from "../connections/moderation.js";
 import type { ModerationConversations } from "../conversations/moderation.js";
 import type { ModerationMatching } from "../matching/moderation.js";
 import type { Mailer } from "../members/mailer.js";
-import type { ModerationMembers } from "../members/moderation.js";
+import {
+  PERMANENT_BAN_UNTIL,
+  type ModerationMembers,
+} from "../members/moderation.js";
 import {
   distortionFeedback,
   memberBlocks,
@@ -517,6 +520,9 @@ export class Moderation {
       if (current.status !== "pending") {
         throw new ModerationError("CASE_ALREADY_RESOLVED");
       }
+      await transaction.execute(
+        sql`select pg_advisory_xact_lock(hashtext(${`moderation-member:${current.reportedMemberId}`}))`,
+      );
       const decision = (
         await transaction
           .insert(moderationDecisions)
@@ -538,11 +544,11 @@ export class Moderation {
           .returning()
       )[0]!;
       const punitive = input.action === "suspended" || input.action === "banned";
-      if (current.type === "appeal" && !punitive) {
+      if (current.type === "appeal") {
         if (!current.originalCaseId) {
           throw new ModerationError("INVALID_APPEAL_CASE", 500);
         }
-        const restored = await transaction
+        await transaction
           .delete(memberRecommendationRestrictions)
           .where(
             and(
@@ -555,18 +561,7 @@ export class Moderation {
                 current.originalCaseId,
               ),
             ),
-          )
-          .returning({ memberId: memberRecommendationRestrictions.memberId });
-        if (restored.length) {
-          await this.members.clearSuspension(current.reportedMemberId, transaction);
-        }
-      } else {
-        await this.members.applyDecision(
-          current.reportedMemberId,
-          input.action,
-          input.suspendedUntil,
-          transaction,
-        );
+          );
       }
       if (punitive) {
         await transaction
@@ -576,13 +571,46 @@ export class Moderation {
             sourceCaseId: caseId,
             createdAt: decidedAt,
           })
-          .onConflictDoUpdate({
-            target: memberRecommendationRestrictions.memberId,
-            set: { sourceCaseId: caseId, createdAt: decidedAt },
-          });
+          .onConflictDoNothing();
         await this.connections.endForMember(
           current.reportedMemberId,
           decidedAt,
+          transaction,
+        );
+      }
+      if (current.type === "appeal" || punitive) {
+        const activeDecisions = await transaction
+          .select({
+            action: moderationDecisions.action,
+            suspendedUntil: moderationDecisions.suspendedUntil,
+          })
+          .from(memberRecommendationRestrictions)
+          .innerJoin(
+            moderationDecisions,
+            eq(
+              moderationDecisions.caseId,
+              memberRecommendationRestrictions.sourceCaseId,
+            ),
+          )
+          .where(
+            eq(
+              memberRecommendationRestrictions.memberId,
+              current.reportedMemberId,
+            ),
+          );
+        const suspendedUntil = activeDecisions.reduce<Date | null>(
+          (latest, item) => {
+            const candidate =
+              item.action === "banned"
+                ? PERMANENT_BAN_UNTIL
+                : item.suspendedUntil;
+            return candidate && (!latest || candidate > latest) ? candidate : latest;
+          },
+          null,
+        );
+        await this.members.setSuspension(
+          current.reportedMemberId,
+          suspendedUntil,
           transaction,
         );
       }

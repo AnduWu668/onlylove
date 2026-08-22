@@ -142,13 +142,14 @@ export const memberRecommendationRestrictions = pgTable(
   "member_recommendation_restrictions",
   {
     memberId: uuid("member_id")
-      .primaryKey()
+      .notNull()
       .references(() => members.id),
     sourceCaseId: uuid("source_case_id")
       .notNull()
       .references(() => moderationCases.id),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
+  (table) => [primaryKey({ columns: [table.memberId, table.sourceCaseId] })],
 );
 
 export const moderationNotificationOutbox = pgTable(

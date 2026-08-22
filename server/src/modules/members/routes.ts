@@ -1015,7 +1015,7 @@ export function registerMembersRoutes(
 
   app.get("/api/admin/invitations", async (request, reply) => {
     const requestedAt = now();
-    const actor = await superAdminForRequest(request, db, requestedAt);
+    const actor = await adminForRequest(request, db, requestedAt);
     if (!actor) {
       return reply.code(403).send({ code: "FORBIDDEN" });
     }
@@ -1034,7 +1034,7 @@ export function registerMembersRoutes(
     "/api/admin/invitations",
     { schema: { body: emailSchema } },
     async (request, reply) => {
-      const actor = await superAdminForRequest(request, db, now());
+      const actor = await adminForRequest(request, db, now());
       if (!actor) {
         return reply.code(403).send({ code: "FORBIDDEN" });
       }
@@ -1060,7 +1060,7 @@ export function registerMembersRoutes(
     },
     async (request, reply) => {
       const changedAt = now();
-      const actor = await superAdminForRequest(request, db, changedAt);
+      const actor = await adminForRequest(request, db, changedAt);
       if (!actor) {
         return reply.code(403).send({ code: "FORBIDDEN" });
       }
@@ -1097,7 +1097,7 @@ export function registerMembersRoutes(
     },
     async (request, reply) => {
       const changedAt = now();
-      const actor = await superAdminForRequest(request, db, changedAt);
+      const actor = await adminForRequest(request, db, changedAt);
       if (!actor) {
         return reply.code(403).send({ code: "FORBIDDEN" });
       }

@@ -109,6 +109,9 @@ describe("OnlyLove UI seam", () => {
           json: async () => ({ distortionFeedbackCount: 0, openCaseCount: 0 }),
         };
       }
+      if (url === "/api/admin/invitations") {
+        return { ok: true, status: 200, json: async () => ({ invitations: [] }) };
+      }
       throw new Error(`Unexpected request: ${url}`);
     });
     vi.stubGlobal("fetch", request);
@@ -124,7 +127,7 @@ describe("OnlyLove UI seam", () => {
 
     expect(router.currentRoute.value.fullPath).toBe("/admin");
     expect(wrapper.text()).toContain("审核工作台");
-    expect(request).not.toHaveBeenCalledWith("/api/admin/invitations");
+    expect(request).toHaveBeenCalledWith("/api/admin/invitations");
   });
 
   it("uses an email code to require password setup for a new member", async () => {
@@ -2490,7 +2493,7 @@ describe("OnlyLove UI seam", () => {
     expect(wrapper.text()).toContain("举报与复核案件");
     expect(wrapper.text()).toContain("累计分身失真反馈 3 条");
     expect(request).not.toHaveBeenCalledWith("/api/admin/matching-settings");
-    expect(request).not.toHaveBeenCalledWith("/api/admin/invitations");
+    expect(request).toHaveBeenCalledWith("/api/admin/invitations");
     await wrapper.get(".moderation-case-list button").trigger("click");
     await flushPromises();
     expect(wrapper.text()).toContain("这是一条关联消息");

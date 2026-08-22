@@ -133,10 +133,10 @@ onMounted(async () => {
   adminRole.value = member.role;
   try {
     await Promise.all([
+      loadInvitations(),
       loadModeration(),
       ...(member.role === "super_admin"
         ? [
-            loadInvitations(),
             loadMatchingSettings(),
             loadAgentQuotaSettings(),
             loadRelationshipMetrics(),
@@ -300,14 +300,14 @@ function formatDate(value: string) {
         <p class="eyebrow">ONLYLOVE ADMIN</p>
         <h1>{{ adminRole === 'super_admin' ? '管理后台' : '审核工作台' }}</h1>
         <p v-if="adminRole === 'super_admin'">管理邀请、平台配置与审核案件。</p>
-        <p v-else>处理举报与复核案件，仅在案件内查看关联证据。</p>
+        <p v-else>管理邀请并处理举报与复核案件，仅在案件内查看关联证据。</p>
       </div>
       <RouterLink to="/app">成员界面</RouterLink>
     </header>
 
     <p v-if="error" class="form-error" role="alert">{{ error }}</p>
 
-    <section v-if="adminRole === 'super_admin'" class="admin-panel">
+    <section class="admin-panel">
       <form class="invite-form" @submit.prevent="issue">
         <div>
           <label for="invite-email">成员邮箱</label>
@@ -495,7 +495,6 @@ function formatDate(value: string) {
     </section>
 
     <section
-      v-if="adminRole === 'super_admin'"
       class="invitation-list"
       aria-labelledby="invitation-list-title"
     >
