@@ -1983,6 +1983,7 @@ async function withdrawPortrait() {
           </button>
         </div>
         <form
+          v-if="!contactRequestSent"
           class="interview-composer candidate-twin-composer"
           @submit.prevent="sendCandidateTwinMessage"
         >

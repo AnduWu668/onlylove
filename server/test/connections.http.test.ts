@@ -10,7 +10,7 @@ import {
   it,
   vi,
 } from "vitest";
-import { createApp } from "../src/app.js";
+import { createApp, type AppOptions } from "../src/app.js";
 import { loadRootEnv } from "../src/env.js";
 import { MemoryMailer } from "../src/modules/members/mailer.js";
 
@@ -368,6 +368,46 @@ describe("Contact requests HTTP seam", () => {
     expect(
       flakyMailer.notifications.filter(({ type }) => type === "contact_accepted"),
     ).toHaveLength(2);
+  });
+
+  it("keeps a contact notification retryable when the mailer capability is unavailable", async () => {
+    await app.close();
+    const notifications: Array<{ email: string; nickname: string }> = [];
+    const runtimeMailer: {
+      sendOtp(email: string, code: string): Promise<void>;
+      sendContactRequest?: (email: string, nickname: string) => Promise<void>;
+    } = {
+      async sendOtp() {},
+    };
+    app = await createApp({
+      databaseUrl,
+      mailer: runtimeMailer as AppOptions["mailer"],
+      otpSecret: "test-only-secret",
+      superAdminEmail: "admin@onlylove.test",
+      now: () => now,
+      connectionMaintenanceIntervalMs: 60_000,
+    });
+    const seeded = await seedCandidateConversation();
+
+    const created = await app.inject({
+      method: "POST",
+      url: `/api/member/recommendations/${seeded.recommendationId}/contact-request`,
+      headers: { cookie: seeded.requester.cookie },
+    });
+    expect(created.statusCode).toBe(201);
+    expect(notifications).toHaveLength(0);
+
+    runtimeMailer.sendContactRequest = async (email, nickname) => {
+      notifications.push({ email, nickname });
+    };
+    await app.inject({
+      method: "GET",
+      url: "/api/member/contact-requests",
+      headers: { cookie: seeded.recipient.cookie },
+    });
+    expect(notifications).toEqual([
+      { email: "recipient@onlylove.test", nickname: "林夏" },
+    ]);
   });
 
   it("lets only the recipient win one concurrent acceptance and makes retries idempotent", async () => {

@@ -1753,6 +1753,7 @@ describe("OnlyLove UI seam", () => {
       expect.objectContaining({ method: "POST" }),
     );
     expect(wrapper.text()).toContain("联系请求已发送");
+    expect(wrapper.find(".candidate-twin-composer").exists()).toBe(false);
 
     await wrapper.get("button.close-candidate-twin").trigger("click");
     await wrapper

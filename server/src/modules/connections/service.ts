@@ -294,12 +294,14 @@ export class Connections {
         if (!notification) return;
         try {
           if (notification.type === "contact_request") {
-            await this.mailer.sendContactRequest?.(
+            if (!this.mailer.sendContactRequest) return;
+            await this.mailer.sendContactRequest(
               notification.email,
               notification.nickname,
             );
           } else {
-            await this.mailer.sendContactAccepted?.(
+            if (!this.mailer.sendContactAccepted) return;
+            await this.mailer.sendContactAccepted(
               notification.email,
               notification.nickname,
             );
