@@ -795,6 +795,29 @@ describe("Candidate recommendations HTTP seam", () => {
     });
     expect(opened.statusCode).toBe(201);
 
+    const ownClientMessageId = randomUUID();
+    const ownAccepted = await app.inject({
+      method: "POST",
+      url: "/api/member/twin/messages",
+      headers: { cookie: memberCookie },
+      payload: {
+        clientMessageId: ownClientMessageId,
+        content: "调整前自己的消息。",
+      },
+    });
+    expect(ownAccepted.statusCode).toBe(202);
+    const candidateClientMessageId = randomUUID();
+    const candidateAccepted = await app.inject({
+      method: "POST",
+      url: `/api/member/candidate-twin-conversations/${opened.json().conversationId}/messages`,
+      headers: { cookie: memberCookie },
+      payload: {
+        clientMessageId: candidateClientMessageId,
+        content: "调整前候选的消息。",
+      },
+    });
+    expect(candidateAccepted.statusCode).toBe(202);
+
     const forbidden = await app.inject({
       method: "PUT",
       url: "/api/admin/agent-quota-settings",
@@ -837,18 +860,42 @@ describe("Candidate recommendations HTTP seam", () => {
     );
     const memberId = member.rows[0]!.id;
     await pool.query(
-      `INSERT INTO own_agent_daily_quotas
-        (member_id, quota_date, used, updated_at)
-       VALUES ($1, '2026-08-22', 1, $2)`,
-      [memberId, currentTime],
+      "UPDATE own_agent_daily_quotas SET used = 2 WHERE member_id = $1",
+      [memberId],
     );
     await pool.query(
-      `INSERT INTO candidate_twin_daily_quotas
-        (member_id, quota_date, used, updated_at)
-       VALUES ($1, '2026-08-22', 1, $2)`,
-      [memberId, currentTime],
+      "UPDATE candidate_twin_daily_quotas SET used = 2 WHERE member_id = $1",
+      [memberId],
+    );
+    await pool.query(
+      "UPDATE agent_jobs SET status = 'completed' WHERE member_id = $1",
+      [memberId],
     );
     await pool.end();
+
+    const ownReplay = await app.inject({
+      method: "POST",
+      url: "/api/member/twin/messages",
+      headers: { cookie: memberCookie },
+      payload: {
+        clientMessageId: ownClientMessageId,
+        content: "调整前自己的消息。",
+      },
+    });
+    expect(ownReplay.statusCode).toBe(202);
+    expect(ownReplay.json().quotaRemaining).toBe(0);
+
+    const candidateReplay = await app.inject({
+      method: "POST",
+      url: `/api/member/candidate-twin-conversations/${opened.json().conversationId}/messages`,
+      headers: { cookie: memberCookie },
+      payload: {
+        clientMessageId: candidateClientMessageId,
+        content: "调整前候选的消息。",
+      },
+    });
+    expect(candidateReplay.statusCode).toBe(202);
+    expect(candidateReplay.json().quotaRemaining).toBe(0);
 
     const ownAgentExhausted = await app.inject({
       method: "POST",

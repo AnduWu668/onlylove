@@ -602,18 +602,21 @@ function listenForCandidateTwin(eventsUrl: string, answer: InterviewMessage) {
 
 function candidateTwinPostFailure(code?: string) {
   if (code === "CANDIDATE_TWIN_QUOTA_USED") {
-    return "今日候选分身消息额度已用完，明天再继续。";
+    return {
+      message: "今日候选分身消息额度已用完，明天再继续。",
+      retryable: false,
+    };
   }
   if (code === "CANDIDATE_TWIN_IN_PROGRESS") {
-    return "上一条候选分身回答仍在生成中。";
+    return { message: "上一条候选分身回答仍在生成中。", retryable: false };
   }
   if (
     code === "CANDIDATE_TWIN_UNAVAILABLE" ||
     code === "CONVERSATION_NOT_FOUND"
   ) {
-    return "这位候选目前无法继续分身会话。";
+    return { message: "这位候选目前无法继续分身会话。", retryable: false };
   }
-  return "这条消息暂时无法发送，原文已恢复。";
+  return { message: "这条消息暂时无法发送，原文已恢复。", retryable: true };
 }
 
 async function sendCandidateTwinMessage() {
@@ -663,7 +666,15 @@ async function sendCandidateTwinMessage() {
       code?: string;
     }>(response);
     if (!response.ok || !data?.eventsUrl) {
-      candidateTwinError.value = candidateTwinPostFailure(data?.code);
+      const failure = candidateTwinPostFailure(data?.code);
+      candidateTwinError.value = failure.message;
+      if (failure.retryable) {
+        candidateTwinRetry = {
+          conversationId: conversation.conversationId,
+          clientMessageId,
+          content,
+        };
+      }
       rollback();
       return;
     }

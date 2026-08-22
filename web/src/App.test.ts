@@ -1319,8 +1319,10 @@ describe("OnlyLove UI seam", () => {
       }
     }
     vi.stubGlobal("EventSource", FakeEventSource);
+    let generatedMessageId = 0;
     vi.stubGlobal("crypto", {
-      randomUUID: () => "f6fd2b9f-71c9-4a69-99fe-b51b00438d6a",
+      randomUUID: () =>
+        `f6fd2b9f-71c9-4a69-99fe-${String(++generatedMessageId).padStart(12, "0")}`,
     });
     const candidate = {
       id: "4ac4601b-4694-4da7-bd75-07f4330c94d5",
@@ -1332,10 +1334,14 @@ describe("OnlyLove UI seam", () => {
       occupation: "工程师",
       reason: "你们可以进一步了解。",
     };
+    const candidateMessageStatuses = {
+      CANDIDATE_TWIN_QUOTA_USED: 429,
+      CANDIDATE_TWIN_IN_PROGRESS: 409,
+      CANDIDATE_TWIN_UNAVAILABLE: 409,
+      UNKNOWN_FAILURE: 500,
+    } as const;
     let candidateMessageFailure:
-      | "CANDIDATE_TWIN_QUOTA_USED"
-      | "CANDIDATE_TWIN_IN_PROGRESS"
-      | "CANDIDATE_TWIN_UNAVAILABLE"
+      | keyof typeof candidateMessageStatuses
       | undefined;
     const request = vi.fn(async (url: string, options?: RequestInit) => {
       if (url === "/api/session") {
@@ -1408,7 +1414,7 @@ describe("OnlyLove UI seam", () => {
         if (candidateMessageFailure) {
           return {
             ok: false,
-            status: candidateMessageFailure === "CANDIDATE_TWIN_QUOTA_USED" ? 429 : 409,
+            status: candidateMessageStatuses[candidateMessageFailure],
             json: async () => ({ code: candidateMessageFailure }),
           };
         }
@@ -1538,6 +1544,23 @@ describe("OnlyLove UI seam", () => {
     await wrapper.get("form.candidate-twin-composer").trigger("submit");
     await flushPromises();
     expect(wrapper.text()).toContain("这位候选目前无法继续分身会话。");
+
+    candidateMessageFailure = "UNKNOWN_FAILURE";
+    await wrapper.get(".candidate-twin-composer textarea").setValue("未知失败测试");
+    await wrapper.get("form.candidate-twin-composer").trigger("submit");
+    await flushPromises();
+    const failedRequest = request.mock.calls.at(-1)![1]!;
+    const failedMessageId = JSON.parse(
+      failedRequest.body as string,
+    ).clientMessageId;
+    candidateMessageFailure = undefined;
+    await wrapper.get("form.candidate-twin-composer").trigger("submit");
+    await flushPromises();
+    const retriedRequest = request.mock.calls.at(-1)![1]!;
+    expect(JSON.parse(retriedRequest.body as string).clientMessageId).toBe(
+      failedMessageId,
+    );
+    FakeEventSource.current.emit("done", {});
 
     await wrapper.get("button.close-candidate-twin").trigger("click");
     await wrapper

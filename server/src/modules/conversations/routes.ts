@@ -470,7 +470,10 @@ async function reserveOwnAgentMessage(
       return {
         conversation,
         job: duplicateJob,
-        quotaRemaining: settings.ownAgentDailyLimit - (quota?.used ?? 0),
+        quotaRemaining: Math.max(
+          0,
+          settings.ownAgentDailyLimit - (quota?.used ?? 0),
+        ),
       };
     }
     if (
@@ -699,7 +702,10 @@ async function reserveCandidateTwinMessage(
       return {
         conversation: current,
         job: duplicateJob,
-        quotaRemaining: settings.candidateTwinDailyLimit - (quota?.used ?? 0),
+        quotaRemaining: Math.max(
+          0,
+          settings.candidateTwinDailyLimit - (quota?.used ?? 0),
+        ),
       };
     }
     if (
