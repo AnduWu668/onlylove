@@ -248,7 +248,11 @@ function sameHash(left: string, right: string) {
 }
 
 function publicMember(member: Member) {
-  return { email: member.email, role: member.role };
+  return {
+    email: member.email,
+    role: member.role,
+    suspendedUntil: member.suspendedUntil?.toISOString() ?? null,
+  };
 }
 
 export function publicProfile(member: Member) {
@@ -511,7 +515,7 @@ async function sessionForRequest(
   return rows[0];
 }
 
-export async function memberForRequest(
+export async function authenticatedMemberForRequest(
   request: FastifyRequest,
   db: Database,
   now: Date,
@@ -525,6 +529,22 @@ export async function memberForRequest(
     return undefined;
   }
   return current.member;
+}
+
+export async function memberForRequest(
+  request: FastifyRequest,
+  db: Database,
+  now: Date,
+) {
+  const member = await authenticatedMemberForRequest(request, db, now);
+  if (
+    member?.role === "member" &&
+    member.suspendedUntil &&
+    member.suspendedUntil > now
+  ) {
+    return undefined;
+  }
+  return member;
 }
 
 export async function interviewContextForMember(member: Member, db: Database) {

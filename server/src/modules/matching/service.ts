@@ -294,13 +294,20 @@ export class Matching {
 
   private async qualifications(memberIds: string[]) {
     const ids = [...new Set(memberIds)];
-    const [members, portraits, currentContacts, recoveringMembers] =
+    const [
+      members,
+      portraits,
+      currentContacts,
+      recoveringMembers,
+      restrictedMembers,
+    ] =
       await Promise.all([
-      this.matchingMembers.byIds(ids),
-      this.matchingPortraits.publishedFor(ids),
-      this.matchingConnections.membersWithCurrent(ids),
-      this.matchingConnections.membersRecovering(ids),
-    ]);
+        this.matchingMembers.byIds(ids),
+        this.matchingPortraits.publishedFor(ids),
+        this.matchingConnections.membersWithCurrent(ids),
+        this.matchingConnections.membersRecovering(ids),
+        this.matchingModeration.restrictedMembers(ids),
+      ]);
     const byId = new Map(members.map((member) => [member.id, member]));
     const result = new Map<string, Qualification>();
     for (const memberId of ids) {
@@ -355,6 +362,7 @@ export class Matching {
       }
       if (currentContacts.has(memberId)) reasons.push("current_contact");
       if (recoveringMembers.has(memberId)) reasons.push("relationship_recovery");
+      if (restrictedMembers.has(memberId)) reasons.push("moderation_restricted");
       result.set(memberId, {
         eligible: reasons.length === 0,
         reasons,
@@ -1017,6 +1025,11 @@ export class Matching {
         recommendation.memberCriteriaVersionId ||
       byId.get(recommendation.candidateMemberId)?.criteria?.id !==
         recommendation.candidateCriteriaVersionId ||
+      (await this.matchingModeration.recommendationRestricted(
+        memberId,
+        recommendation.candidateMemberId,
+        transaction,
+      )) ||
       (await this.matchingModeration.blocked(
         memberId,
         recommendation.candidateMemberId,

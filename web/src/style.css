@@ -873,7 +873,7 @@ button:disabled {
   bottom: 0;
   left: 0;
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(60px, 1fr));
   max-width: 520px;
   margin: auto;
   padding: 10px 8px max(12px, env(safe-area-inset-bottom));
@@ -1462,6 +1462,86 @@ button:disabled {
   font-size: 12px;
 }
 
+.moderation-toast {
+  margin: 0 0 14px;
+}
+
+.moderation-guide {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.moderation-guide article,
+.moderation-restriction {
+  padding: 18px;
+  border: 1px solid rgb(91 52 57 / 11%);
+  border-radius: 18px;
+  background: #eee5da;
+}
+
+.moderation-guide p,
+.moderation-restriction p {
+  margin: 7px 0 0;
+  color: #79686a;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.moderation-list {
+  margin-top: 16px;
+}
+
+.message-moderation-actions,
+.moderation-inline-actions,
+.moderation-decision-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.message-moderation-actions button,
+.moderation-inline-actions button {
+  min-height: 34px;
+  padding: 6px 10px;
+  font-size: 11px;
+}
+
+.moderation-admin-panel {
+  margin-top: 16px;
+}
+
+.moderation-case-list article {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 0;
+  border-top: 1px solid rgb(91 52 57 / 10%);
+}
+
+.moderation-case-list article p,
+.moderation-case-detail p {
+  margin: 5px 0 0;
+  color: #79686a;
+  line-height: 1.55;
+}
+
+.moderation-case-detail {
+  margin-top: 18px;
+  padding: 18px;
+  border-radius: 16px;
+  background: #fffaf3;
+}
+
+.moderation-case-chat {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid rgb(91 52 57 / 10%);
+}
+
 @media (max-width: 600px) {
   .admin-header {
     display: block;
@@ -1486,6 +1566,11 @@ button:disabled {
   }
 
   .contact-request-card .candidate-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .moderation-guide,
+  .moderation-case-list article {
     grid-template-columns: 1fr;
   }
 }

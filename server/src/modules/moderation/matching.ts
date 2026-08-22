@@ -1,6 +1,6 @@
 import { and, eq, inArray, or } from "drizzle-orm";
 import type { Database, DatabaseTransaction } from "../../db.js";
-import { memberBlocks } from "./schema.js";
+import { memberBlocks, memberRecommendationRestrictions } from "./schema.js";
 
 export class MatchingModeration {
   constructor(private readonly db: Database) {}
@@ -48,5 +48,27 @@ export class MatchingModeration {
     return (
       await this.blockedCandidates(memberAId, [memberBId], database)
     ).has(memberBId);
+  }
+
+  async restrictedMembers(
+    memberIds: string[],
+    database: Database | DatabaseTransaction = this.db,
+  ) {
+    if (!memberIds.length) return new Set<string>();
+    const rows = await database
+      .select({ memberId: memberRecommendationRestrictions.memberId })
+      .from(memberRecommendationRestrictions)
+      .where(inArray(memberRecommendationRestrictions.memberId, memberIds));
+    return new Set(rows.map(({ memberId }) => memberId));
+  }
+
+  async recommendationRestricted(
+    memberAId: string,
+    memberBId: string,
+    database: Database | DatabaseTransaction = this.db,
+  ) {
+    return (
+      await this.restrictedMembers([memberAId, memberBId], database)
+    ).size > 0;
   }
 }

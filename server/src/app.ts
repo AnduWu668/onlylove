@@ -7,12 +7,15 @@ import {
 } from "./modules/agent-engine/engine.js";
 import { AgentJobs } from "./modules/agent-engine/jobs.js";
 import { MatchingConnections } from "./modules/connections/matching.js";
+import { ModerationConnections } from "./modules/connections/moderation.js";
 import { registerConnectionsRoutes } from "./modules/connections/routes.js";
 import { Connections } from "./modules/connections/service.js";
 import { ConnectionConversations } from "./modules/conversations/connections.js";
+import { ModerationConversations } from "./modules/conversations/moderation.js";
 import { registerConversationsRoutes } from "./modules/conversations/routes.js";
 import { InterviewConversations } from "./modules/conversations/interview.js";
 import { ConnectionMatching } from "./modules/matching/connections.js";
+import { ModerationMatching } from "./modules/matching/moderation.js";
 import { ConnectionMembers } from "./modules/members/connections.js";
 import type { Mailer } from "./modules/members/mailer.js";
 import {
@@ -20,7 +23,10 @@ import {
   registerMembersRoutes,
 } from "./modules/members/routes.js";
 import { MatchingMembers } from "./modules/members/matching.js";
+import { ModerationMembers } from "./modules/members/moderation.js";
 import { MatchingModeration } from "./modules/moderation/matching.js";
+import { registerModerationRoutes } from "./modules/moderation/routes.js";
+import { Moderation } from "./modules/moderation/service.js";
 import { registerMatchingRoutes } from "./modules/matching/routes.js";
 import { Matching } from "./modules/matching/service.js";
 import { registerPortraitsRoutes } from "./modules/portraits/routes.js";
@@ -72,10 +78,20 @@ export async function createApp(options: AppOptions) {
     matchingModeration,
     new MatchingConnections(db),
   );
+  const moderation = new Moderation(
+    db,
+    now,
+    options.mailer,
+    new ModerationConversations(db),
+    new ModerationConnections(db),
+    new ModerationMatching(db),
+    new ModerationMembers(db),
+  );
 
   await migrateDatabase(db);
   await bootstrapSuperAdmin(db, options.superAdminEmail, now());
   await connections.runMaintenance();
+  await moderation.flushNotifications();
   await app.register(cookie);
   app.get("/api/health", async () => ({ status: "ok" }));
   registerMembersRoutes(app, {
@@ -130,6 +146,7 @@ export async function createApp(options: AppOptions) {
   });
   registerConnectionsRoutes(app, { connections, db, now });
   registerMatchingRoutes(app, { db, now, matching });
+  registerModerationRoutes(app, { db, moderation, now });
   const connectionMaintenance = setInterval(() => {
     void connections.runMaintenance().catch((error) => app.log.error(error));
   }, options.connectionMaintenanceIntervalMs ?? 60_000);
