@@ -924,8 +924,12 @@ async function submitConnectionDecision(
 }
 
 function startConnectionReview() {
-  twinRole.value = "interviewer";
   interviewInput.value = "我想复盘这段接触：哪些地方适合我，哪些地方需要重新理解自己？";
+  showPortraitEditor();
+}
+
+function showPortraitEditor() {
+  twinRole.value = "interviewer";
   showTab("twin");
 }
 
@@ -2291,7 +2295,7 @@ async function withdrawPortrait() {
       >
         <h2>分身还没准备好参与推荐</h2>
         <p>请先完善八个关系维度，通过至少 8/10 的校准、确认没有关键事实捏造并主动发布分身。</p>
-        <button type="button" @click="showTab('twin')">继续完善我的分身</button>
+        <button type="button" @click="showPortraitEditor">继续完善我的分身</button>
       </section>
       <template v-else-if="recommendations">
         <section v-if="recommendations.followupQuestions.length" class="matching-followups">
@@ -2554,7 +2558,7 @@ async function withdrawPortrait() {
             >
               <h2>让复盘进入新的分身版本</h2>
               <p>提交新的理解版本、完成校准并发布后，才能主动恢复推荐。</p>
-              <button type="button" @click="showTab('twin')">
+              <button type="button" @click="showPortraitEditor">
                 继续完善和校准
               </button>
             </template>

@@ -2016,9 +2016,20 @@ describe("OnlyLove UI seam", () => {
           ok: true,
           status: 200,
           json: async () => ({
-            status: "draft",
-            submittedVersion: null,
-            publishedVersion: null,
+            status: "published",
+            submittedVersion: { id: "review-version", version: 2 },
+            publishedVersion: { id: "review-version", version: 2 },
+          }),
+        };
+      }
+      if (url === "/api/member/twin" && !options?.method) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            conversationId: null,
+            profileVersion: { id: "review-version", version: 2 },
+            messages: [],
           }),
         };
       }
@@ -2079,6 +2090,21 @@ describe("OnlyLove UI seam", () => {
       "/api/member/interview/messages",
       expect.objectContaining({ method: "POST" }),
     );
+
+    recovery = { connectionId, status: "portrait_update_required" };
+    await wrapper.get('button[data-twin-role="twin"]').trigger("click");
+    await flushPromises();
+    await wrapper
+      .findAll("nav button")
+      .find((button) => button.text().includes("联系"))!
+      .trigger("click");
+    await flushPromises();
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("继续完善和校准"))!
+      .trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("私有画像访谈员");
 
     recovery = { connectionId, status: "ready_to_resume" };
     await wrapper

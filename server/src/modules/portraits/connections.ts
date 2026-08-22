@@ -37,10 +37,6 @@ export class ConnectionPortraits {
       .where(
         and(
           eq(portraitMemberStates.memberId, memberId),
-          eq(
-            portraitMemberStates.submittedVersionId,
-            portraitMemberStates.publishedVersionId,
-          ),
           gt(portraitVersions.createdAt, after),
         ),
       )

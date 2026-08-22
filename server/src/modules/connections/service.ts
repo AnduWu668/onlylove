@@ -709,6 +709,7 @@ export class Connections {
     connectionId: string,
     decision: ConnectionFollowupDecision,
   ) {
+    await this.queueDueFollowups();
     const decidedAt = this.now();
     await this.db.transaction(async (transaction) => {
       await transaction.execute(
@@ -752,8 +753,11 @@ export class Connections {
         if (existing?.decision === "end" && decision === "end") return;
         throw new ConnectionsError("CONNECTION_ENDED");
       }
-      if (connection.status === "confirmed" && decision !== "end") {
-        throw new ConnectionsError("RELATIONSHIP_ALREADY_CONFIRMED");
+      if (connection.status === "confirmed") {
+        if (existing?.decision === "confirm" && decision === "confirm") return;
+        if (decision !== "end") {
+          throw new ConnectionsError("RELATIONSHIP_ALREADY_CONFIRMED");
+        }
       }
       if (
         decidedAt.getTime() <
@@ -874,7 +878,7 @@ export class Connections {
     if (
       !(await this.portraits.hasPublishedVersionAfter(
         memberId,
-        recovery.createdAt,
+        recovery.reviewedAt,
       ))
     ) {
       throw new ConnectionsError("PORTRAIT_RECALIBRATION_REQUIRED");
@@ -1020,10 +1024,12 @@ export class Connections {
         .limit(1)
     )[0];
     if (!recovery) return null;
-    const hasUpdatedPortrait = await this.portraits.hasPublishedVersionAfter(
-      memberId,
-      recovery.createdAt,
-    );
+    const hasUpdatedPortrait = recovery.reviewedAt
+      ? await this.portraits.hasPublishedVersionAfter(
+          memberId,
+          recovery.reviewedAt,
+        )
+      : false;
     return {
       connectionId: recovery.connectionId,
       status: recovery.resumedAt

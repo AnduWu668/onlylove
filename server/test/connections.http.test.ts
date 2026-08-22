@@ -213,6 +213,61 @@ describe("Contact requests HTTP seam", () => {
     return { ...relationship, recipient, requester };
   }
 
+  async function seedReviewedRecovery() {
+    const pool = new Pool({ connectionString: databaseUrl });
+    const requester = await seedMember(pool, {
+      email: "recovery-requester@onlylove.test",
+      nickname: "林夏",
+      birthDate: "1992-04-12",
+      gender: "female",
+    });
+    const recipient = await seedMember(pool, {
+      email: "recovery-recipient@onlylove.test",
+      nickname: "北川",
+      birthDate: "1990-03-02",
+      gender: "male",
+    });
+    const connectionId = randomUUID();
+    const connectedAt = now;
+    const endedAt = new Date(connectedAt.getTime() + 7 * 86_400_000);
+    const reviewedAt = new Date(endedAt.getTime() + 86_400_000);
+    await pool.query(
+      `INSERT INTO member_connections
+        (id, member_a_id, member_b_id, status, created_at, ended_at)
+       VALUES ($1, $2, $3, 'ended', $4, $5)`,
+      [connectionId, requester.memberId, recipient.memberId, connectedAt, endedAt],
+    );
+    await pool.query(
+      `INSERT INTO connection_recoveries
+        (connection_id, member_id, reviewed_at, created_at)
+       VALUES ($1, $2, $3, $4)`,
+      [connectionId, requester.memberId, reviewedAt, endedAt],
+    );
+    await pool.end();
+    now = new Date(reviewedAt.getTime() + 1);
+    return { connectionId, endedAt, requester, reviewedAt };
+  }
+
+  async function insertPortraitVersion(
+    pool: Pool,
+    memberId: string,
+    version: number,
+    createdAt: Date,
+  ) {
+    const versionId = randomUUID();
+    await pool.query(
+      `INSERT INTO portrait_versions
+        (id, member_id, version, client_request_id, source_draft_schema_version,
+         match_profile, persona_context_schema_version, persona_context,
+         calibration_schema_version, created_at)
+       VALUES ($1, $2, $3, $4, 'portrait-draft-v1', '{}',
+               'persona-context-v1', '复盘后的分身上下文',
+               'portrait-calibration-v1', $5)`,
+      [versionId, memberId, version, randomUUID(), createdAt],
+    );
+    return versionId;
+  }
+
   beforeAll(async () => {
     const migrationApp = await createApp({
       databaseUrl,
@@ -1281,6 +1336,53 @@ describe("Contact requests HTTP seam", () => {
       headers: { cookie: seeded.requester.cookie },
     });
     expect(confirmedConversation.json().canSend).toBe(true);
+
+    const retriedConfirmation = await app.inject({
+      method: "POST",
+      url: `/api/member/connections/${connectionId}/followup`,
+      headers: { cookie: seeded.recipient.cookie },
+      payload: { decision: "confirm" },
+    });
+    expect(retriedConfirmation.statusCode).toBe(200);
+    expect(retriedConfirmation.json().currentConnection.relationshipStatus).toBe(
+      "confirmed",
+    );
+  });
+
+  it("queues the seven-day notification before a direct end decision", async () => {
+    await app.close();
+    app = await createApp({
+      databaseUrl,
+      mailer,
+      otpSecret: "test-only-secret",
+      superAdminEmail: "admin@onlylove.test",
+      now: () => now,
+      connectionMaintenanceIntervalMs: 60_000,
+    });
+    const seeded = await seedCandidateConversation();
+    const request = await app.inject({
+      method: "POST",
+      url: `/api/member/recommendations/${seeded.recommendationId}/contact-request`,
+      headers: { cookie: seeded.requester.cookie },
+    });
+    const accepted = await app.inject({
+      method: "POST",
+      url: `/api/member/contact-requests/${request.json().id}/accept`,
+      headers: { cookie: seeded.recipient.cookie },
+    });
+    now = new Date(now.getTime() + 7 * 86_400_000);
+
+    const ended = await app.inject({
+      method: "POST",
+      url: `/api/member/connections/${accepted.json().connection.id}/followup`,
+      headers: { cookie: seeded.requester.cookie },
+      payload: { decision: "end" },
+    });
+
+    expect(ended.statusCode).toBe(200);
+    expect(
+      mailer.notifications.filter(({ type }) => type === "connection_followup"),
+    ).toHaveLength(2);
   });
 
   it("ends immediately, keeps each review private, and requires a new published version before individual resume", async () => {
@@ -1431,6 +1533,67 @@ describe("Contact requests HTTP seam", () => {
       resumed: 1,
       mutualContinueRate: 0,
     });
+  });
+
+  it("requires the published recovery version to be created after the private review", async () => {
+    const { connectionId, endedAt, requester, reviewedAt } =
+      await seedReviewedRecovery();
+    const pool = new Pool({ connectionString: databaseUrl });
+    const preReviewVersionId = await insertPortraitVersion(
+      pool,
+      requester.memberId,
+      2,
+      new Date(endedAt.getTime() + 1),
+    );
+    await pool.query(
+      `UPDATE portrait_member_states
+          SET submitted_version_id = $2, published_version_id = $2, updated_at = $3
+        WHERE member_id = $1`,
+      [requester.memberId, preReviewVersionId, reviewedAt],
+    );
+    await pool.end();
+
+    const resume = await app.inject({
+      method: "POST",
+      url: `/api/member/connections/${connectionId}/resume`,
+      headers: { cookie: requester.cookie },
+    });
+
+    expect(resume.statusCode).toBe(409);
+    expect(resume.json().code).toBe("PORTRAIT_RECALIBRATION_REQUIRED");
+  });
+
+  it("accepts a post-review published version when a newer draft is pending", async () => {
+    const { connectionId, requester, reviewedAt } = await seedReviewedRecovery();
+    const pool = new Pool({ connectionString: databaseUrl });
+    const publishedVersionId = await insertPortraitVersion(
+      pool,
+      requester.memberId,
+      2,
+      new Date(reviewedAt.getTime() + 1),
+    );
+    const pendingVersionId = await insertPortraitVersion(
+      pool,
+      requester.memberId,
+      3,
+      new Date(reviewedAt.getTime() + 2),
+    );
+    await pool.query(
+      `UPDATE portrait_member_states
+          SET submitted_version_id = $2, published_version_id = $3, updated_at = $4
+        WHERE member_id = $1`,
+      [requester.memberId, pendingVersionId, publishedVersionId, now],
+    );
+    await pool.end();
+
+    const resume = await app.inject({
+      method: "POST",
+      url: `/api/member/connections/${connectionId}/resume`,
+      headers: { cookie: requester.cookie },
+    });
+
+    expect(resume.statusCode).toBe(200);
+    expect(resume.json().recovery.status).toBe("resumed");
   });
 
   it("serializes ending a contact ahead of concurrently queued human messages", async () => {
