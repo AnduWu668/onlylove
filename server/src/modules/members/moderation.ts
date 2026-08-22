@@ -41,4 +41,11 @@ export class ModerationMembers {
       })
       .where(eq(members.id, memberId));
   }
+
+  async clearSuspension(memberId: string, database: DatabaseTransaction) {
+    await database
+      .update(members)
+      .set({ suspendedUntil: null })
+      .where(eq(members.id, memberId));
+  }
 }

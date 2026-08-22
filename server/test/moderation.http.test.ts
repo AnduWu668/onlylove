@@ -24,7 +24,7 @@ describe("Moderation HTTP seam", () => {
   async function seedMember(
     pool: Pool,
     email: string,
-    role: "member" | "admin" = "member",
+    role: "member" | "admin" | "super_admin" = "member",
   ) {
     const memberId = randomUUID();
     const criteriaId = randomUUID();
@@ -80,6 +80,11 @@ describe("Moderation HTTP seam", () => {
     const reported = await seedMember(pool, "reported@onlylove.test");
     const outsider = await seedMember(pool, "outsider@onlylove.test");
     const admin = await seedMember(pool, "moderator@onlylove.test", "admin");
+    const superAdmin = await seedMember(
+      pool,
+      "auditor@onlylove.test",
+      "super_admin",
+    );
 
     const evaluationJobId = randomUUID();
     const evaluationId = randomUUID();
@@ -218,6 +223,7 @@ describe("Moderation HTTP seam", () => {
       reported,
       reporter,
       recommendationId,
+      superAdmin,
       twinAnswerId,
       twinConversationId,
     };
@@ -284,23 +290,6 @@ describe("Moderation HTTP seam", () => {
     });
 
     expect(response.statusCode).toBe(201);
-    const pool = new Pool({ connectionString: databaseUrl });
-    expect(
-      (await pool.query("SELECT count(*)::int AS count FROM distortion_feedback"))
-        .rows[0].count,
-    ).toBe(1);
-    expect(
-      (await pool.query("SELECT count(*)::int AS count FROM moderation_cases"))
-        .rows[0].count,
-    ).toBe(0);
-    expect(
-      (
-        await pool.query("SELECT suspended_until FROM members WHERE id = $1", [
-          seeded.reported.memberId,
-        ])
-      ).rows[0].suspended_until,
-    ).toBeNull();
-    await pool.end();
 
     const ownerState = await app.inject({
       method: "GET",
@@ -315,6 +304,8 @@ describe("Moderation HTTP seam", () => {
           correctionPrompt: expect.stringContaining("理解纠正"),
         },
       ],
+      accessRestricted: false,
+      receivedDecisions: [],
     });
 
     const metrics = await app.inject({
@@ -323,6 +314,12 @@ describe("Moderation HTTP seam", () => {
       headers: { cookie: seeded.admin.cookie },
     });
     expect(metrics.json()).toMatchObject({ distortionFeedbackCount: 1 });
+    const cases = await app.inject({
+      method: "GET",
+      url: "/api/admin/moderation-cases",
+      headers: { cookie: seeded.admin.cookie },
+    });
+    expect(cases.json().cases).toEqual([]);
   });
 
   it.each([
@@ -350,32 +347,29 @@ describe("Moderation HTTP seam", () => {
       });
       expect(duplicate.statusCode).toBe(200);
 
-      const pool = new Pool({ connectionString: databaseUrl });
-      expect(
-        (
-          await pool.query("SELECT status FROM member_connections WHERE id = $1", [
-            seeded.connectionId,
-          ])
-        ).rows[0].status,
-      ).toBe("ended");
-      expect(
-        (
-          await pool.query(
-            "SELECT count(*)::int AS count FROM current_connection_members WHERE connection_id = $1",
-            [seeded.connectionId],
-          )
-        ).rows[0].count,
-      ).toBe(0);
-      expect(
-        (await pool.query("SELECT status FROM contact_requests WHERE id = $1", [
-          seeded.contactRequestId,
-        ])).rows[0].status,
-      ).toBe("cancelled");
-      expect(
-        (await pool.query("SELECT count(*)::int AS count FROM moderation_cases"))
-          .rows[0].count,
-      ).toBe(0);
-      await pool.end();
+      const reporterConnections = await app.inject({
+        method: "GET",
+        url: "/api/member/contact-requests",
+        headers: { cookie: seeded.reporter.cookie },
+      });
+      expect(reporterConnections.json()).toMatchObject({
+        outgoing: [{ id: seeded.contactRequestId, status: "cancelled" }],
+        currentConnection: null,
+      });
+      const reportedConnections = await app.inject({
+        method: "GET",
+        url: "/api/member/contact-requests",
+        headers: { cookie: seeded.reported.cookie },
+      });
+      expect(reportedConnections.json()).toMatchObject({
+        currentConnection: null,
+      });
+      const cases = await app.inject({
+        method: "GET",
+        url: "/api/admin/moderation-cases",
+        headers: { cookie: seeded.admin.cookie },
+      });
+      expect(cases.json().cases).toEqual([]);
 
       const send = await app.inject({
         method: "POST",
@@ -443,6 +437,21 @@ describe("Moderation HTTP seam", () => {
           { id: seeded.humanMessageId, content: "这是一条需要审核的真人消息。" },
         ],
       },
+    });
+    const forbiddenAudit = await app.inject({
+      method: "GET",
+      url: "/api/admin/moderation-access-audit",
+      headers: { cookie: seeded.admin.cookie },
+    });
+    expect(forbiddenAudit.statusCode).toBe(403);
+    const audit = await app.inject({
+      method: "GET",
+      url: "/api/admin/moderation-access-audit",
+      headers: { cookie: seeded.superAdmin.cookie },
+    });
+    expect(audit.json().audits[0]).toMatchObject({
+      caseId,
+      actorMemberId: seeded.admin.memberId,
     });
   });
 
@@ -523,14 +532,21 @@ describe("Moderation HTTP seam", () => {
       case: { type: "appeal", status: "pending", originalCaseId: caseId },
     });
 
-    const pool = new Pool({ connectionString: databaseUrl });
-    const cases = await pool.query(
-      "SELECT id, original_case_id, status FROM moderation_cases ORDER BY created_at",
+    const cases = await app.inject({
+      method: "GET",
+      url: "/api/admin/moderation-cases",
+      headers: { cookie: seeded.admin.cookie },
+    });
+    expect(cases.json().cases).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: caseId, status: "resolved" }),
+        expect.objectContaining({
+          type: "appeal",
+          status: "pending",
+          originalCaseId: caseId,
+        }),
+      ]),
     );
-    expect(cases.rows).toHaveLength(2);
-    expect(cases.rows[0]).toMatchObject({ id: caseId, status: "resolved" });
-    expect(cases.rows[1].original_case_id).toBe(caseId);
-    await pool.end();
   });
 
   it("enforces a dated suspension immediately but keeps recommendation eligibility blocked after it expires", async () => {
@@ -580,6 +596,28 @@ describe("Moderation HTTP seam", () => {
     });
     expect(recommendations.statusCode).toBe(200);
     expect(recommendations.json().eligibility.reasons).toContain(
+      "moderation_restricted",
+    );
+
+    const appeal = await app.inject({
+      method: "POST",
+      url: `/api/member/moderation-cases/${caseId}/appeal`,
+      headers: { cookie: seeded.reported.cookie },
+      payload: { reason: "申请恢复推荐资格。", evidence: "补充案件上下文。" },
+    });
+    const review = await app.inject({
+      method: "POST",
+      url: `/api/admin/moderation-cases/${appeal.json().case.id}/decision`,
+      headers: { cookie: seeded.admin.cookie },
+      payload: { action: "dismissed", reason: "复核后撤销原处置。" },
+    });
+    expect(review.statusCode).toBe(200);
+    const recommendationsAfterReview = await app.inject({
+      method: "GET",
+      url: "/api/member/recommendations",
+      headers: { cookie: seeded.reported.cookie },
+    });
+    expect(recommendationsAfterReview.json().eligibility.reasons).not.toContain(
       "moderation_restricted",
     );
   });

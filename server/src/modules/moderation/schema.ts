@@ -121,6 +121,23 @@ export const moderationDecisions = pgTable(
   },
 );
 
+export const moderationCaseAccessAudits = pgTable(
+  "moderation_case_access_audits",
+  {
+    id: uuid("id").primaryKey(),
+    caseId: uuid("case_id")
+      .notNull()
+      .references(() => moderationCases.id),
+    actorMemberId: uuid("actor_member_id")
+      .notNull()
+      .references(() => members.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    index("moderation_case_access_audits_case_index").on(table.caseId),
+  ],
+);
+
 export const memberRecommendationRestrictions = pgTable(
   "member_recommendation_restrictions",
   {

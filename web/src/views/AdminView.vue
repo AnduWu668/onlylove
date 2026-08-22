@@ -133,10 +133,10 @@ onMounted(async () => {
   adminRole.value = member.role;
   try {
     await Promise.all([
-      loadInvitations(),
       loadModeration(),
       ...(member.role === "super_admin"
         ? [
+            loadInvitations(),
             loadMatchingSettings(),
             loadAgentQuotaSettings(),
             loadRelationshipMetrics(),
@@ -298,13 +298,16 @@ function formatDate(value: string) {
     <header class="admin-header">
       <div>
         <p class="eyebrow">ONLYLOVE ADMIN</p>
-        <h1>邀请管理</h1>
-        <p>为指定邮箱签发七天有效、单次使用的注册准入。</p>
+        <h1>{{ adminRole === 'super_admin' ? '管理后台' : '审核工作台' }}</h1>
+        <p v-if="adminRole === 'super_admin'">管理邀请、平台配置与审核案件。</p>
+        <p v-else>处理举报与复核案件，仅在案件内查看关联证据。</p>
       </div>
       <RouterLink to="/app">成员界面</RouterLink>
     </header>
 
-    <section class="admin-panel">
+    <p v-if="error" class="form-error" role="alert">{{ error }}</p>
+
+    <section v-if="adminRole === 'super_admin'" class="admin-panel">
       <form class="invite-form" @submit.prevent="issue">
         <div>
           <label for="invite-email">成员邮箱</label>
@@ -319,7 +322,6 @@ function formatDate(value: string) {
         </div>
         <button type="submit" :disabled="busy">签发邀请</button>
       </form>
-      <p v-if="error" class="form-error" role="alert">{{ error }}</p>
     </section>
 
     <section v-if="adminRole === 'super_admin'" class="admin-panel matching-settings-panel">
@@ -461,14 +463,18 @@ function formatDate(value: string) {
             :disabled="busy"
             @click="decideModerationCase(selectedModerationCase.case.id, 'dismissed')"
           >
-            驳回
+            {{
+              selectedModerationCase.case.type === 'appeal' ? '撤销原处置' : '驳回'
+            }}
           </button>
           <button
             type="button"
             :disabled="busy"
             @click="decideModerationCase(selectedModerationCase.case.id, 'warning')"
           >
-            警告
+            {{
+              selectedModerationCase.case.type === 'appeal' ? '改为警告' : '警告'
+            }}
           </button>
           <button
             type="button"
@@ -488,7 +494,11 @@ function formatDate(value: string) {
       </article>
     </section>
 
-    <section class="invitation-list" aria-labelledby="invitation-list-title">
+    <section
+      v-if="adminRole === 'super_admin'"
+      class="invitation-list"
+      aria-labelledby="invitation-list-title"
+    >
       <div class="list-heading">
         <h2 id="invitation-list-title">邀请记录</h2>
         <span>{{ invitations.length }} 条</span>

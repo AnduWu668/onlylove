@@ -10,6 +10,7 @@ import {
   distortionFeedback,
   memberBlocks,
   memberRecommendationRestrictions,
+  moderationCaseAccessAudits,
   moderationCases,
   moderationDecisions,
   moderationNotificationOutbox,
@@ -40,6 +41,19 @@ function publicCase(value: typeof moderationCases.$inferSelect) {
     targetId: value.targetId,
     reason: value.reason,
     evidence: value.evidence,
+    status: value.status,
+    originalCaseId: value.originalCaseId,
+    createdAt: value.createdAt.toISOString(),
+    resolvedAt: value.resolvedAt?.toISOString() ?? null,
+  };
+}
+
+function publicCaseSummary(value: typeof moderationCases.$inferSelect) {
+  return {
+    id: value.id,
+    type: value.type,
+    targetKind: value.targetKind,
+    reason: value.reason,
     status: value.status,
     originalCaseId: value.originalCaseId,
     createdAt: value.createdAt.toISOString(),
@@ -418,31 +432,54 @@ export class Moderation {
       .select()
       .from(moderationCases)
       .orderBy(asc(moderationCases.status), asc(moderationCases.createdAt));
-    return { cases: rows.map(publicCase) };
+    return { cases: rows.map(publicCaseSummary) };
   }
 
-  async caseDetail(caseId: string) {
-    const row = (
-      await this.db
+  async caseDetail(caseId: string, actorMemberId: string) {
+    return this.db.transaction(async (transaction) => {
+      const row = (
+        await transaction
         .select()
         .from(moderationCases)
         .where(eq(moderationCases.id, caseId))
         .limit(1)
-    )[0];
-    if (!row) throw new ModerationError("CASE_NOT_FOUND", 404);
-    const decision = (
-      await this.db
+      )[0];
+      if (!row) throw new ModerationError("CASE_NOT_FOUND", 404);
+      await transaction.insert(moderationCaseAccessAudits).values({
+        id: randomUUID(),
+        caseId,
+        actorMemberId,
+        createdAt: this.now(),
+      });
+      const decision = (
+        await transaction
         .select()
         .from(moderationDecisions)
         .where(eq(moderationDecisions.caseId, caseId))
         .limit(1)
-    )[0];
+      )[0];
+      return {
+        case: publicCase(row),
+        decision: decision ? publicDecision(decision) : null,
+        chat: row.conversationId
+          ? await this.conversations.chat(row.conversationId, transaction)
+          : null,
+      };
+    });
+  }
+
+  async accessAudits() {
+    const rows = await this.db
+      .select()
+      .from(moderationCaseAccessAudits)
+      .orderBy(desc(moderationCaseAccessAudits.createdAt));
     return {
-      case: publicCase(row),
-      decision: decision ? publicDecision(decision) : null,
-      chat: row.conversationId
-        ? await this.conversations.chat(row.conversationId)
-        : null,
+      audits: rows.map((row) => ({
+        id: row.id,
+        caseId: row.caseId,
+        actorMemberId: row.actorMemberId,
+        createdAt: row.createdAt.toISOString(),
+      })),
     };
   }
 
@@ -500,13 +537,38 @@ export class Moderation {
           .where(eq(moderationCases.id, caseId))
           .returning()
       )[0]!;
-      await this.members.applyDecision(
-        current.reportedMemberId,
-        input.action,
-        input.suspendedUntil,
-        transaction,
-      );
-      if (input.action === "suspended" || input.action === "banned") {
+      const punitive = input.action === "suspended" || input.action === "banned";
+      if (current.type === "appeal" && !punitive) {
+        if (!current.originalCaseId) {
+          throw new ModerationError("INVALID_APPEAL_CASE", 500);
+        }
+        const restored = await transaction
+          .delete(memberRecommendationRestrictions)
+          .where(
+            and(
+              eq(
+                memberRecommendationRestrictions.memberId,
+                current.reportedMemberId,
+              ),
+              eq(
+                memberRecommendationRestrictions.sourceCaseId,
+                current.originalCaseId,
+              ),
+            ),
+          )
+          .returning({ memberId: memberRecommendationRestrictions.memberId });
+        if (restored.length) {
+          await this.members.clearSuspension(current.reportedMemberId, transaction);
+        }
+      } else {
+        await this.members.applyDecision(
+          current.reportedMemberId,
+          input.action,
+          input.suspendedUntil,
+          transaction,
+        );
+      }
+      if (punitive) {
         await transaction
           .insert(memberRecommendationRestrictions)
           .values({
@@ -514,7 +576,10 @@ export class Moderation {
             sourceCaseId: caseId,
             createdAt: decidedAt,
           })
-          .onConflictDoNothing();
+          .onConflictDoUpdate({
+            target: memberRecommendationRestrictions.memberId,
+            set: { sourceCaseId: caseId, createdAt: decidedAt },
+          });
         await this.connections.endForMember(
           current.reportedMemberId,
           decidedAt,
@@ -535,7 +600,11 @@ export class Moderation {
           recipientMemberId: reported.id,
           email: reported.email,
           disclosure: "reported" as const,
-          message: `审核决定：${actionLabel(decision.action, decision.suspendedUntil)}。理由：${decision.reason}`,
+          message: `审核决定：${
+            current.type === "appeal" && decision.action === "dismissed"
+              ? "撤销原处置"
+              : actionLabel(decision.action, decision.suspendedUntil)
+          }。理由：${decision.reason}`,
           createdAt: decidedAt,
         },
       ];

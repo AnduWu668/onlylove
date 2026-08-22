@@ -4,6 +4,7 @@ import {
   adminForRequest,
   authenticatedMemberForRequest,
   memberForRequest,
+  superAdminForRequest,
 } from "../members/routes.js";
 import type { ModerationAction, ModerationTargetKind } from "./schema.js";
 import { Moderation, ModerationError } from "./service.js";
@@ -237,12 +238,18 @@ export function registerModerationRoutes(
       const actor = await adminForRequest(request, db, now());
       if (!actor) return reply.code(403).send({ code: "FORBIDDEN" });
       try {
-        return await moderation.caseDetail(request.params.id);
+        return await moderation.caseDetail(request.params.id, actor.id);
       } catch (error) {
         return sendError(reply, error);
       }
     },
   );
+
+  app.get("/api/admin/moderation-access-audit", async (request, reply) => {
+    const actor = await superAdminForRequest(request, db, now());
+    if (!actor) return reply.code(403).send({ code: "FORBIDDEN" });
+    return moderation.accessAudits();
+  });
 
   app.post<{
     Params: { id: string };

@@ -176,6 +176,13 @@
       "when": 1787410281511,
       "tag": "0024_rare_famine",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1787411453246,
+      "tag": "0025_messy_shinobi_shaw",
+      "breakpoints": true
     }
   ]
 }

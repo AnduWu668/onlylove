@@ -1740,6 +1740,14 @@ async function withdrawPortrait() {
         <p class="step-label">安全与治理</p>
         <h1>按问题选择合适的动作</h1>
         <p>普通理解误差用质量反馈，个人边界用屏蔽，故意夸大、欺骗或伤害用举报。</p>
+        <button
+          v-if="moderationState && !moderationState.accessRestricted"
+          type="button"
+          class="quiet-action"
+          @click="showTab('profile')"
+        >
+          返回我的
+        </button>
       </section>
       <section class="moderation-guide" aria-label="治理动作说明">
         <article>
@@ -1767,7 +1775,7 @@ async function withdrawPortrait() {
           v-if="moderationState.accessRestricted"
           class="moderation-restriction contact-request-card"
         >
-          <h2>账号当前处于限期停用</h2>
+          <h2>成员权限当前处于限期停用</h2>
           <p v-if="moderationState.suspendedUntil">
             停用至 {{ new Date(moderationState.suspendedUntil).toLocaleString('zh-CN') }}；期限结束不会自动恢复推荐资格。
           </p>
@@ -2259,6 +2267,16 @@ async function withdrawPortrait() {
       >
         设置或重置密码
       </RouterLink>
+    </section>
+
+    <section class="account-security">
+      <div>
+        <strong>安全与治理</strong>
+        <p>查看失真反馈、举报进度、审核决定与复核入口。</p>
+      </div>
+      <button class="security-link" type="button" @click="showTab('moderation')">
+        查看治理记录
+      </button>
     </section>
 
     <p v-if="loading" class="loading-state">正在读取资料…</p>
@@ -3034,34 +3052,31 @@ async function withdrawPortrait() {
       </template>
     </template>
 
-    <nav class="member-nav" aria-label="成员导航">
+    <nav
+      v-if="!moderationState?.accessRestricted"
+      class="member-nav"
+      aria-label="成员导航"
+    >
       <button
-        v-if="!moderationState?.accessRestricted"
         type="button"
         :aria-current="activeTab === 'twin' ? 'page' : undefined"
         @click="showTab('twin')"
       ><i></i>我的分身</button>
       <button
-        v-if="!moderationState?.accessRestricted"
         type="button"
         :aria-current="activeTab === 'recommendations' ? 'page' : undefined"
         @click="showTab('recommendations')"
       ><i></i>候选推荐</button>
       <button
-        v-if="!moderationState?.accessRestricted"
         type="button"
         :aria-current="activeTab === 'connections' ? 'page' : undefined"
         @click="showTab('connections')"
       ><i></i>联系</button>
       <button
         type="button"
-        :aria-current="activeTab === 'moderation' ? 'page' : undefined"
-        @click="showTab('moderation')"
-      ><i></i>安全</button>
-      <button
-        v-if="!moderationState?.accessRestricted"
-        type="button"
-        :aria-current="activeTab === 'profile' ? 'page' : undefined"
+        :aria-current="
+          activeTab === 'profile' || activeTab === 'moderation' ? 'page' : undefined
+        "
         @click="showTab('profile')"
       ><i></i>我的</button>
     </nav>

@@ -87,6 +87,46 @@ describe("OnlyLove UI seam", () => {
     expect(router.currentRoute.value.fullPath).toBe("/app");
   });
 
+  it("sends an ordinary administrator to the case review workspace", async () => {
+    const request = vi.fn(async (url: string) => {
+      if (url === "/api/auth/login" || url === "/api/session") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            member: { email: "moderator@example.com", role: "admin" },
+            requiresPasswordSetup: false,
+          }),
+        };
+      }
+      if (url === "/api/admin/moderation-cases") {
+        return { ok: true, status: 200, json: async () => ({ cases: [] }) };
+      }
+      if (url === "/api/admin/moderation-metrics") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ distortionFeedbackCount: 0, openCaseCount: 0 }),
+        };
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", request);
+    const router = createRouter({ history: createMemoryHistory(), routes });
+    await router.push("/login");
+    await router.isReady();
+    const wrapper = mount(App, { global: { plugins: [router] } });
+
+    await wrapper.get('input[type="email"]').setValue("moderator@example.com");
+    await wrapper.get('input[type="password"]').setValue("secure password");
+    await wrapper.get("form").trigger("submit");
+    await flushPromises();
+
+    expect(router.currentRoute.value.fullPath).toBe("/admin");
+    expect(wrapper.text()).toContain("审核工作台");
+    expect(request).not.toHaveBeenCalledWith("/api/admin/invitations");
+  });
+
   it("uses an email code to require password setup for a new member", async () => {
     let passwordSet = false;
     const request = vi.fn(async (url: string, options?: RequestInit) => {
@@ -240,6 +280,7 @@ describe("OnlyLove UI seam", () => {
     for (const label of ["我的分身", "候选推荐", "联系", "我的"]) {
       expect(wrapper.get("nav").text()).toContain(label);
     }
+    expect(wrapper.findAll("nav button")).toHaveLength(4);
     const passwordAction = wrapper
       .findAll("a")
       .find((link) => link.text().includes("设置或重置密码"))!;
@@ -292,7 +333,7 @@ describe("OnlyLove UI seam", () => {
     await router.push("/admin");
     await flushPromises();
 
-    expect(wrapper.text()).toContain("邀请管理");
+    expect(wrapper.text()).toContain("管理后台");
     expect(wrapper.get('input[type="email"]')).toBeTruthy();
     expect(wrapper.text()).toContain("invited@example.com");
     expect(wrapper.get("button.invitation-action").text()).toContain("撤销");
@@ -2340,8 +2381,8 @@ describe("OnlyLove UI seam", () => {
     await flushPromises();
 
     await wrapper
-      .findAll("nav button")
-      .find((button) => button.text().includes("安全"))!
+      .findAll("button")
+      .find((button) => button.text().includes("查看治理记录"))!
       .trigger("click");
     await flushPromises();
     expect(wrapper.text()).toContain("普通理解误差用质量反馈");
@@ -2449,6 +2490,7 @@ describe("OnlyLove UI seam", () => {
     expect(wrapper.text()).toContain("举报与复核案件");
     expect(wrapper.text()).toContain("累计分身失真反馈 3 条");
     expect(request).not.toHaveBeenCalledWith("/api/admin/matching-settings");
+    expect(request).not.toHaveBeenCalledWith("/api/admin/invitations");
     await wrapper.get(".moderation-case-list button").trigger("click");
     await flushPromises();
     expect(wrapper.text()).toContain("这是一条关联消息");
