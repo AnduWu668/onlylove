@@ -414,6 +414,16 @@ describe("Candidate recommendations HTTP seam", () => {
       candidateCookie,
       candidateEmail,
     } = await createEligiblePair("candidate-twin");
+    const outsiderCookie = await createMember(adminCookie, {
+      email: "candidate-twin-outsider@onlylove.test",
+      nickname: "无关成员",
+      birthDate: "1991-01-01",
+      gender: "female",
+      heightCm: 168,
+      city: "北京",
+      occupation: "编辑",
+      acceptableCities: ["北京"],
+    });
     const recommendation = (await generate(memberCookie)).json().candidates[0];
 
     const refused = await app.inject({
@@ -549,6 +559,8 @@ describe("Candidate recommendations HTTP seam", () => {
       quotaRemaining: 49,
     });
 
+    expect(await worker.runOnce()).toBe(false);
+
     const wrongStream = await app.inject({
       method: "GET",
       url: `/api/member/twin/jobs/${accepted.json().jobId}/events`,
@@ -619,9 +631,51 @@ describe("Candidate recommendations HTTP seam", () => {
     const outsider = await app.inject({
       method: "GET",
       url: `/api/member/candidate-twin-conversations/${conversationId}`,
-      headers: { cookie: adminCookie },
+      headers: { cookie: outsiderCookie },
     });
     expect(outsider.statusCode).toBe(404);
+    const outsiderReply = await app.inject({
+      method: "POST",
+      url: `/api/member/candidate-twin-conversations/${conversationId}/messages`,
+      headers: { cookie: outsiderCookie },
+      payload: { clientMessageId: randomUUID(), content: "无关成员不能回复。" },
+    });
+    expect(outsiderReply.statusCode).toBe(404);
+    const outsiderStream = await app.inject({
+      method: "GET",
+      url: accepted.json().eventsUrl,
+      headers: { cookie: outsiderCookie },
+    });
+    expect(outsiderStream.statusCode).toBe(404);
+
+    const deletedPool = new Pool({ connectionString: databaseUrl });
+    await deletedPool.query(
+      "UPDATE members SET deleted_at = $1 WHERE id = $2",
+      [currentTime, candidateMemberId],
+    );
+    const afterCandidateDeletion = await app.inject({
+      method: "POST",
+      url: `/api/member/candidate-twin-conversations/${conversationId}/messages`,
+      headers: { cookie: memberCookie },
+      payload: { clientMessageId: randomUUID(), content: "注销后不能继续发送。" },
+    });
+    expect(afterCandidateDeletion.statusCode).toBe(409);
+    expect(afterCandidateDeletion.json().code).toBe("CANDIDATE_TWIN_UNAVAILABLE");
+
+    await deletedPool.query(
+      "UPDATE members SET deleted_at = NULL WHERE id = $1",
+      [candidateMemberId],
+    );
+    await addCriteriaVersion(deletedPool, memberEmail);
+    await deletedPool.end();
+    const afterCriteriaChange = await app.inject({
+      method: "POST",
+      url: `/api/member/candidate-twin-conversations/${conversationId}/messages`,
+      headers: { cookie: memberCookie },
+      payload: { clientMessageId: randomUUID(), content: "条件变化后不能继续发送。" },
+    });
+    expect(afterCriteriaChange.statusCode).toBe(409);
+    expect(afterCriteriaChange.json().code).toBe("CANDIDATE_TWIN_UNAVAILABLE");
   });
 
   it("keeps candidate twin quota across sessions and refunds a final failure", async () => {

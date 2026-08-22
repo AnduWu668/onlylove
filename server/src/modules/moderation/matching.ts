@@ -1,14 +1,18 @@
 import { and, eq, inArray, or } from "drizzle-orm";
-import type { Database } from "../../db.js";
+import type { Database, DatabaseTransaction } from "../../db.js";
 import { memberBlocks } from "./schema.js";
 
 export class MatchingModeration {
   constructor(private readonly db: Database) {}
 
-  async blockedCandidates(memberId: string, candidateIds: string[]) {
+  async blockedCandidates(
+    memberId: string,
+    candidateIds: string[],
+    database: Database | DatabaseTransaction = this.db,
+  ) {
     const result = new Set<string>();
     if (!candidateIds.length) return result;
-    const rows = await this.db
+    const rows = await database
       .select({
         blockerMemberId: memberBlocks.blockerMemberId,
         blockedMemberId: memberBlocks.blockedMemberId,
@@ -36,7 +40,13 @@ export class MatchingModeration {
     return result;
   }
 
-  async blocked(memberAId: string, memberBId: string) {
-    return (await this.blockedCandidates(memberAId, [memberBId])).has(memberBId);
+  async blocked(
+    memberAId: string,
+    memberBId: string,
+    database?: DatabaseTransaction,
+  ) {
+    return (
+      await this.blockedCandidates(memberAId, [memberBId], database)
+    ).has(memberBId);
   }
 }

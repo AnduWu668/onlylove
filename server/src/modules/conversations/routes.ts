@@ -12,7 +12,7 @@ import {
   max,
   sql,
 } from "drizzle-orm";
-import type { Database } from "../../db.js";
+import type { Database, DatabaseTransaction } from "../../db.js";
 import { AgentEngine, AgentRunError } from "../agent-engine/engine.js";
 import { type AgentJob, AgentJobs } from "../agent-engine/jobs.js";
 import {
@@ -45,6 +45,7 @@ export interface ConversationsOptions {
     memberId: string,
     recommendationId: string,
     candidateMemberId?: string,
+    transaction?: DatabaseTransaction,
   ) => Promise<string | undefined>;
   now: () => Date;
   portraits: Portraits;
@@ -72,7 +73,7 @@ function publicMessage(message: typeof conversationMessages.$inferSelect) {
   };
 }
 
-async function processOwnAgentJob(
+async function processConversationAgentJob(
   stream: PassThrough,
   job: AgentJob,
   memberContext: Awaited<ReturnType<typeof interviewContextForMember>>,
@@ -585,16 +586,6 @@ async function reserveCandidateTwinMessage(
       .limit(1)
   )[0];
   if (!conversation?.recommendationId) return { notFound: true as const };
-  if (
-    !(await options.candidateForTwinConversation(
-      input.visitorMemberId,
-      conversation.recommendationId,
-      conversation.memberId,
-    ))
-  ) {
-    return { unavailable: true as const };
-  }
-
   const quotaDate = beijingDate(input.submittedAt);
   return options.db.transaction(async (transaction) => {
     await transaction.execute(
@@ -616,7 +607,19 @@ async function reserveCandidateTwinMessage(
         )
         .limit(1)
     )[0];
-    if (!current?.profileVersionId) return { notFound: true as const };
+    if (!current?.profileVersionId || !current.recommendationId) {
+      return { notFound: true as const };
+    }
+    if (
+      !(await options.candidateForTwinConversation(
+        input.visitorMemberId,
+        current.recommendationId,
+        current.memberId,
+        transaction,
+      ))
+    ) {
+      return { unavailable: true as const };
+    }
     if (
       !(await options.portraits.twinContext(
         current.memberId,
@@ -774,6 +777,16 @@ export function registerConversationsRoutes(
         await transaction.execute(
           sql`select pg_advisory_xact_lock(hashtext(${`${member.id}:${request.params.id}`}))`,
         );
+        if (
+          !(await options.candidateForTwinConversation(
+            member.id,
+            request.params.id,
+            candidateMemberId,
+            transaction,
+          ))
+        ) {
+          return undefined;
+        }
         const existing = (
           await transaction
             .select()
@@ -1008,7 +1021,7 @@ export function registerConversationsRoutes(
         connection: "keep-alive",
         "x-accel-buffering": "no",
       });
-      void processOwnAgentJob(
+      void processConversationAgentJob(
         stream,
         job,
         { memberProfile: candidate, matchCriteria: null },
@@ -1137,7 +1150,7 @@ export function registerConversationsRoutes(
         "x-accel-buffering": "no",
       });
       const memberContext = await interviewContextForMember(member, db);
-      void processOwnAgentJob(stream, job, memberContext, options);
+      void processConversationAgentJob(stream, job, memberContext, options);
       return reply.send(stream);
     },
   );
@@ -1296,7 +1309,7 @@ export function registerConversationsRoutes(
         connection: "keep-alive",
         "x-accel-buffering": "no",
       });
-      void processOwnAgentJob(
+      void processConversationAgentJob(
         stream,
         job,
         {

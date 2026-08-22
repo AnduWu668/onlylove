@@ -985,10 +985,12 @@ export class Matching {
     memberId: string,
     recommendationId: string,
     expectedCandidateMemberId?: string,
+    transaction?: DatabaseTransaction,
   ) {
+    const database = transaction ?? this.db;
     const recommendation = (
-      await this.db
-        .select({ candidateMemberId: candidateRecommendations.candidateMemberId })
+      await database
+        .select()
         .from(candidateRecommendations)
         .where(
           and(
@@ -999,13 +1001,23 @@ export class Matching {
         )
         .limit(1)
     )[0];
+    if (!recommendation) return undefined;
+    const members = await this.matchingMembers.byIds(
+      [memberId, recommendation.candidateMemberId],
+      database,
+    );
+    const byId = new Map(members.map((member) => [member.id, member]));
     if (
-      !recommendation ||
       (expectedCandidateMemberId &&
         recommendation.candidateMemberId !== expectedCandidateMemberId) ||
+      byId.get(memberId)?.criteria?.id !==
+        recommendation.memberCriteriaVersionId ||
+      byId.get(recommendation.candidateMemberId)?.criteria?.id !==
+        recommendation.candidateCriteriaVersionId ||
       (await this.matchingModeration.blocked(
         memberId,
         recommendation.candidateMemberId,
+        transaction,
       ))
     ) {
       return undefined;

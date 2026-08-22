@@ -1,5 +1,5 @@
 import { and, desc, eq, inArray, isNull, ne } from "drizzle-orm";
-import type { Database } from "../../db.js";
+import type { Database, DatabaseTransaction } from "../../db.js";
 import { matchCriteriaVersions, members } from "./schema.js";
 
 type MatchingCriteria = Pick<
@@ -58,9 +58,12 @@ const criteriaFields = {
 export class MatchingMembers {
   constructor(private readonly db: Database) {}
 
-  async byIds(memberIds: string[]): Promise<MatchingMember[]> {
+  async byIds(
+    memberIds: string[],
+    database: Database | DatabaseTransaction = this.db,
+  ): Promise<MatchingMember[]> {
     if (!memberIds.length) return [];
-    const rows = await this.db
+    const rows = await database
       .select(memberFields)
       .from(members)
       .where(
@@ -71,7 +74,7 @@ export class MatchingMembers {
         ),
       );
     if (!rows.length) return [];
-    const criteria = await this.db
+    const criteria = await database
       .select(criteriaFields)
       .from(matchCriteriaVersions)
       .where(inArray(matchCriteriaVersions.memberId, rows.map(({ id }) => id)))

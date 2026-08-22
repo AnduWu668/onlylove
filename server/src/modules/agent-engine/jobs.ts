@@ -1,5 +1,16 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, inArray, isNull, lt, lte, or } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  lte,
+  or,
+} from "drizzle-orm";
 import type { Database, DatabaseTransaction } from "../../db.js";
 import { conversationMessages } from "../conversations/schema.js";
 import type { AgentAttemptResult } from "./engine.js";
@@ -138,6 +149,7 @@ export class AgentJobs {
         and(
           eq(agentJobs.profileVersionId, profileVersionId),
           eq(agentJobs.task, "reply_as_twin"),
+          isNotNull(agentJobs.calibrationScenarioId),
         ),
       );
   }
@@ -169,7 +181,7 @@ export class AgentJobs {
   }
 
   async nextCalibrationJob(at: Date) {
-    return this.nextTaskJob("reply_as_twin", at);
+    return this.nextTaskJob("reply_as_twin", at, true);
   }
 
   async nextMatchingJob(at: Date) {
@@ -179,6 +191,7 @@ export class AgentJobs {
   private async nextTaskJob(
     task: "reply_as_twin" | "evaluate_pair",
     at: Date,
+    calibrationOnly = false,
   ) {
     return (
       await this.db
@@ -187,6 +200,9 @@ export class AgentJobs {
         .where(
           and(
             eq(agentJobs.task, task),
+            calibrationOnly
+              ? isNotNull(agentJobs.calibrationScenarioId)
+              : undefined,
             or(
               eq(agentJobs.status, "pending"),
               and(
