@@ -4,11 +4,13 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
+    "e2e:dashboard": "tsx src/e2e-dashboard.ts",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:core": "vitest run test/core-api.contract.test.ts",
     "test:ark": "RUN_ARK_INTEGRATION=1 vitest run test/ark.integration.test.ts",
+    "test:matching:e2e:ark": "tsx test/real-matching-e2e.ts",
     "test:prepare": "tsx src/prepare-test-db.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/migrate.ts"

@@ -12,6 +12,7 @@
   ],
   "scripts": {
     "dev": "npm run db:up && concurrently -k -n WEB,SERVER,WORKER \"npm run dev -w web\" \"npm run dev -w server\" \"npm run dev -w agent\"",
+    "e2e:dashboard": "npm run db:up && npm run e2e:dashboard -w server",
     "db:up": "docker compose up -d --wait",
     "db:ensure": "sh -c 'nc -z 127.0.0.1 ${POSTGRES_PORT:-5433} || npm run db:up'",
     "db:down": "docker compose down",
