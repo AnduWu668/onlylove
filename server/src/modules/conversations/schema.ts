@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   date,
   index,
@@ -22,13 +23,26 @@ export const conversations = pgTable(
     memberId: uuid("member_id")
       .notNull()
       .references(() => members.id),
+    visitorMemberId: uuid("visitor_member_id").references(() => members.id),
+    recommendationId: uuid("recommendation_id"),
+    anonymousCode: varchar("anonymous_code", { length: 16 }),
+    visibilityConsentAt: timestamp("visibility_consent_at", {
+      withTimezone: true,
+    }),
     profileVersionId: uuid("profile_version_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
   (table) => [
-    uniqueIndex("conversations_member_type_unique").on(
+    uniqueIndex("conversations_member_type_unique")
+      .on(table.memberId, table.type)
+      .where(sql`${table.visitorMemberId} is null`),
+    uniqueIndex("conversations_visitor_recommendation_unique")
+      .on(table.visitorMemberId, table.recommendationId)
+      .where(sql`${table.visitorMemberId} is not null`),
+    uniqueIndex("conversations_anonymous_code_unique").on(table.anonymousCode),
+    index("conversations_owner_visitor_index").on(
       table.memberId,
-      table.type,
+      table.visitorMemberId,
     ),
   ],
 );
@@ -63,6 +77,19 @@ export const conversationMessages = pgTable(
 
 export const ownAgentDailyQuotas = pgTable(
   "own_agent_daily_quotas",
+  {
+    memberId: uuid("member_id")
+      .notNull()
+      .references(() => members.id),
+    quotaDate: date("quota_date").notNull(),
+    used: integer("used").notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.memberId, table.quotaDate] })],
+);
+
+export const candidateTwinDailyQuotas = pgTable(
+  "candidate_twin_daily_quotas",
   {
     memberId: uuid("member_id")
       .notNull()

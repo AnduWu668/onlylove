@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, inArray, lte, max } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, lte, max } from "drizzle-orm";
 import type { Database, DatabaseTransaction } from "../../db.js";
 import { conversationMessages, conversations } from "./schema.js";
 
@@ -31,6 +31,7 @@ export class InterviewConversations {
           and(
             eq(conversations.memberId, memberId),
             eq(conversations.type, type),
+            isNull(conversations.visitorMemberId),
           ),
         )
         .limit(1)
@@ -160,6 +161,7 @@ export class InterviewConversations {
         and(
           eq(conversations.memberId, memberId),
           eq(conversations.type, "INTERVIEW"),
+          isNull(conversations.visitorMemberId),
           eq(conversationMessages.role, "agent"),
         ),
       );
@@ -177,6 +179,7 @@ export class InterviewConversations {
         and(
           eq(conversations.memberId, memberId),
           inArray(conversations.type, types),
+          isNull(conversations.visitorMemberId),
         ),
       );
   }

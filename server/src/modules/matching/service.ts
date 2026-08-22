@@ -981,6 +981,38 @@ export class Matching {
     };
   }
 
+  async candidateForTwinConversation(
+    memberId: string,
+    recommendationId: string,
+    expectedCandidateMemberId?: string,
+  ) {
+    const recommendation = (
+      await this.db
+        .select({ candidateMemberId: candidateRecommendations.candidateMemberId })
+        .from(candidateRecommendations)
+        .where(
+          and(
+            eq(candidateRecommendations.id, recommendationId),
+            eq(candidateRecommendations.memberId, memberId),
+            inArray(candidateRecommendations.status, [...CAPACITY_STATUSES]),
+          ),
+        )
+        .limit(1)
+    )[0];
+    if (
+      !recommendation ||
+      (expectedCandidateMemberId &&
+        recommendation.candidateMemberId !== expectedCandidateMemberId) ||
+      (await this.matchingModeration.blocked(
+        memberId,
+        recommendation.candidateMemberId,
+      ))
+    ) {
+      return undefined;
+    }
+    return recommendation.candidateMemberId;
+  }
+
   async skip(memberId: string, id: string) {
     return Boolean(
       (

@@ -1152,11 +1152,99 @@ button:disabled {
   line-height: 1.65;
 }
 
+.candidate-actions,
+.candidate-twin-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.candidate-actions button {
+  width: 100%;
+}
+
 .skip-candidate {
   width: 100%;
   border: 1px solid #bda8a5;
   color: #6f1831;
   background: transparent;
+}
+
+.candidate-twin-consent,
+.owned-candidate-conversations {
+  padding: 20px;
+  border: 1px solid rgb(91 52 57 / 11%);
+  border-radius: 22px;
+  background: #eee5da;
+}
+
+.candidate-twin-consent h2,
+.candidate-twin-heading h2 {
+  margin: 4px 0 10px;
+  color: #4b393c;
+  font-size: 22px;
+}
+
+.candidate-twin-consent > p:not(.step-label),
+.candidate-twin-warning,
+.owned-conversations-heading p {
+  color: #796b69;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.candidate-twin-consent-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 18px 0;
+  color: #59484a;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.candidate-twin-consent-check input {
+  width: auto;
+  margin-top: 3px;
+}
+
+.candidate-twin-heading,
+.owned-conversations-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.candidate-twin-heading .step-label,
+.owned-conversations-heading p {
+  margin: 0;
+}
+
+.candidate-twin-warning {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: #e9dfd4;
+}
+
+.owned-candidate-conversations {
+  margin-bottom: 14px;
+  background: rgb(238 229 218 / 70%);
+}
+
+.owned-conversations-heading button {
+  flex: none;
+  min-height: 38px;
+  padding-inline: 14px;
+}
+
+.owned-conversation {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid rgb(91 52 57 / 10%);
 }
 
 .recommendations-empty {

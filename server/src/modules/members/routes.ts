@@ -262,6 +262,39 @@ export function publicProfile(member: Member) {
   };
 }
 
+export async function publicProfileById(memberId: string, db: Database) {
+  const member = (
+    await db
+      .select({
+        nickname: members.nickname,
+        birthDate: members.birthDate,
+        gender: members.gender,
+        heightCm: members.heightCm,
+        city: members.city,
+        occupation: members.occupation,
+      })
+      .from(members)
+      .where(
+        and(
+          eq(members.id, memberId),
+          eq(members.role, "member"),
+          isNull(members.deletedAt),
+        ),
+      )
+      .limit(1)
+  )[0];
+  return member
+    ? {
+        nickname: member.nickname ?? "",
+        birthDate: member.birthDate ?? "",
+        gender: member.gender ?? "",
+        heightCm: member.heightCm,
+        city: member.city ?? "",
+        occupation: member.occupation ?? "",
+      }
+    : undefined;
+}
+
 function publicMatchCriteria(
   criteria: typeof matchCriteriaVersions.$inferSelect,
 ) {

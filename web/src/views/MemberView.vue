@@ -98,17 +98,33 @@ interface RecommendationState {
   dailyFetchAvailable: boolean;
   generating?: boolean;
   generationFailed?: boolean;
-  candidates: {
-    id: string;
-    avatarText: string;
+  candidates: CandidateRecommendation[];
+  followupQuestions: { id: string; question: string }[];
+}
+
+interface CandidateRecommendation {
+  id: string;
+  avatarText: string;
+  nickname: string;
+  age: number;
+  heightCm: number;
+  city: string;
+  occupation: string;
+  reason: string;
+}
+
+interface CandidateTwinConversationState {
+  conversationId: string;
+  anonymousCode: string;
+  profileVersion: { id: string; version: number };
+  candidate?: {
     nickname: string;
-    age: number;
-    heightCm: number;
+    heightCm: number | null;
     city: string;
     occupation: string;
-    reason: string;
-  }[];
-  followupQuestions: { id: string; question: string }[];
+  };
+  messages: InterviewMessage[];
+  canReply: boolean;
 }
 
 const router = useRouter();
@@ -153,6 +169,21 @@ const recommendations = ref<RecommendationState>();
 const recommendationsLoading = ref(false);
 const recommendationsPending = ref(false);
 const recommendationsError = ref("");
+const candidateTwinCandidate = ref<CandidateRecommendation>();
+const candidateTwinConsent = ref(false);
+const candidateTwinConversation = ref<CandidateTwinConversationState>();
+const candidateTwinOpening = ref(false);
+const candidateTwinSending = ref(false);
+const candidateTwinInput = ref("");
+const candidateTwinError = ref("");
+const candidateTwinQuotaRemaining = ref<number>();
+const ownedCandidateConversations = ref<CandidateTwinConversationState[]>([]);
+const ownedCandidateConversationsLoading = ref(false);
+const ownedCandidateConversationsLoaded = ref(false);
+let candidateTwinEvents: EventSource | undefined;
+let candidateTwinRetry:
+  | { conversationId: string; clientMessageId: string; content: string }
+  | undefined;
 let portraitPoll: number | undefined;
 let recommendationPoll: number | undefined;
 const ownAgentChats = {
@@ -293,6 +324,7 @@ async function loadProfile() {
 onMounted(loadProfile);
 onUnmounted(() => {
   Object.values(ownAgentEvents).forEach((events) => events.close());
+  candidateTwinEvents?.close();
   if (portraitPoll !== undefined) window.clearTimeout(portraitPoll);
   if (recommendationPoll !== undefined) window.clearTimeout(recommendationPoll);
 });
@@ -481,6 +513,155 @@ async function skipCandidate(id: string) {
     recommendationsError.value = "暂时无法跳过这位候选，请稍后重试。";
   } finally {
     recommendationsPending.value = false;
+  }
+}
+
+function requestCandidateTwin(candidate: CandidateRecommendation) {
+  candidateTwinCandidate.value = candidate;
+  candidateTwinConsent.value = false;
+  candidateTwinError.value = "";
+}
+
+function closeCandidateTwin() {
+  candidateTwinEvents?.close();
+  candidateTwinEvents = undefined;
+  candidateTwinCandidate.value = undefined;
+  candidateTwinConversation.value = undefined;
+  candidateTwinConsent.value = false;
+  candidateTwinInput.value = "";
+  candidateTwinSending.value = false;
+  candidateTwinError.value = "";
+  candidateTwinQuotaRemaining.value = undefined;
+}
+
+async function openCandidateTwin() {
+  const candidate = candidateTwinCandidate.value;
+  if (!candidate || !candidateTwinConsent.value || candidateTwinOpening.value) {
+    return;
+  }
+  candidateTwinOpening.value = true;
+  candidateTwinError.value = "";
+  try {
+    const response = await fetch(
+      `/api/member/recommendations/${candidate.id}/twin-conversation`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ consentToOwnerVisibility: true }),
+      },
+    );
+    const data = response.ok
+      ? await jsonOrUndefined<CandidateTwinConversationState>(response)
+      : undefined;
+    if (!data?.canReply) throw new Error();
+    candidateTwinConversation.value = data;
+    candidateTwinCandidate.value = undefined;
+  } catch {
+    candidateTwinError.value = "暂时无法进入这位候选的恋爱分身，请稍后重试。";
+  } finally {
+    candidateTwinOpening.value = false;
+  }
+}
+
+function listenForCandidateTwin(eventsUrl: string, answer: InterviewMessage) {
+  candidateTwinEvents?.close();
+  const events = new EventSource(eventsUrl);
+  candidateTwinEvents = events;
+  events.addEventListener("delta", (event) => {
+    const payload = JSON.parse((event as MessageEvent).data) as { text: string };
+    answer.content += payload.text;
+  });
+  events.addEventListener("done", () => {
+    events.close();
+    candidateTwinEvents = undefined;
+    candidateTwinSending.value = false;
+  });
+  events.addEventListener("error", (event) => {
+    if (!(event instanceof MessageEvent) || !event.data) return;
+    candidateTwinConversation.value!.messages =
+      candidateTwinConversation.value!.messages.filter(
+        (message) => message.id !== answer.id,
+      );
+    candidateTwinError.value = "这次回答生成失败，消息额度已退回，请稍后重试。";
+    events.close();
+    candidateTwinEvents = undefined;
+    candidateTwinSending.value = false;
+  });
+}
+
+async function sendCandidateTwinMessage() {
+  const conversation = candidateTwinConversation.value;
+  const content = candidateTwinInput.value.trim();
+  if (!conversation || !content || candidateTwinSending.value) return;
+  candidateTwinSending.value = true;
+  candidateTwinError.value = "";
+  candidateTwinInput.value = "";
+  const retry = candidateTwinRetry;
+  const clientMessageId =
+    retry?.conversationId === conversation.conversationId &&
+    retry.content === content
+      ? retry.clientMessageId
+      : crypto.randomUUID();
+  candidateTwinRetry = undefined;
+  const message: InterviewMessage = {
+    id: clientMessageId,
+    role: "member",
+    content,
+  };
+  const answer = reactive<InterviewMessage>({
+    id: `pending-${clientMessageId}`,
+    role: "agent",
+    content: "",
+  });
+  conversation.messages.push(message, answer);
+  try {
+    const response = await fetch(
+      `/api/member/candidate-twin-conversations/${conversation.conversationId}/messages`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ clientMessageId, content }),
+      },
+    );
+    const data = await jsonOrUndefined<{
+      eventsUrl?: string;
+      quotaRemaining?: number;
+    }>(response);
+    if (!response.ok || !data?.eventsUrl) throw new Error();
+    candidateTwinQuotaRemaining.value = data.quotaRemaining;
+    listenForCandidateTwin(data.eventsUrl, answer);
+  } catch {
+    candidateTwinRetry = {
+      conversationId: conversation.conversationId,
+      clientMessageId,
+      content,
+    };
+    conversation.messages = conversation.messages.filter(
+      (item) => item.id !== message.id && item.id !== answer.id,
+    );
+    candidateTwinInput.value = content;
+    candidateTwinError.value = "这条消息暂时无法发送，原文已恢复。";
+    candidateTwinSending.value = false;
+  }
+}
+
+async function loadOwnedCandidateConversations() {
+  if (ownedCandidateConversationsLoading.value) return;
+  ownedCandidateConversationsLoading.value = true;
+  try {
+    const response = await fetch("/api/member/candidate-twin-conversations");
+    const data = response.ok
+      ? await jsonOrUndefined<{
+          conversations: CandidateTwinConversationState[];
+        }>(response)
+      : undefined;
+    if (!data) throw new Error();
+    ownedCandidateConversations.value = data.conversations;
+    ownedCandidateConversationsLoaded.value = true;
+  } catch {
+    candidateTwinError.value = "暂时无法读取访客会话记录，请稍后重试。";
+  } finally {
+    ownedCandidateConversationsLoading.value = false;
   }
 }
 
@@ -985,6 +1166,47 @@ async function withdrawPortrait() {
             恋爱分身
           </button>
         </div>
+      </section>
+
+      <section class="owned-candidate-conversations">
+        <div class="owned-conversations-heading">
+          <div>
+            <strong>访客会话记录</strong>
+            <p>这里只显示随机会话编号和只读原文，不会显示访客身份。</p>
+          </div>
+          <button
+            class="load-owned-candidate-conversations"
+            type="button"
+            :disabled="ownedCandidateConversationsLoading"
+            @click="loadOwnedCandidateConversations"
+          >
+            {{ ownedCandidateConversationsLoading ? "读取中…" : "查看记录" }}
+          </button>
+        </div>
+        <article
+          v-for="conversation in ownedCandidateConversations"
+          :key="conversation.conversationId"
+          class="owned-conversation"
+        >
+          <strong>会话 {{ conversation.anonymousCode }}</strong>
+          <div class="message-list">
+            <div
+              v-for="message in conversation.messages"
+              :key="message.id"
+              class="chat-message"
+              :data-role="message.role"
+            >
+              <span>{{ message.role === "member" ? "匿名访客" : "我的恋爱分身 · AI" }}</span>
+              <p>{{ message.content }}</p>
+            </div>
+          </div>
+        </article>
+        <p
+          v-if="ownedCandidateConversationsLoaded && !ownedCandidateConversations.length"
+          class="empty-state"
+        >
+          还没有访客会话记录。
+        </p>
       </section>
 
       <p v-if="interviewLoading || (twinRole === 'twin' && twinLoading)" class="loading-state">
@@ -1503,6 +1725,106 @@ async function withdrawPortrait() {
         <p>双方的明确条件会先由代码过滤，再经过配对评估；没有达到阈值时宁可留空。</p>
       </section>
 
+      <section
+        v-if="candidateTwinConversation"
+        class="candidate-twin-panel interview-panel"
+        aria-live="polite"
+      >
+        <div class="candidate-twin-heading">
+          <div>
+            <p class="step-label">匿名分身会话</p>
+            <h2>{{ candidateTwinConversation.candidate?.nickname }}的恋爱分身 · AI</h2>
+          </div>
+          <button
+            class="close-candidate-twin quiet-action"
+            type="button"
+            @click="closeCandidateTwin"
+          >
+            返回候选
+          </button>
+        </div>
+        <p class="candidate-twin-warning">
+          完整原文会提供给分身主人；请不要输入不愿提供给对方的个人信息。会话固定使用
+          v{{ candidateTwinConversation.profileVersion.version }}，分身不能替主人承诺、安排见面或确认关系。
+        </p>
+        <div v-if="candidateTwinConversation.messages.length" class="message-list">
+          <article
+            v-for="message in candidateTwinConversation.messages"
+            :key="message.id"
+            class="chat-message"
+            :data-role="message.role"
+          >
+            <span>{{ message.role === "member" ? "我" : "恋爱分身 · AI" }}</span>
+            <p>{{ message.content || "正在思考…" }}</p>
+          </article>
+        </div>
+        <div v-else class="interview-empty">
+          <strong>从一个真实场景开始</strong>
+          <p>这里交流的是明确标注为 AI 的恋爱分身，不是候选人本人。</p>
+        </div>
+        <p v-if="candidateTwinError" class="form-error" role="alert">
+          {{ candidateTwinError }}
+        </p>
+        <p v-if="candidateTwinQuotaRemaining !== undefined" class="quota-note">
+          今日还可发送 {{ candidateTwinQuotaRemaining }} 条
+        </p>
+        <form
+          class="interview-composer candidate-twin-composer"
+          @submit.prevent="sendCandidateTwinMessage"
+        >
+          <label class="sr-only" for="candidate-twin-message">候选恋爱分身消息</label>
+          <textarea
+            id="candidate-twin-message"
+            v-model="candidateTwinInput"
+            maxlength="4000"
+            rows="3"
+            placeholder="写下你想了解的场景…"
+            :disabled="candidateTwinSending"
+            required
+          ></textarea>
+          <button
+            type="submit"
+            :disabled="candidateTwinSending || !candidateTwinInput.trim()"
+          >
+            {{ candidateTwinSending ? "回答生成中…" : "发送" }}
+          </button>
+        </form>
+      </section>
+
+      <section v-else-if="candidateTwinCandidate" class="candidate-twin-consent">
+        <p class="step-label">进入前确认</p>
+        <h2>与{{ candidateTwinCandidate.nickname }}的恋爱分身交流</h2>
+        <p>
+          这是 AI 分身，不是本人。你的完整原文会提供给{{ candidateTwinCandidate.nickname }}只读查看，
+          匿名阶段不会向对方显示你的账号或候选卡；开始会话也不会通知对方。
+        </p>
+        <label class="candidate-twin-consent-check" for="candidate-twin-consent">
+          <input
+            id="candidate-twin-consent"
+            v-model="candidateTwinConsent"
+            type="checkbox"
+          />
+          <span>我已知晓完整原文会提供给分身主人，并同意继续</span>
+        </label>
+        <p v-if="candidateTwinError" class="form-error" role="alert">
+          {{ candidateTwinError }}
+        </p>
+        <div class="candidate-twin-actions">
+          <button class="quiet-action" type="button" @click="closeCandidateTwin">
+            返回
+          </button>
+          <button
+            class="open-candidate-twin"
+            type="button"
+            :disabled="!candidateTwinConsent || candidateTwinOpening"
+            @click="openCandidateTwin"
+          >
+            {{ candidateTwinOpening ? "进入中…" : "同意并进入" }}
+          </button>
+        </div>
+      </section>
+
+      <template v-else>
       <p v-if="recommendationsLoading" class="loading-state">正在读取候选…</p>
       <section
         v-else-if="recommendations && !recommendations.eligibility.eligible"
@@ -1549,20 +1871,31 @@ async function withdrawPortrait() {
               </div>
             </div>
             <p class="candidate-reason">{{ candidate.reason }}</p>
-            <button
-              class="skip-candidate"
-              type="button"
-              :disabled="recommendationsPending"
-              @click="skipCandidate(candidate.id)"
-            >
-              跳过这位候选
-            </button>
+            <div class="candidate-actions">
+              <button
+                class="chat-candidate"
+                type="button"
+                :disabled="recommendationsPending"
+                @click="requestCandidateTwin(candidate)"
+              >
+                与 TA 的恋爱分身聊聊
+              </button>
+              <button
+                class="skip-candidate"
+                type="button"
+                :disabled="recommendationsPending"
+                @click="skipCandidate(candidate.id)"
+              >
+                跳过这位候选
+              </button>
+            </div>
           </article>
         </section>
         <section v-else class="recommendations-empty">
           <h2>暂时没有达到条件的候选</h2>
           <p>这里不会展示全市场，也不会用低于最低互惠适合度的人补足数量。</p>
         </section>
+      </template>
       </template>
       <p v-if="recommendationsError" class="form-error" role="alert">{{ recommendationsError }}</p>
     </template>

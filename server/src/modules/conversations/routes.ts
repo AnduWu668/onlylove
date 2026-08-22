@@ -1,7 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { PassThrough } from "node:stream";
 import type { FastifyInstance } from "fastify";
-import { and, asc, desc, eq, lt, max, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  isNotNull,
+  isNull,
+  lt,
+  max,
+  sql,
+} from "drizzle-orm";
 import type { Database } from "../../db.js";
 import { AgentEngine, AgentRunError } from "../agent-engine/engine.js";
 import { type AgentJob, AgentJobs } from "../agent-engine/jobs.js";
@@ -11,9 +21,11 @@ import {
   interviewContextForMember,
   memberForRequest,
   publicProfile,
+  publicProfileById,
   superAdminForRequest,
 } from "../members/routes.js";
 import {
+  candidateTwinDailyQuotas,
   conversationMessages,
   conversations,
   ownAgentDailyQuotas,
@@ -21,6 +33,7 @@ import {
 import type { Portraits } from "../portraits/service.js";
 
 const OWN_AGENT_DAILY_LIMIT = 100;
+const CANDIDATE_TWIN_DAILY_LIMIT = 50;
 const JOB_LEASE_MS = 2 * 60 * 1_000;
 const JOB_HEARTBEAT_MS = 30 * 1_000;
 
@@ -28,6 +41,11 @@ export interface ConversationsOptions {
   db: Database;
   agentEngine: AgentEngine;
   agentJobs: AgentJobs;
+  candidateForTwinConversation: (
+    memberId: string,
+    recommendationId: string,
+    candidateMemberId?: string,
+  ) => Promise<string | undefined>;
   now: () => Date;
   portraits: Portraits;
 }
@@ -119,6 +137,7 @@ async function processOwnAgentJob(
   let switchedModel = false;
   let modelCompleted = false;
   let input: typeof conversationMessages.$inferSelect | undefined;
+  let conversation: typeof conversations.$inferSelect | undefined;
 
   try {
     input = (
@@ -128,6 +147,18 @@ async function processOwnAgentJob(
         .where(eq(conversationMessages.id, inputMessageId))
         .limit(1)
     )[0]!;
+    conversation = (
+      await db
+        .select()
+        .from(conversations)
+        .where(eq(conversations.id, conversationId))
+        .limit(1)
+    )[0];
+    if (!conversation) throw new AgentRunError("TWIN_CONTEXT_NOT_AVAILABLE");
+    const candidateTwin = Boolean(conversation.visitorMemberId);
+    if (candidateTwin && claimed.task !== "reply_as_twin") {
+      throw new AgentRunError("AGENT_JOB_NOT_AVAILABLE");
+    }
     const recentHistory = await db
       .select({
         role: conversationMessages.role,
@@ -143,8 +174,9 @@ async function processOwnAgentJob(
       .orderBy(desc(conversationMessages.sequence))
       .limit(200);
     const history = recentHistory.reverse();
-    const extraction =
-      claimed.task === "continue_interview"
+    const extraction = candidateTwin
+      ? { newlyConfident: false, completed: 0 }
+      : claimed.task === "continue_interview"
         ? await portraits.extractDraft(
             claimed.memberId,
             conversationId,
@@ -200,7 +232,7 @@ async function processOwnAgentJob(
               throw new AgentRunError("TWIN_CONTEXT_NOT_AVAILABLE");
             }
             const context = await portraits.twinContext(
-              claimed.memberId,
+              conversation.memberId,
               claimed.profileVersionId,
             );
             if (!context) {
@@ -282,15 +314,39 @@ async function processOwnAgentJob(
         failedAt,
       );
       if (failed && refundQuota) {
-        await transaction
-          .update(ownAgentDailyQuotas)
-          .set({ used: sql`${ownAgentDailyQuotas.used} - 1`, updatedAt: failedAt })
-          .where(
-            and(
-              eq(ownAgentDailyQuotas.memberId, claimed.memberId),
-              eq(ownAgentDailyQuotas.quotaDate, beijingDate(claimed.createdAt)),
-            ),
-          );
+        if (conversation?.visitorMemberId) {
+          await transaction
+            .update(candidateTwinDailyQuotas)
+            .set({
+              used: sql`${candidateTwinDailyQuotas.used} - 1`,
+              updatedAt: failedAt,
+            })
+            .where(
+              and(
+                eq(candidateTwinDailyQuotas.memberId, claimed.memberId),
+                eq(
+                  candidateTwinDailyQuotas.quotaDate,
+                  beijingDate(claimed.createdAt),
+                ),
+              ),
+            );
+        } else {
+          await transaction
+            .update(ownAgentDailyQuotas)
+            .set({
+              used: sql`${ownAgentDailyQuotas.used} - 1`,
+              updatedAt: failedAt,
+            })
+            .where(
+              and(
+                eq(ownAgentDailyQuotas.memberId, claimed.memberId),
+                eq(
+                  ownAgentDailyQuotas.quotaDate,
+                  beijingDate(claimed.createdAt),
+                ),
+              ),
+            );
+        }
       }
     });
     stream.end(sse("error", { code }));
@@ -347,6 +403,7 @@ async function reserveOwnAgentMessage(
           and(
             eq(conversations.memberId, input.memberId),
             eq(conversations.type, input.type),
+            isNull(conversations.visitorMemberId),
           ),
         )
         .limit(1)
@@ -463,11 +520,503 @@ async function reserveOwnAgentMessage(
   });
 }
 
+async function candidateConversationState(
+  options: ConversationsOptions,
+  conversation: typeof conversations.$inferSelect,
+  viewer: "visitor" | "owner",
+) {
+  if (!conversation.profileVersionId) return undefined;
+  const [pinned, messages, candidate] = await Promise.all([
+    options.portraits.twinContext(
+      conversation.memberId,
+      conversation.profileVersionId,
+    ),
+    options.db
+      .select()
+      .from(conversationMessages)
+      .where(eq(conversationMessages.conversationId, conversation.id))
+      .orderBy(asc(conversationMessages.sequence)),
+    viewer === "visitor"
+      ? publicProfileById(conversation.memberId, options.db)
+      : undefined,
+  ]);
+  if (!pinned || (viewer === "visitor" && !candidate)) return undefined;
+  return {
+    conversationId: conversation.id,
+    anonymousCode: conversation.anonymousCode,
+    createdAt: conversation.createdAt.toISOString(),
+    profileVersion: pinned.profileVersion,
+    messages: messages.map(publicMessage),
+    canReply: viewer === "visitor",
+    ...(candidate
+      ? {
+          candidate: {
+            nickname: candidate.nickname,
+            heightCm: candidate.heightCm,
+            city: candidate.city,
+            occupation: candidate.occupation,
+          },
+        }
+      : {}),
+  };
+}
+
+async function reserveCandidateTwinMessage(
+  options: ConversationsOptions,
+  input: {
+    visitorMemberId: string;
+    conversationId: string;
+    clientMessageId: string;
+    content: string;
+    submittedAt: Date;
+  },
+) {
+  const conversation = (
+    await options.db
+      .select()
+      .from(conversations)
+      .where(
+        and(
+          eq(conversations.id, input.conversationId),
+          eq(conversations.type, "TWIN"),
+          eq(conversations.visitorMemberId, input.visitorMemberId),
+        ),
+      )
+      .limit(1)
+  )[0];
+  if (!conversation?.recommendationId) return { notFound: true as const };
+  if (
+    !(await options.candidateForTwinConversation(
+      input.visitorMemberId,
+      conversation.recommendationId,
+      conversation.memberId,
+    ))
+  ) {
+    return { unavailable: true as const };
+  }
+
+  const quotaDate = beijingDate(input.submittedAt);
+  return options.db.transaction(async (transaction) => {
+    await transaction.execute(
+      sql`select pg_advisory_xact_lock(hashtext(${`candidate-twin:${input.visitorMemberId}:${quotaDate}`}))`,
+    );
+    await transaction.execute(
+      sql`select pg_advisory_xact_lock(hashtext(${input.conversationId}))`,
+    );
+    const current = (
+      await transaction
+        .select()
+        .from(conversations)
+        .where(
+          and(
+            eq(conversations.id, input.conversationId),
+            eq(conversations.type, "TWIN"),
+            eq(conversations.visitorMemberId, input.visitorMemberId),
+          ),
+        )
+        .limit(1)
+    )[0];
+    if (!current?.profileVersionId) return { notFound: true as const };
+    if (
+      !(await options.portraits.twinContext(
+        current.memberId,
+        undefined,
+        transaction,
+      ))
+    ) {
+      return { unavailable: true as const };
+    }
+    const duplicate = (
+      await transaction
+        .select()
+        .from(conversationMessages)
+        .where(
+          and(
+            eq(conversationMessages.conversationId, current.id),
+            eq(conversationMessages.clientMessageId, input.clientMessageId),
+          ),
+        )
+        .limit(1)
+    )[0];
+    const quota = (
+      await transaction
+        .select()
+        .from(candidateTwinDailyQuotas)
+        .where(
+          and(
+            eq(candidateTwinDailyQuotas.memberId, input.visitorMemberId),
+            eq(candidateTwinDailyQuotas.quotaDate, quotaDate),
+          ),
+        )
+        .limit(1)
+    )[0];
+    if (duplicate) {
+      const duplicateJob = await options.agentJobs.findByInput(
+        transaction,
+        duplicate.id,
+      );
+      if (!duplicateJob) throw new Error("AGENT_JOB_NOT_FOUND");
+      return {
+        conversation: current,
+        job: duplicateJob,
+        quotaRemaining: CANDIDATE_TWIN_DAILY_LIMIT - (quota?.used ?? 0),
+      };
+    }
+    if (
+      await options.agentJobs.findActiveForConversation(transaction, current.id)
+    ) {
+      return { inProgress: true as const };
+    }
+    if ((quota?.used ?? 0) >= CANDIDATE_TWIN_DAILY_LIMIT) return undefined;
+    if (quota) {
+      await transaction
+        .update(candidateTwinDailyQuotas)
+        .set({ used: quota.used + 1, updatedAt: input.submittedAt })
+        .where(
+          and(
+            eq(candidateTwinDailyQuotas.memberId, input.visitorMemberId),
+            eq(candidateTwinDailyQuotas.quotaDate, quotaDate),
+          ),
+        );
+    } else {
+      await transaction.insert(candidateTwinDailyQuotas).values({
+        memberId: input.visitorMemberId,
+        quotaDate,
+        used: 1,
+        updatedAt: input.submittedAt,
+      });
+    }
+    const lastSequence = (
+      await transaction
+        .select({ value: max(conversationMessages.sequence) })
+        .from(conversationMessages)
+        .where(eq(conversationMessages.conversationId, current.id))
+    )[0]?.value;
+    const message = (
+      await transaction
+        .insert(conversationMessages)
+        .values({
+          id: randomUUID(),
+          conversationId: current.id,
+          role: "member",
+          content: input.content,
+          sequence: (lastSequence ?? 0) + 1,
+          clientMessageId: input.clientMessageId,
+          createdAt: input.submittedAt,
+        })
+        .returning()
+    )[0]!;
+    const definition = options.agentEngine.twinDefinition;
+    const job = await options.agentJobs.create(transaction, {
+      id: randomUUID(),
+      role: definition.role,
+      task: definition.task,
+      definitionVersion: definition.version,
+      promptVersion: definition.promptVersion,
+      schemaVersion: definition.schemaVersion,
+      memberId: input.visitorMemberId,
+      conversationId: current.id,
+      inputMessageId: message.id,
+      profileVersionId: current.profileVersionId,
+      status: "pending",
+      retryCount: 0,
+      switchedModel: false,
+      quotaRefunded: false,
+      createdAt: input.submittedAt,
+    });
+    return {
+      conversation: current,
+      job,
+      quotaRemaining: CANDIDATE_TWIN_DAILY_LIMIT - (quota?.used ?? 0) - 1,
+    };
+  });
+}
+
 export function registerConversationsRoutes(
   app: FastifyInstance,
   options: ConversationsOptions,
 ) {
   const { agentJobs, db, now } = options;
+
+  app.post<{
+    Params: { id: string };
+    Body: { consentToOwnerVisibility: true };
+  }>(
+    "/api/member/recommendations/:id/twin-conversation",
+    {
+      schema: {
+        params: {
+          type: "object",
+          additionalProperties: false,
+          required: ["id"],
+          properties: { id: { type: "string", format: "uuid" } },
+        },
+        body: {
+          type: "object",
+          additionalProperties: false,
+          required: ["consentToOwnerVisibility"],
+          properties: { consentToOwnerVisibility: { type: "boolean", const: true } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const openedAt = now();
+      const member = await memberForRequest(request, db, openedAt);
+      if (!member) return reply.code(401).send({ code: "UNAUTHENTICATED" });
+      const candidateMemberId = await options.candidateForTwinConversation(
+        member.id,
+        request.params.id,
+      );
+      if (!candidateMemberId) {
+        return reply.code(404).send({ code: "RECOMMENDATION_NOT_FOUND" });
+      }
+      const result = await db.transaction(async (transaction) => {
+        await transaction.execute(
+          sql`select pg_advisory_xact_lock(hashtext(${`${member.id}:${request.params.id}`}))`,
+        );
+        const existing = (
+          await transaction
+            .select()
+            .from(conversations)
+            .where(
+              and(
+                eq(conversations.visitorMemberId, member.id),
+                eq(conversations.recommendationId, request.params.id),
+              ),
+            )
+            .limit(1)
+        )[0];
+        if (existing) return { conversation: existing, created: false };
+        const pinned = await options.portraits.twinContext(
+          candidateMemberId,
+          undefined,
+          transaction,
+        );
+        if (!pinned) return undefined;
+        const conversation = (
+          await transaction
+            .insert(conversations)
+            .values({
+              id: randomUUID(),
+              type: "TWIN",
+              memberId: candidateMemberId,
+              visitorMemberId: member.id,
+              recommendationId: request.params.id,
+              anonymousCode: randomUUID()
+                .replaceAll("-", "")
+                .slice(0, 12)
+                .toUpperCase(),
+              visibilityConsentAt: openedAt,
+              profileVersionId: pinned.profileVersion.id,
+              createdAt: openedAt,
+            })
+            .returning()
+        )[0]!;
+        return { conversation, created: true };
+      });
+      if (!result) {
+        return reply.code(409).send({ code: "TWIN_NOT_PUBLISHED" });
+      }
+      const state = await candidateConversationState(
+        options,
+        result.conversation,
+        "visitor",
+      );
+      if (!state) {
+        return reply.code(409).send({ code: "TWIN_CONTEXT_NOT_AVAILABLE" });
+      }
+      return reply.code(result.created ? 201 : 200).send(state);
+    },
+  );
+
+  app.get(
+    "/api/member/candidate-twin-conversations",
+    async (request, reply) => {
+      const member = await memberForRequest(request, db, now());
+      if (!member) return reply.code(401).send({ code: "UNAUTHENTICATED" });
+      const owned = await db
+        .select()
+        .from(conversations)
+        .where(
+          and(
+            eq(conversations.memberId, member.id),
+            eq(conversations.type, "TWIN"),
+            isNotNull(conversations.visitorMemberId),
+          ),
+        )
+        .orderBy(desc(conversations.createdAt));
+      // ponytail: owner history is small in the MVP; batch messages if this grows.
+      const states = await Promise.all(
+        owned.map((conversation) =>
+          candidateConversationState(options, conversation, "owner"),
+        ),
+      );
+      return { conversations: states.filter((state) => state !== undefined) };
+    },
+  );
+
+  app.get<{ Params: { conversationId: string } }>(
+    "/api/member/candidate-twin-conversations/:conversationId",
+    {
+      schema: {
+        params: {
+          type: "object",
+          additionalProperties: false,
+          required: ["conversationId"],
+          properties: { conversationId: { type: "string", format: "uuid" } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const member = await memberForRequest(request, db, now());
+      if (!member) return reply.code(401).send({ code: "UNAUTHENTICATED" });
+      const conversation = (
+        await db
+          .select()
+          .from(conversations)
+          .where(
+            and(
+              eq(conversations.id, request.params.conversationId),
+              eq(conversations.type, "TWIN"),
+              isNotNull(conversations.visitorMemberId),
+            ),
+          )
+          .limit(1)
+      )[0];
+      const viewer =
+        conversation?.visitorMemberId === member.id
+          ? "visitor"
+          : conversation?.memberId === member.id
+            ? "owner"
+            : undefined;
+      if (!conversation || !viewer) {
+        return reply.code(404).send({ code: "CONVERSATION_NOT_FOUND" });
+      }
+      const state = await candidateConversationState(
+        options,
+        conversation,
+        viewer,
+      );
+      if (!state) {
+        return reply.code(404).send({ code: "CONVERSATION_NOT_FOUND" });
+      }
+      return state;
+    },
+  );
+
+  app.post<{
+    Params: { conversationId: string };
+    Body: { clientMessageId: string; content: string };
+  }>(
+    "/api/member/candidate-twin-conversations/:conversationId/messages",
+    {
+      schema: {
+        params: {
+          type: "object",
+          additionalProperties: false,
+          required: ["conversationId"],
+          properties: { conversationId: { type: "string", format: "uuid" } },
+        },
+        body: {
+          type: "object",
+          additionalProperties: false,
+          required: ["clientMessageId", "content"],
+          properties: {
+            clientMessageId: { type: "string", format: "uuid" },
+            content: { type: "string", minLength: 1, maxLength: 4_000 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const submittedAt = now();
+      const member = await memberForRequest(request, db, submittedAt);
+      if (!member) return reply.code(401).send({ code: "UNAUTHENTICATED" });
+      const content = request.body.content.trim();
+      if (!content) return reply.code(400).send({ code: "EMPTY_MESSAGE" });
+      const result = await reserveCandidateTwinMessage(options, {
+        visitorMemberId: member.id,
+        conversationId: request.params.conversationId,
+        clientMessageId: request.body.clientMessageId,
+        content,
+        submittedAt,
+      });
+      if (!result) {
+        return reply.code(429).send({ code: "CANDIDATE_TWIN_QUOTA_USED" });
+      }
+      if ("notFound" in result) {
+        return reply.code(404).send({ code: "CONVERSATION_NOT_FOUND" });
+      }
+      if ("unavailable" in result) {
+        return reply.code(409).send({ code: "CANDIDATE_TWIN_UNAVAILABLE" });
+      }
+      if ("inProgress" in result) {
+        return reply.code(409).send({ code: "CANDIDATE_TWIN_IN_PROGRESS" });
+      }
+      return reply.code(202).send({
+        conversationId: result.conversation.id,
+        jobId: result.job.id,
+        eventsUrl: `/api/member/candidate-twin-jobs/${result.job.id}/events`,
+        quotaRemaining: result.quotaRemaining,
+      });
+    },
+  );
+
+  app.get<{ Params: { jobId: string } }>(
+    "/api/member/candidate-twin-jobs/:jobId/events",
+    {
+      schema: {
+        params: {
+          type: "object",
+          additionalProperties: false,
+          required: ["jobId"],
+          properties: { jobId: { type: "string", format: "uuid" } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const member = await memberForRequest(request, db, now());
+      if (!member) return reply.code(401).send({ code: "UNAUTHENTICATED" });
+      const job = await agentJobs.findForMember(request.params.jobId, member.id);
+      if (!job || job.task !== "reply_as_twin" || !job.conversationId) {
+        return reply.code(404).send({ code: "AGENT_JOB_NOT_FOUND" });
+      }
+      const conversation = (
+        await db
+          .select()
+          .from(conversations)
+          .where(
+            and(
+              eq(conversations.id, job.conversationId),
+              eq(conversations.type, "TWIN"),
+              eq(conversations.visitorMemberId, member.id),
+            ),
+          )
+          .limit(1)
+      )[0];
+      if (!conversation) {
+        return reply.code(404).send({ code: "AGENT_JOB_NOT_FOUND" });
+      }
+      const candidate = await publicProfileById(conversation.memberId, db);
+      if (!candidate) {
+        return reply.code(404).send({ code: "AGENT_JOB_NOT_FOUND" });
+      }
+      const stream = new PassThrough();
+      reply.headers({
+        "content-type": "text/event-stream; charset=utf-8",
+        "cache-control": "no-cache, no-transform",
+        connection: "keep-alive",
+        "x-accel-buffering": "no",
+      });
+      void processOwnAgentJob(
+        stream,
+        job,
+        { memberProfile: candidate, matchCriteria: null },
+        options,
+      );
+      return reply.send(stream);
+    },
+  );
 
   app.get("/api/member/interview", async (request, reply) => {
     const member = await memberForRequest(request, db, now());
@@ -481,6 +1030,7 @@ export function registerConversationsRoutes(
           and(
             eq(conversations.memberId, member.id),
             eq(conversations.type, "INTERVIEW"),
+            isNull(conversations.visitorMemberId),
           ),
         )
         .limit(1)
@@ -607,6 +1157,7 @@ export function registerConversationsRoutes(
           and(
             eq(conversations.memberId, member.id),
             eq(conversations.type, "TWIN"),
+            isNull(conversations.visitorMemberId),
           ),
         )
         .limit(1)
@@ -723,12 +1274,18 @@ export function registerConversationsRoutes(
       }
       const conversation = (
         await db
-          .select({ type: conversations.type })
+          .select({
+            type: conversations.type,
+            visitorMemberId: conversations.visitorMemberId,
+          })
           .from(conversations)
           .where(eq(conversations.id, job.conversationId))
           .limit(1)
       )[0];
-      if (conversation?.type !== "TWIN") {
+      if (
+        conversation?.type !== "TWIN" ||
+        conversation.visitorMemberId !== null
+      ) {
         return reply.code(404).send({ code: "AGENT_JOB_NOT_FOUND" });
       }
 

@@ -1299,6 +1299,215 @@ describe("OnlyLove UI seam", () => {
     expect(wrapper.text()).toContain("暂时没有达到条件的候选");
   });
 
+  it("requires visibility consent, streams candidate twin chat and shows owner-only records", async () => {
+    class FakeEventSource {
+      static current: FakeEventSource;
+      readonly listeners = new Map<string, (event: MessageEvent) => void>();
+
+      constructor(readonly url: string) {
+        FakeEventSource.current = this;
+      }
+
+      addEventListener(type: string, listener: (event: MessageEvent) => void) {
+        this.listeners.set(type, listener);
+      }
+
+      close() {}
+
+      emit(type: string, data: object) {
+        this.listeners.get(type)?.({ data: JSON.stringify(data) } as MessageEvent);
+      }
+    }
+    vi.stubGlobal("EventSource", FakeEventSource);
+    vi.stubGlobal("crypto", {
+      randomUUID: () => "f6fd2b9f-71c9-4a69-99fe-b51b00438d6a",
+    });
+    const candidate = {
+      id: "4ac4601b-4694-4da7-bd75-07f4330c94d5",
+      avatarText: "北",
+      nickname: "北川",
+      age: 36,
+      heightCm: 178,
+      city: "上海",
+      occupation: "工程师",
+      reason: "你们可以进一步了解。",
+    };
+    const request = vi.fn(async (url: string, options?: RequestInit) => {
+      if (url === "/api/session") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            member: { email: "member@example.com", role: "member" },
+          }),
+        };
+      }
+      if (url === "/api/member/profile") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ profile: {}, matchCriteria: null }),
+        };
+      }
+      if (url === "/api/member/recommendations") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            eligibility: { eligible: true, reasons: [] },
+            capacity: 5,
+            remainingCapacity: 4,
+            dailyFetchAvailable: false,
+            candidates: [candidate],
+            followupQuestions: [],
+          }),
+        };
+      }
+      if (
+        url === `/api/member/recommendations/${candidate.id}/twin-conversation` &&
+        options?.method === "POST"
+      ) {
+        return {
+          ok: true,
+          status: 201,
+          json: async () => ({
+            conversationId: "ab93bbda-45a4-4479-bdc7-b21f629953d8",
+            anonymousCode: "A1B2C3D4E5F6",
+            profileVersion: { id: "version-1", version: 1 },
+            candidate: {
+              nickname: "北川",
+              heightCm: 178,
+              city: "上海",
+              occupation: "工程师",
+            },
+            messages: [],
+            canReply: true,
+          }),
+        };
+      }
+      if (
+        url ===
+          "/api/member/candidate-twin-conversations/ab93bbda-45a4-4479-bdc7-b21f629953d8/messages" &&
+        options?.method === "POST"
+      ) {
+        return {
+          ok: true,
+          status: 202,
+          json: async () => ({
+            eventsUrl: "/api/member/candidate-twin-jobs/job-1/events",
+            quotaRemaining: 49,
+          }),
+        };
+      }
+      if (url === "/api/member/candidate-twin-conversations") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            conversations: [
+              {
+                conversationId: "owner-conversation-1",
+                anonymousCode: "Z9Y8X7W6V5U4",
+                profileVersion: { id: "version-1", version: 1 },
+                canReply: false,
+                messages: [
+                  { id: "message-1", role: "member", content: "匿名访客原文" },
+                  { id: "message-2", role: "agent", content: "我的分身回答" },
+                ],
+              },
+            ],
+          }),
+        };
+      }
+      if (url === "/api/member/interview") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            messages: [],
+            fixedInterview: {
+              answered: 0,
+              total: 10,
+              completed: false,
+              question: null,
+            },
+            progress: { completed: 0, total: 8 },
+          }),
+        };
+      }
+      if (url === "/api/member/portrait") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            status: "draft",
+            submittedVersion: null,
+            publishedVersion: null,
+          }),
+        };
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", request);
+    const router = createRouter({ history: createMemoryHistory(), routes });
+    const wrapper = mount(App, { global: { plugins: [router] } });
+    await router.push("/app");
+    await router.isReady();
+    await flushPromises();
+
+    await wrapper
+      .findAll("nav button")
+      .find((button) => button.text().includes("候选推荐"))!
+      .trigger("click");
+    await flushPromises();
+    await wrapper.get("button.chat-candidate").trigger("click");
+    expect(wrapper.text()).toContain("完整原文会提供给北川");
+    expect(wrapper.get("button.open-candidate-twin").attributes("disabled")).toBeDefined();
+    expect(request).not.toHaveBeenCalledWith(
+      expect.stringContaining("twin-conversation"),
+      expect.anything(),
+    );
+
+    await wrapper.get("#candidate-twin-consent").setValue(true);
+    await wrapper.get("button.open-candidate-twin").trigger("click");
+    await flushPromises();
+    expect(request).toHaveBeenCalledWith(
+      `/api/member/recommendations/${candidate.id}/twin-conversation`,
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ consentToOwnerVisibility: true }),
+      }),
+    );
+    expect(wrapper.text()).toContain("北川的恋爱分身 · AI");
+
+    await wrapper.get(".candidate-twin-composer textarea").setValue("你怎么看冲突修复？");
+    await wrapper.get("form.candidate-twin-composer").trigger("submit");
+    await flushPromises();
+    expect(FakeEventSource.current.url).toBe(
+      "/api/member/candidate-twin-jobs/job-1/events",
+    );
+    FakeEventSource.current.emit("delta", { text: "我是 AI，通常会先暂停再沟通。" });
+    FakeEventSource.current.emit("done", {});
+    await flushPromises();
+    expect(wrapper.text()).toContain("我是 AI，通常会先暂停再沟通。");
+    expect(wrapper.text()).toContain("今日还可发送 49 条");
+
+    await wrapper.get("button.close-candidate-twin").trigger("click");
+    await wrapper
+      .findAll("nav button")
+      .find((button) => button.text().includes("我的分身"))!
+      .trigger("click");
+    await flushPromises();
+    await wrapper.get("button.load-owned-candidate-conversations").trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("会话 Z9Y8X7W6V5U4");
+    expect(wrapper.text()).toContain("匿名访客原文");
+    expect(wrapper.get(".owned-candidate-conversations").text()).not.toContain(
+      "member@example.com",
+    );
+    expect(wrapper.find(".owned-candidate-conversations textarea").exists()).toBe(false);
+  });
+
   it("lets a super administrator update matching capacity and threshold", async () => {
     const request = vi.fn(async (url: string, options?: RequestInit) => {
       if (url === "/api/session") {

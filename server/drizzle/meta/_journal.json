@@ -127,6 +127,13 @@
       "when": 1787386202527,
       "tag": "0017_sanitize_portrait_message_ids",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1787391355910,
+      "tag": "0018_furry_black_cat",
+      "breakpoints": true
     }
   ]
 }

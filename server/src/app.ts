@@ -77,6 +77,12 @@ export async function createApp(options: AppOptions) {
   registerConversationsRoutes(app, {
     agentEngine,
     agentJobs,
+    candidateForTwinConversation: (memberId, recommendationId, candidateId) =>
+      matching.candidateForTwinConversation(
+        memberId,
+        recommendationId,
+        candidateId,
+      ),
     db,
     now,
     portraits,
