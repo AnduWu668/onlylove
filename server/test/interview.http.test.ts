@@ -260,6 +260,7 @@ describe("first portrait interview HTTP and Agent Engine seam", () => {
     const { memberCookie: cookie } =
       await inviteAndSignInMember("progress-interview@onlylove.test");
     await completeFixedInterview(cookie);
+    let expectedEvidenceId = "";
 
     const submit = async (
       clientMessageId: string,
@@ -279,12 +280,16 @@ describe("first portrait interview HTTP and Agent Engine seam", () => {
           [clientMessageId],
         );
         await pool.end();
+        expectedEvidenceId = evidence.rows[0]!.id;
         const draft = emptyPortraitDraft();
         draft.values = {
           ...draft.values,
-          selfTendency: "重要决定前会先理解彼此的理由。",
+          selfTendency: `重要决定前会先理解彼此的理由（${expectedEvidenceId}、${expectedEvidenceId}）。`,
+          partnerExpectation: `希望对方愿意解释理由 ${expectedEvidenceId}`,
+          hardBoundary: `不能隐瞒重要决定（${expectedEvidenceId}）`,
           confidence: "medium",
-          evidenceMessageIds: [evidence.rows[0]!.id],
+          evidenceMessageIds: [expectedEvidenceId],
+          contradictions: [`是否需要马上决定（${expectedEvidenceId}）`],
         };
         agentModel.extractReply = JSON.stringify(draft);
       }
@@ -302,6 +307,19 @@ describe("first portrait interview HTTP and Agent Engine seam", () => {
     expect(first.body).toContain("event: progress");
     expect(first.body).toContain("我对你的理解又清楚了一些");
 
+    const pool = new Pool({ connectionString: databaseUrl });
+    const stored = await pool.query<{
+      content: ReturnType<typeof emptyPortraitDraft>;
+    }>("SELECT content FROM portrait_drafts LIMIT 1");
+    await pool.end();
+    expect(stored.rows[0]!.content.values).toMatchObject({
+      selfTendency: "重要决定前会先理解彼此的理由。",
+      partnerExpectation: "希望对方愿意解释理由",
+      hardBoundary: "不能隐瞒重要决定",
+      evidenceMessageIds: [expectedEvidenceId],
+      contradictions: ["是否需要马上决定"],
+    });
+
     const state = await app.inject({
       method: "GET",
       url: "/api/member/portrait/interview",
@@ -318,6 +336,42 @@ describe("first portrait interview HTTP and Agent Engine seam", () => {
     );
     expect(unchanged.body).not.toContain("event: progress");
     expect(unchanged.body).not.toContain("我对你的理解又清楚了一些");
+
+    const dirtyPool = new Pool({ connectionString: databaseUrl });
+    await dirtyPool.query(
+      `UPDATE portrait_drafts
+          SET content = jsonb_set(
+            jsonb_set(content, '{values,selfTendency}', to_jsonb($1::text)),
+            '{values,hardBoundary}',
+            to_jsonb($2::text)
+          )`,
+      [
+        `重要决定前会先理解彼此的理由（${expectedEvidenceId}）`,
+        `不能隐瞒重要决定（${expectedEvidenceId}）`,
+      ],
+    );
+    await dirtyPool.end();
+    const submitted = await app.inject({
+      method: "POST",
+      url: "/api/member/portrait/versions",
+      headers: { cookie },
+      payload: { clientRequestId: "3739aff6-c544-42d7-ad6c-ccbdd949662c" },
+    });
+    expect(submitted.statusCode).toBe(202);
+    const versionPool = new Pool({ connectionString: databaseUrl });
+    const version = await versionPool.query<{
+      match_profile: {
+        dimensions: ReturnType<typeof emptyPortraitDraft>;
+      };
+      persona_context: string;
+    }>("SELECT match_profile, persona_context FROM portrait_versions LIMIT 1");
+    await versionPool.end();
+    expect(version.rows[0]!.match_profile.dimensions.values).toMatchObject({
+      selfTendency: "重要决定前会先理解彼此的理由",
+      hardBoundary: "不能隐瞒重要决定",
+      evidenceMessageIds: [expectedEvidenceId],
+    });
+    expect(version.rows[0]!.persona_context).not.toContain(expectedEvidenceId);
   });
 
   it("streams and persists the first interview answer with an auditable run", async () => {
