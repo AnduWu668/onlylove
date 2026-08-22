@@ -10,7 +10,7 @@ import {
   or,
   sql,
 } from "drizzle-orm";
-import type { Database } from "../../db.js";
+import type { Database, DatabaseTransaction } from "../../db.js";
 import {
   AgentRunError,
   type AgentEngine,
@@ -175,6 +175,15 @@ function pairInput(
     },
     rubric: { version: MATCHING_RUBRIC_VERSION, content: MATCHING_RUBRIC },
   };
+}
+
+function publicRecommendationReason(
+  member: MatchContext,
+  candidate: MatchContext,
+) {
+  return member.member.city === candidate.member.city
+    ? `你们目前都在${candidate.member.city}生活，双方的明确条件已通过核对，可以进一步了解。`
+    : `对方目前在${candidate.member.city}生活，双方的明确条件已通过核对，可以进一步了解。`;
 }
 
 const DIMENSION_QUESTIONS: Record<PortraitDimension, string> = {
@@ -373,9 +382,13 @@ export class Matching {
     return deterministicPairStatus(input) === "pass" ? input : undefined;
   }
 
-  private async cachedEvaluation(memberA: MatchContext, memberB: MatchContext) {
+  private async cachedEvaluation(
+    memberA: MatchContext,
+    memberB: MatchContext,
+    database: Database | DatabaseTransaction = this.db,
+  ) {
     return (
-      await this.db
+      await database
         .select()
         .from(pairEvaluations)
         .where(
@@ -449,30 +462,54 @@ export class Matching {
     options: { runDate?: string; recommendationId?: string },
   ) {
     const input = pairInput(memberA, memberB, this.now());
-    const cached = await this.cachedEvaluation(memberA, memberB);
     const at = this.now();
-    const base = {
-      id: randomUUID(),
-      memberId: memberA.member.id,
-      candidateMemberId: memberB.member.id,
-      runDate: options.runDate,
-      recommendationId: options.recommendationId,
-      pairEvaluationId: cached?.id,
-      memberPortraitVersionId: memberA.portrait.id,
-      candidatePortraitVersionId: memberB.portrait.id,
-      memberCriteriaVersionId: memberA.criteria.id,
-      candidateCriteriaVersionId: memberB.criteria.id,
-      input,
-      status: cached ? ("completed" as const) : ("pending" as const),
-      createdAt: at,
-      updatedAt: at,
-    };
-    if (cached) {
-      return (
-        await this.db.insert(recommendationPairJobs).values(base).returning()
-      )[0]!;
-    }
     return this.db.transaction(async (transaction) => {
+      if (options.recommendationId) {
+        await transaction.execute(
+          sql`select pg_advisory_xact_lock(hashtext(${options.recommendationId}))`,
+        );
+        const existing = (
+          await transaction
+            .select()
+            .from(recommendationPairJobs)
+            .where(
+              and(
+                eq(
+                  recommendationPairJobs.recommendationId,
+                  options.recommendationId,
+                ),
+                eq(recommendationPairJobs.status, "pending"),
+              ),
+            )
+            .limit(1)
+        )[0];
+        if (existing) return existing;
+      }
+      const cached = await this.cachedEvaluation(memberA, memberB, transaction);
+      const base = {
+        id: randomUUID(),
+        memberId: memberA.member.id,
+        candidateMemberId: memberB.member.id,
+        runDate: options.runDate,
+        recommendationId: options.recommendationId,
+        pairEvaluationId: cached?.id,
+        memberPortraitVersionId: memberA.portrait.id,
+        candidatePortraitVersionId: memberB.portrait.id,
+        memberCriteriaVersionId: memberA.criteria.id,
+        candidateCriteriaVersionId: memberB.criteria.id,
+        input,
+        status: cached ? ("completed" as const) : ("pending" as const),
+        createdAt: at,
+        updatedAt: at,
+      };
+      if (cached) {
+        return (
+          await transaction
+            .insert(recommendationPairJobs)
+            .values(base)
+            .returning()
+        )[0]!;
+      }
       const job = await this.agentJobs.enqueueMatching({
         transaction,
         memberId: memberA.member.id,
@@ -671,6 +708,7 @@ export class Matching {
     const eligible: {
       request: typeof recommendationPairJobs.$inferSelect;
       evaluation: typeof pairEvaluations.$inferSelect;
+      reason: string;
     }[] = [];
     const qualificationById = await this.qualifications(
       requests.flatMap((request) => [
@@ -713,7 +751,11 @@ export class Matching {
       ) {
         continue;
       }
-      eligible.push({ request, evaluation });
+      eligible.push({
+        request,
+        evaluation,
+        reason: publicRecommendationReason(member.context!, candidate.context!),
+      });
     }
     eligible.sort(
       (left, right) =>
@@ -721,7 +763,10 @@ export class Matching {
         left.evaluation.result.reciprocalScore,
     );
     const at = this.now();
-    for (const { request, evaluation } of eligible.slice(0, available)) {
+    for (const { request, evaluation, reason } of eligible.slice(
+      0,
+      available,
+    )) {
       await this.db
         .insert(candidateRecommendations)
         .values({
@@ -733,7 +778,7 @@ export class Matching {
           candidatePortraitVersionId: request.candidatePortraitVersionId,
           memberCriteriaVersionId: request.memberCriteriaVersionId,
           candidateCriteriaVersionId: request.candidateCriteriaVersionId,
-          reason: evaluation.result.safeRecommendationReason,
+          reason,
           status: "pending",
           createdAt: at,
           updatedAt: at,
@@ -976,7 +1021,7 @@ export class Matching {
         candidatePortraitVersionId: request.candidatePortraitVersionId,
         memberCriteriaVersionId: request.memberCriteriaVersionId,
         candidateCriteriaVersionId: request.candidateCriteriaVersionId,
-        reason: evaluation.result.safeRecommendationReason,
+        reason: publicRecommendationReason(member.context!, candidate.context!),
         status: "pending",
         updatedAt: this.now(),
       })
@@ -1061,19 +1106,6 @@ export class Matching {
         }
         continue;
       }
-      const active = (
-        await this.db
-          .select({ id: recommendationPairJobs.id })
-          .from(recommendationPairJobs)
-          .where(
-            and(
-              eq(recommendationPairJobs.recommendationId, recommendation.id),
-              eq(recommendationPairJobs.status, "pending"),
-            ),
-          )
-          .limit(1)
-      )[0];
-      if (active) continue;
       await this.db
         .update(candidateRecommendations)
         .set({ status: "rechecking", updatedAt: this.now() })
@@ -1140,7 +1172,7 @@ export class Matching {
     try {
       if (!request) throw new Error("MATCHING_INPUT_MISSING");
       let completedRequest = request;
-      if (request.status !== "completed" || !request.pairEvaluationId) {
+      if (!request.pairEvaluationId) {
         const run = await agentEngine.evaluatePair(request.input, (attempts) =>
           this.agentJobs.recordAttempts(
             claimed,
@@ -1180,6 +1212,14 @@ export class Matching {
               .returning()
           )[0]!;
         });
+      } else if (request.status !== "completed") {
+        completedRequest = (
+          await this.db
+            .update(recommendationPairJobs)
+            .set({ status: "completed", updatedAt: this.now() })
+            .where(eq(recommendationPairJobs.id, request.id))
+            .returning()
+        )[0]!;
       }
       if (completedRequest.recommendationId) {
         await this.applyRecheck(completedRequest);

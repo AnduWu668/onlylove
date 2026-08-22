@@ -935,7 +935,14 @@ export function registerMembersRoutes(
             .returning()
         )[0]!;
       });
-      await recheckRecommendations?.(member.id);
+      try {
+        await recheckRecommendations?.(member.id);
+      } catch (error) {
+        request.log.error(
+          { err: error, memberId: member.id },
+          "Recommendation recheck after profile save failed",
+        );
+      }
       return {
         profile: body.profile,
         matchCriteria: publicMatchCriteria(criteria),

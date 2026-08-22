@@ -312,36 +312,13 @@ function normalizedBoundaryStatus(
 }
 
 function safeRecommendationReason(
-  input: PairEvaluationInput,
   eligibility: PairEvaluationResult["eligibility"],
-  proposed: string,
 ) {
   if (eligibility === "excluded") {
     return "当前条件不支持形成候选推荐。";
   }
   if (eligibility === "needs_more_information") {
     return "目前还需要补充信息，暂不形成候选推荐。";
-  }
-  const hiddenSourceTerms = [input.memberA, input.memberB].flatMap((member) => [
-    member.structuredCriteria.occupationRequirement,
-    ...Object.values(member.matchProfile.dimensions).flatMap((dimension) => [
-      dimension.hardBoundary,
-      ...(dimension.confidence === "low"
-        ? [dimension.selfTendency, dimension.partnerExpectation]
-        : []),
-    ]),
-  ]);
-  const reason = proposed.trim();
-  if (
-    reason &&
-    !/selfTendency|partnerExpectation|hardBoundary|evidenceMessageIds|画像|置信度|隐藏标签|内部理由|互惠适合度|适合度|得分|分数|百分之|\d+(?:\.\d+)?\s*(?:%|％|分)/i.test(
-      reason,
-    ) &&
-    !hiddenSourceTerms.some(
-      (term) => term?.trim() && reason.includes(term.trim()),
-    )
-  ) {
-    return reason;
   }
   return "你们可以通过进一步交流，确认彼此在重要关系议题上的期待。";
 }
@@ -407,10 +384,6 @@ export function finalizePairEvaluation(
         ? rounded((2 * aToBScore * bToAScore) / (aToBScore + bToAScore))
         : 0,
     eligibility,
-    safeRecommendationReason: safeRecommendationReason(
-      input,
-      eligibility,
-      modelResult.safeRecommendationReason,
-    ),
+    safeRecommendationReason: safeRecommendationReason(eligibility),
   };
 }

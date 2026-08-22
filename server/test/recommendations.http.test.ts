@@ -202,6 +202,35 @@ describe("Candidate recommendations HTTP seam", () => {
     await pool.end();
   }
 
+  async function createEligiblePair(prefix: string) {
+    const adminCookie = await signIn("admin@onlylove.test");
+    const memberEmail = `${prefix}-member@onlylove.test`;
+    const candidateEmail = `${prefix}-candidate@onlylove.test`;
+    const memberCookie = await createMember(adminCookie, {
+      email: memberEmail,
+      nickname: "测试成员",
+      birthDate: "1992-04-12",
+      gender: "female",
+      heightCm: 165,
+      city: "上海",
+      occupation: "设计师",
+      acceptableCities: ["上海"],
+    });
+    await createMember(adminCookie, {
+      email: candidateEmail,
+      nickname: "测试候选",
+      birthDate: "1990-03-02",
+      gender: "male",
+      heightCm: 178,
+      city: "上海",
+      occupation: "工程师",
+      acceptableCities: ["上海"],
+    });
+    await publishEligiblePortrait(memberEmail);
+    await publishEligiblePortrait(candidateEmail);
+    return { adminCookie, memberCookie, memberEmail };
+  }
+
   beforeAll(async () => {
     const migrationApp = await createApp({
       databaseUrl,
@@ -298,7 +327,7 @@ describe("Candidate recommendations HTTP seam", () => {
         heightCm: 178,
         city: "上海",
         occupation: "工程师",
-        reason: "你们都愿意讨论重要关系议题，可以进一步了解彼此。",
+        reason: "你们目前都在上海生活，双方的明确条件已通过核对，可以进一步了解。",
       },
     ]);
     const auditPool = new Pool({ connectionString: databaseUrl });
@@ -644,6 +673,109 @@ describe("Candidate recommendations HTTP seam", () => {
     expect(missingState.json().followupQuestions[0].question).not.toContain(
       "边界成员",
     );
+  });
+
+  it("reuses a persisted pair evaluation when an administrator retries its failed job", async () => {
+    const { adminCookie, memberCookie, memberEmail } =
+      await createEligiblePair("retry");
+    await generate(memberCookie);
+
+    const pool = new Pool({ connectionString: databaseUrl });
+    const request = await pool.query<{
+      agent_job_id: string;
+      pair_evaluation_id: string;
+      request_id: string;
+    }>(
+      `SELECT r.id AS request_id, r.agent_job_id, r.pair_evaluation_id
+         FROM recommendation_pair_jobs r
+         JOIN members m ON m.id = r.member_id
+        WHERE m.email = $1 AND r.pair_evaluation_id IS NOT NULL
+        LIMIT 1`,
+      [memberEmail],
+    );
+    const saved = request.rows[0]!;
+    await pool.query(
+      "UPDATE recommendation_pair_jobs SET status = 'failed' WHERE id = $1",
+      [saved.request_id],
+    );
+    await pool.query(
+      `UPDATE agent_jobs
+          SET status = 'failed', retry_count = 3, completed_at = $2
+        WHERE id = $1`,
+      [saved.agent_job_id, currentTime],
+    );
+
+    const retried = await app.inject({
+      method: "POST",
+      url: `/api/admin/agent-jobs/${saved.agent_job_id}/retry`,
+      headers: { cookie: adminCookie },
+    });
+    expect(retried.statusCode).toBe(202);
+    await worker.drain();
+
+    const result = await pool.query<{
+      job_status: string;
+      request_status: string;
+      evaluation_count: string;
+    }>(
+      `SELECT j.status AS job_status, r.status AS request_status,
+              COUNT(e.id)::text AS evaluation_count
+         FROM agent_jobs j
+         JOIN recommendation_pair_jobs r ON r.agent_job_id = j.id
+         LEFT JOIN pair_evaluations e ON e.agent_job_id = j.id
+        WHERE j.id = $1
+        GROUP BY j.status, r.status`,
+      [saved.agent_job_id],
+    );
+    await pool.end();
+    expect(result.rows[0]).toEqual({
+      job_status: "completed",
+      request_status: "completed",
+      evaluation_count: "1",
+    });
+  });
+
+  it("serializes concurrent rechecks for one recommendation", async () => {
+    const { memberCookie, memberEmail } = await createEligiblePair("race");
+    const generated = await generate(memberCookie);
+    const recommendationId = generated.json().candidates[0].id;
+
+    const pool = new Pool({ connectionString: databaseUrl });
+    await pool.query(
+      `INSERT INTO match_criteria_versions
+        (id, member_id, version, desired_gender, age_minimum, age_maximum,
+         age_mode, height_minimum_cm, height_maximum_cm, height_mode,
+         acceptable_cities, occupation_requirement, occupation_mode, created_at)
+       SELECT $1, c.member_id, c.version + 1, c.desired_gender,
+              c.age_minimum, c.age_maximum, c.age_mode, c.height_minimum_cm,
+              c.height_maximum_cm, c.height_mode, c.acceptable_cities,
+              c.occupation_requirement, c.occupation_mode, $2
+         FROM match_criteria_versions c
+         JOIN members m ON m.id = c.member_id
+        WHERE m.email = $3
+        ORDER BY c.version DESC
+        LIMIT 1`,
+      [randomUUID(), currentTime, memberEmail],
+    );
+
+    const responses = await Promise.all(
+      Array.from({ length: 20 }, () =>
+        app.inject({
+          method: "GET",
+          url: "/api/member/recommendations",
+          headers: { cookie: memberCookie },
+        }),
+      ),
+    );
+    expect(responses.every(({ statusCode }) => statusCode === 200)).toBe(true);
+    const active = await pool.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count
+         FROM recommendation_pair_jobs
+        WHERE recommendation_id = $1 AND status = 'pending'`,
+      [recommendationId],
+    );
+    await pool.end();
+    expect(active.rows[0]!.count).toBe("1");
   });
 
   it("lets only the super administrator configure and audit matching limits", async () => {

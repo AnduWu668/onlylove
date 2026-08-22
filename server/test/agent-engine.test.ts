@@ -402,7 +402,7 @@ describe("Agent Engine evaluatePair seam", () => {
         interactionReason: "两人的协商节奏需要进一步磨合。",
         hardBoundaryStatus: "pass",
       })),
-      safeRecommendationReason: "你们的互惠适合度约为 80%，可以进一步了解彼此。",
+      safeRecommendationReason: "你们匹配八十分，可以进一步了解彼此。",
     };
     const engine = new AgentEngine({
       provider: "deterministic-fake",
