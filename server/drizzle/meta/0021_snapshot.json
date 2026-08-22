@@ -1,0 +1,3698 @@
+{
+  "id": "7d94e04d-ad0d-4f8e-8b3a-04e48ea8dc5c",
+  "prevId": "20f201f5-c355-4227-afca-7824a7605a94",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "public.agent_jobs": {
+      "name": "agent_jobs",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "role": {
+          "name": "role",
+          "type": "varchar(40)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "task": {
+          "name": "task",
+          "type": "varchar(40)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "definition_version": {
+          "name": "definition_version",
+          "type": "varchar(80)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "prompt_version": {
+          "name": "prompt_version",
+          "type": "varchar(80)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "schema_version": {
+          "name": "schema_version",
+          "type": "varchar(80)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "member_id": {
+          "name": "member_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "conversation_id": {
+          "name": "conversation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "input_message_id": {
+          "name": "input_message_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "profile_version_id": {
+          "name": "profile_version_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "calibration_scenario_id": {
+          "name": "calibration_scenario_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "assigned_admin_id": {
+          "name": "assigned_admin_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "output_message_id": {
+          "name": "output_message_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "retry_count": {
+          "name": "retry_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "switched_model": {
+          "name": "switched_model",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "quota_refunded": {
+          "name": "quota_refunded",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "error": {
+          "name": "error",
+          "type": "varchar(80)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lease_token": {
+          "name": "lease_token",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lease_expires_at": {
+          "name": "lease_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "agent_jobs_member_index": {
+          "name": "agent_jobs_member_index",
+          "columns": [
+            {
+              "expression": "member_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "agent_jobs_status_index": {
+          "name": "agent_jobs_status_index",
+          "columns": [
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "agent_jobs_member_id_members_id_fk": {
+          "name": "agent_jobs_member_id_members_id_fk",
+          "tableFrom": "agent_jobs",
+          "tableTo": "members",
+          "columnsFrom": [
+            "member_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "agent_jobs_conversation_id_conversations_id_fk": {
+          "name": "agent_jobs_conversation_id_conversations_id_fk",
+          "tableFrom": "agent_jobs",
+          "tableTo": "conversations",
+          "columnsFrom": [
+            "conversation_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "agent_jobs_input_message_id_conversation_messages_id_fk": {
+          "name": "agent_jobs_input_message_id_conversation_messages_id_fk",
+          "tableFrom": "agent_jobs",
+          "tableTo": "conversation_messages",
+          "columnsFrom": [
+            "input_message_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "agent_jobs_assigned_admin_id_members_id_fk": {
+          "name": "agent_jobs_assigned_admin_id_members_id_fk",
+          "tableFrom": "agent_jobs",
+          "tableTo": "members",
+          "columnsFrom": [
+            "assigned_admin_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "agent_jobs_output_message_id_conversation_messages_id_fk": {
+          "name": "agent_jobs_output_message_id_conversation_messages_id_fk",
+          "tableFrom": "agent_jobs",
+          "tableTo": "conversation_messages",
+          "columnsFrom": [
+            "output_message_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.agent_runs": {
+      "name": "agent_runs",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "job_id": {
+          "name": "job_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "role": {
+          "name": "role",
+          "type": "varchar(40)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "task": {
+          "name": "task",
+          "type": "varchar(40)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "definition_version": {
+          "name": "definition_version",
+          "type": "varchar(80)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "prompt_version": {
+          "name": "prompt_version",
+          "type": "varchar(80)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "schema_version": {
+          "name": "schema_version",
+          "type": "varchar(80)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "member_id": {
+          "name": "member_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "conversation_id": {
+          "name": "conversation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "provider": {
+          "name": "provider",
+          "type": "varchar(80)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "requested_model": {
+          "name": "requested_model",
+          "type": "varchar(160)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actual_model": {
+          "name": "actual_model",
+          "type": "varchar(160)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "input_tokens": {
+          "name": "input_tokens",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "output_tokens": {
+          "name": "output_tokens",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "latency_ms": {
+          "name": "latency_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "retry_count": {
+          "name": "retry_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "switched_model": {
+          "name": "switched_model",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "error": {
+          "name": "error",
+          "type": "varchar(80)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "estimated_cost_micro_cny": {
+          "name": "estimated_cost_micro_cny",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "input_cost_cny_per_million_tokens": {
+          "name": "input_cost_cny_per_million_tokens",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "output_cost_cny_per_million_tokens": {
+          "name": "output_cost_cny_per_million_tokens",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "pricing_effective_date": {
+          "name": "pricing_effective_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "agent_runs_job_index": {
+          "name": "agent_runs_job_index",
+          "columns": [
+            {
+              "expression": "job_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "agent_runs_job_id_agent_jobs_id_fk": {
+          "name": "agent_runs_job_id_agent_jobs_id_fk",
+          "tableFrom": "agent_runs",
+          "tableTo": "agent_jobs",
+          "columnsFrom": [
+            "job_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "agent_runs_member_id_members_id_fk": {
+          "name": "agent_runs_member_id_members_id_fk",
+          "tableFrom": "agent_runs",
+          "tableTo": "members",
+          "columnsFrom": [
+            "member_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "agent_runs_conversation_id_conversations_id_fk": {
+          "name": "agent_runs_conversation_id_conversations_id_fk",
+          "tableFrom": "agent_runs",
+          "tableTo": "conversations",
+          "columnsFrom": [
+            "conversation_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.contact_notification_outbox": {
+      "name": "contact_notification_outbox",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "contact_request_id": {
+          "name": "contact_request_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "type": {
+          "name": "type",
+          "type": "varchar(24)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "email": {
+          "name": "email",
+          "type": "varchar(320)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "nickname": {
+          "name": "nickname",
+          "type": "varchar(120)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sent_at": {
+          "name": "sent_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "contact_notification_outbox_event_unique": {
+          "name": "contact_notification_outbox_event_unique",
+          "columns": [
+            {
+              "expression": "contact_request_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "type",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "email",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "contact_notification_outbox_sent_index": {
+          "name": "contact_notification_outbox_sent_index",
+          "columns": [
+            {
+              "expression": "sent_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "contact_notification_outbox_contact_request_id_contact_requests_id_fk": {
+          "name": "contact_notification_outbox_contact_request_id_contact_requests_id_fk",
+          "tableFrom": "contact_notification_outbox",
+          "tableTo": "contact_requests",
+          "columnsFrom": [
+            "contact_request_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.contact_requests": {
+      "name": "contact_requests",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "recommendation_id": {
+          "name": "recommendation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "requester_member_id": {
+          "name": "requester_member_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "recipient_member_id": {
+          "name": "recipient_member_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "connection_id": {
+          "name": "connection_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "resolved_at": {
+          "name": "resolved_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "contact_requests_recommendation_unique": {
+          "name": "contact_requests_recommendation_unique",
+          "columns": [
+            {
+              "expression": "recommendation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "contact_requests_recipient_status_index": {
+          "name": "contact_requests_recipient_status_index",
+          "columns": [
+            {
+              "expression": "recipient_member_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "contact_requests_requester_status_index": {
+          "name": "contact_requests_requester_status_index",
+          "columns": [
+            {
+              "expression": "requester_member_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "contact_requests_recommendation_id_candidate_recommendations_id_fk": {
+          "name": "contact_requests_recommendation_id_candidate_recommendations_id_fk",
+          "tableFrom": "contact_requests",
+          "tableTo": "candidate_recommendations",
+          "columnsFrom": [
+            "recommendation_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "contact_requests_requester_member_id_members_id_fk": {
+          "name": "contact_requests_requester_member_id_members_id_fk",
+          "tableFrom": "contact_requests",
+          "tableTo": "members",
+          "columnsFrom": [
+            "requester_member_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "contact_requests_recipient_member_id_members_id_fk": {
+          "name": "contact_requests_recipient_member_id_members_id_fk",
+          "tableFrom": "contact_requests",
+          "tableTo": "members",
+          "columnsFrom": [
+            "recipient_member_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "contact_requests_connection_id_member_connections_id_fk": {
+          "name": "contact_requests_connection_id_member_connections_id_fk",
+          "tableFrom": "contact_requests",
+          "tableTo": "member_connections",
+          "columnsFrom": [
+            "connection_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.current_connection_members": {
+      "name": "current_connection_members",
+      "schema": "",
+      "columns": {
+        "member_id": {
+          "name": "member_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "connection_id": {
+          "name": "connection_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "current_connection_members_connection_index": {
+          "name": "current_connection_members_connection_index",
+          "columns": [
+            {
+              "expression": "connection_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "current_connection_members_member_id_members_id_fk": {
+          "name": "current_connection_members_member_id_members_id_fk",
+          "tableFrom": "current_connection_members",
+          "tableTo": "members",
+          "columnsFrom": [
+            "member_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "current_connection_members_connection_id_member_connections_id_fk": {
+          "name": "current_connection_members_connection_id_member_connections_id_fk",
+          "tableFrom": "current_connection_members",
+          "tableTo": "member_connections",
+          "columnsFrom": [
+            "connection_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.member_connections": {
+      "name": "member_connections",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "member_a_id": {
+          "name": "member_a_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "member_b_id": {
+          "name": "member_b_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ended_at": {
+          "name": "ended_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "member_connections_status_index": {
+          "name": "member_connections_status_index",
+          "columns": [
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "member_connections_member_a_id_members_id_fk": {
+          "name": "member_connections_member_a_id_members_id_fk",
+          "tableFrom": "member_connections",
+          "tableTo": "members",
+          "columnsFrom": [
+            "member_a_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "member_connections_member_b_id_members_id_fk": {
+          "name": "member_connections_member_b_id_members_id_fk",
+          "tableFrom": "member_connections",
+          "tableTo": "members",
+          "columnsFrom": [
+            "member_b_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.agent_quota_settings": {
+      "name": "agent_quota_settings",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "own_agent_daily_limit": {
+          "name": "own_agent_daily_limit",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "candidate_twin_daily_limit": {
+          "name": "candidate_twin_daily_limit",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_by": {
+          "name": "updated_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "agent_quota_settings_updated_by_members_id_fk": {
+          "name": "agent_quota_settings_updated_by_members_id_fk",
+          "tableFrom": "agent_quota_settings",
+          "tableTo": "members",
+          "columnsFrom": [
+            "updated_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.agent_quota_settings_audits": {
+      "name": "agent_quota_settings_audits",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "actor_id": {
+          "name": "actor_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "previous_own_agent_daily_limit": {
+          "name": "previous_own_agent_daily_limit",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "previous_candidate_twin_daily_limit": {
+          "name": "previous_candidate_twin_daily_limit",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "own_agent_daily_limit": {
+          "name": "own_agent_daily_limit",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "candidate_twin_daily_limit": {
+          "name": "candidate_twin_daily_limit",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "agent_quota_settings_audits_created_index": {
+          "name": "agent_quota_settings_audits_created_index",
+          "columns": [
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "agent_quota_settings_audits_actor_id_members_id_fk": {
+          "name": "agent_quota_settings_audits_actor_id_members_id_fk",
+          "tableFrom": "agent_quota_settings_audits",
+          "tableTo": "members",
+          "columnsFrom": [
+            "actor_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.candidate_twin_daily_quotas": {
+      "name": "candidate_twin_daily_quotas",
+      "schema": "",
+      "columns": {
+        "member_id": {
+          "name": "member_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "quota_date": {
+          "name": "quota_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "used": {
+          "name": "used",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "candidate_twin_daily_quotas_member_id_members_id_fk": {
+          "name": "candidate_twin_daily_quotas_member_id_members_id_fk",
+          "tableFrom": "candidate_twin_daily_quotas",
+          "tableTo": "members",
+          "columnsFrom": [
+            "member_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "candidate_twin_daily_quotas_member_id_quota_date_pk": {
+          "name": "candidate_twin_daily_quotas_member_id_quota_date_pk",
+          "columns": [
+            "member_id",
+            "quota_date"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.conversation_messages": {
+      "name": "conversation_messages",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "conversation_id": {
+          "name": "conversation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "role": {
+          "name": "role",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "content": {
+          "name": "content",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sequence": {
+          "name": "sequence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "client_message_id": {
+          "name": "client_message_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "conversation_messages_sequence_unique": {
+          "name": "conversation_messages_sequence_unique",
+          "columns": [
+            {
+              "expression": "conversation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "sequence",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "conversation_messages_client_id_unique": {
+          "name": "conversation_messages_client_id_unique",
+          "columns": [
+            {
+              "expression": "conversation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "client_message_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "conversation_messages_conversation_index": {
+          "name": "conversation_messages_conversation_index",
+          "columns": [
+            {
+              "expression": "conversation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "conversation_messages_conversation_id_conversations_id_fk": {
+          "name": "conversation_messages_conversation_id_conversations_id_fk",
+          "tableFrom": "conversation_messages",
+          "tableTo": "conversations",
+          "columnsFrom": [
+            "conversation_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.conversations": {
+      "name": "conversations",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "type": {
+          "name": "type",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "member_id": {
+          "name": "member_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "visitor_member_id": {
+          "name": "visitor_member_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "recommendation_id": {
+          "name": "recommendation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "contact_request_id": {
+          "name": "contact_request_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "anonymous_code": {
+          "name": "anonymous_code",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "visibility_consent_at": {
+          "name": "visibility_consent_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "profile_version_id": {
+          "name": "profile_version_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "conversations_member_type_unique": {
+          "name": "conversations_member_type_unique",
+          "columns": [
+            {
+              "expression": "member_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "type",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"conversations\".\"visitor_member_id\" is null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "conversations_visitor_recommendation_unique": {
+          "name": "conversations_visitor_recommendation_unique",
+          "columns": [
+            {
+              "expression": "visitor_member_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "recommendation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"conversations\".\"visitor_member_id\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "conversations_visitor_contact_request_unique": {
+          "name": "conversations_visitor_contact_request_unique",
+          "columns": [
+            {
+              "expression": "visitor_member_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "contact_request_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"conversations\".\"contact_request_id\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "conversations_anonymous_code_unique": {
+          "name": "conversations_anonymous_code_unique",
+          "columns": [
+            {
+              "expression": "anonymous_code",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "conversations_owner_visitor_index": {
+          "name": "conversations_owner_visitor_index",
+          "columns": [
+            {
+              "expression": "member_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "visitor_member_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "conversations_member_id_members_id_fk": {
+          "name": "conversations_member_id_members_id_fk",
+          "tableFrom": "conversations",
+          "tableTo": "members",
+          "columnsFrom": [
+            "member_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "conversations_visitor_member_id_members_id_fk": {
+          "name": "conversations_visitor_member_id_members_id_fk",
+          "tableFrom": "conversations",
+          "tableTo": "members",
+          "columnsFrom": [
+            "visitor_member_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.own_agent_daily_quotas": {
+      "name": "own_agent_daily_quotas",
+      "schema": "",
+      "columns": {
+        "member_id": {
+          "name": "member_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "quota_date": {
+          "name": "quota_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "used": {
+          "name": "used",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "own_agent_daily_quotas_member_id_members_id_fk": {
+          "name": "own_agent_daily_quotas_member_id_members_id_fk",
+          "tableFrom": "own_agent_daily_quotas",
+          "tableTo": "members",
+          "columnsFrom": [
+            "member_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "own_agent_daily_quotas_member_id_quota_date_pk": {
+          "name": "own_agent_daily_quotas_member_id_quota_date_pk",
+          "columns": [
+            "member_id",
+            "quota_date"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.candidate_recommendations": {
+      "name": "candidate_recommendations",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "member_id": {
+          "name": "member_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "candidate_member_id": {
+          "name": "candidate_member_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "pair_evaluation_id": {
+          "name": "pair_evaluation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "member_portrait_version_id": {
+          "name": "member_portrait_version_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "candidate_portrait_version_id": {
+          "name": "candidate_portrait_version_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "member_criteria_version_id": {
+          "name": "member_criteria_version_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "candidate_criteria_version_id": {
+          "name": "candidate_criteria_version_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "candidate_recommendations_versions_unique": {
+          "name": "candidate_recommendations_versions_unique",
+          "columns": [
+            {
+              "expression": "member_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "candidate_member_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "member_portrait_version_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "candidate_portrait_version_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "member_criteria_version_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "candidate_criteria_version_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "candidate_recommendations_member_status_index": {
+          "name": "candidate_recommendations_member_status_index",
+          "columns": [
+            {
+              "expression": "member_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "candidate_recommendations_member_id_members_id_fk": {
+          "name": "candidate_recommendations_member_id_members_id_fk",
+          "tableFrom": "candidate_recommendations",
+          "tableTo": "members",
+          "columnsFrom": [
+            "member_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "candidate_recommendations_candidate_member_id_members_id_fk": {
+          "name": "candidate_recommendations_candidate_member_id_members_id_fk",
+          "tableFrom": "candidate_recommendations",
+          "tableTo": "members",
+          "columnsFrom": [
+            "candidate_member_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "candidate_recommendations_pair_evaluation_id_pair_evaluations_id_fk": {
+          "name": "candidate_recommendations_pair_evaluation_id_pair_evaluations_id_fk",
+          "tableFrom": "candidate_recommendations",
+          "tableTo": "pair_evaluations",
+          "columnsFrom": [
+            "pair_evaluation_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "candidate_recommendations_member_portrait_version_id_portrait_versions_id_fk": {
+          "name": "candidate_recommendations_member_portrait_version_id_portrait_versions_id_fk",
+          "tableFrom": "candidate_recommendations",
+          "tableTo": "portrait_versions",
+          "columnsFrom": [
+            "member_portrait_version_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "candidate_recommendations_candidate_portrait_version_id_portrait_versions_id_fk": {
+          "name": "candidate_recommendations_candidate_portrait_version_id_portrait_versions_id_fk",
+          "tableFrom": "candidate_recommendations",
+          "tableTo": "portrait_versions",
+          "columnsFrom": [
+            "candidate_portrait_version_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "candidate_recommendations_member_criteria_version_id_match_criteria_versions_id_fk": {
+          "name": "candidate_recommendations_member_criteria_version_id_match_criteria_versions_id_fk",
+          "tableFrom": "candidate_recommendations",
+          "tableTo": "match_criteria_versions",
+          "columnsFrom": [
+            "member_criteria_version_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "candidate_recommendations_candidate_criteria_version_id_match_criteria_versions_id_fk": {
+          "name": "candidate_recommendations_candidate_criteria_version_id_match_criteria_versions_id_fk",
+          "tableFrom": "candidate_recommendations",
+          "tableTo": "match_criteria_versions",
+          "columnsFrom": [
+            "candidate_criteria_version_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.matching_followup_questions": {
+      "name": "matching_followup_questions",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "member_id": {
+          "name": "member_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "pair_evaluation_id": {
+          "name": "pair_evaluation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "question_key": {
+          "name": "question_key",
+          "type": "varchar(80)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "question": {
+          "name": "question",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "matching_followup_member_evaluation_key_unique": {
+          "name": "matching_followup_member_evaluation_key_unique",
+          "columns": [
+            {
+              "expression": "member_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "pair_evaluation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "question_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "matching_followup_questions_member_id_members_id_fk": {
+          "name": "matching_followup_questions_member_id_members_id_fk",
+          "tableFrom": "matching_followup_questions",
+          "tableTo": "members",
+          "columnsFrom": [
+            "member_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "matching_followup_questions_pair_evaluation_id_pair_evaluations_id_fk": {
+          "name": "matching_followup_questions_pair_evaluation_id_pair_evaluations_id_fk",
+          "tableFrom": "matching_followup_questions",
+          "tableTo": "pair_evaluations",
+          "columnsFrom": [
+            "pair_evaluation_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.matching_settings": {
+      "name": "matching_settings",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "candidate_capacity": {
+          "name": "candidate_capacity",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "minimum_reciprocal_score": {
+          "name": "minimum_reciprocal_score",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_by": {
+          "name": "updated_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "matching_settings_updated_by_members_id_fk": {
+          "name": "matching_settings_updated_by_members_id_fk",
+          "tableFrom": "matching_settings",
+          "tableTo": "members",
+          "columnsFrom": [
+            "updated_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.matching_settings_audits": {
+      "name": "matching_settings_audits",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "actor_id": {
+          "name": "actor_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "previous_capacity": {
+          "name": "previous_capacity",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "previous_minimum_score": {
+          "name": "previous_minimum_score",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "candidate_capacity": {
+          "name": "candidate_capacity",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "minimum_reciprocal_score": {
+          "name": "minimum_reciprocal_score",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "matching_settings_audits_created_index": {
+          "name": "matching_settings_audits_created_index",
+          "columns": [
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "matching_settings_audits_actor_id_members_id_fk": {
+          "name": "matching_settings_audits_actor_id_members_id_fk",
+          "tableFrom": "matching_settings_audits",
+          "tableTo": "members",
+          "columnsFrom": [
+            "actor_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.pair_evaluations": {
+      "name": "pair_evaluations",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "member_a_id": {
+          "name": "member_a_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "member_b_id": {
+          "name": "member_b_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "portrait_version_a_id": {
+          "name": "portrait_version_a_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "portrait_version_b_id": {
+          "name": "portrait_version_b_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "criteria_version_a_id": {
+          "name": "criteria_version_a_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "criteria_version_b_id": {
+          "name": "criteria_version_b_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "agent_job_id": {
+          "name": "agent_job_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "rubric_version": {
+          "name": "rubric_version",
+          "type": "varchar(80)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "result": {
+          "name": "result",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "pair_evaluations_versions_unique": {
+          "name": "pair_evaluations_versions_unique",
+          "columns": [
+            {
+              "expression": "member_a_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "member_b_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "portrait_version_a_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "portrait_version_b_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "criteria_version_a_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "criteria_version_b_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "rubric_version",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "pair_evaluations_agent_job_unique": {
+          "name": "pair_evaluations_agent_job_unique",
+          "columns": [
+            {
+              "expression": "agent_job_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "pair_evaluations_member_a_id_members_id_fk": {
+          "name": "pair_evaluations_member_a_id_members_id_fk",
+          "tableFrom": "pair_evaluations",
+          "tableTo": "members",
+          "columnsFrom": [
+            "member_a_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "pair_evaluations_member_b_id_members_id_fk": {
+          "name": "pair_evaluations_member_b_id_members_id_fk",
+          "tableFrom": "pair_evaluations",
+          "tableTo": "members",
+          "columnsFrom": [
+            "member_b_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "pair_evaluations_portrait_version_a_id_portrait_versions_id_fk": {
+          "name": "pair_evaluations_portrait_version_a_id_portrait_versions_id_fk",
+          "tableFrom": "pair_evaluations",
+          "tableTo": "portrait_versions",
+          "columnsFrom": [
+            "portrait_version_a_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "pair_evaluations_portrait_version_b_id_portrait_versions_id_fk": {
+          "name": "pair_evaluations_portrait_version_b_id_portrait_versions_id_fk",
+          "tableFrom": "pair_evaluations",
+          "tableTo": "portrait_versions",
+          "columnsFrom": [
+            "portrait_version_b_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "pair_evaluations_criteria_version_a_id_match_criteria_versions_id_fk": {
+          "name": "pair_evaluations_criteria_version_a_id_match_criteria_versions_id_fk",
+          "tableFrom": "pair_evaluations",
+          "tableTo": "match_criteria_versions",
+          "columnsFrom": [
+            "criteria_version_a_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "pair_evaluations_criteria_version_b_id_match_criteria_versions_id_fk": {
+          "name": "pair_evaluations_criteria_version_b_id_match_criteria_versions_id_fk",
+          "tableFrom": "pair_evaluations",
+          "tableTo": "match_criteria_versions",
+          "columnsFrom": [
+            "criteria_version_b_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "pair_evaluations_agent_job_id_agent_jobs_id_fk": {
+          "name": "pair_evaluations_agent_job_id_agent_jobs_id_fk",
+          "tableFrom": "pair_evaluations",
+          "tableTo": "agent_jobs",
+          "columnsFrom": [
+            "agent_job_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.recommendation_daily_runs": {
+      "name": "recommendation_daily_runs",
+      "schema": "",
+      "columns": {
+        "member_id": {
+          "name": "member_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "run_date": {
+          "name": "run_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "recommendation_daily_runs_member_id_members_id_fk": {
+          "name": "recommendation_daily_runs_member_id_members_id_fk",
+          "tableFrom": "recommendation_daily_runs",
+          "tableTo": "members",
+          "columnsFrom": [
+            "member_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "recommendation_daily_runs_member_id_run_date_pk": {
+          "name": "recommendation_daily_runs_member_id_run_date_pk",
+          "columns": [
+            "member_id",
+            "run_date"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.recommendation_pair_jobs": {
+      "name": "recommendation_pair_jobs",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "member_id": {
+          "name": "member_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "candidate_member_id": {
+          "name": "candidate_member_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "run_date": {
+          "name": "run_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "recommendation_id": {
+          "name": "recommendation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "agent_job_id": {
+          "name": "agent_job_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "pair_evaluation_id": {
+          "name": "pair_evaluation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "member_portrait_version_id": {
+          "name": "member_portrait_version_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "candidate_portrait_version_id": {
+          "name": "candidate_portrait_version_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "member_criteria_version_id": {
+          "name": "member_criteria_version_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "candidate_criteria_version_id": {
+          "name": "candidate_criteria_version_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "input": {
+          "name": "input",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "recommendation_pair_jobs_agent_job_unique": {
+          "name": "recommendation_pair_jobs_agent_job_unique",
+          "columns": [
+            {
+              "expression": "agent_job_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "recommendation_pair_jobs_run_index": {
+          "name": "recommendation_pair_jobs_run_index",
+          "columns": [
+            {
+              "expression": "member_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "run_date",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "recommendation_pair_jobs_recommendation_index": {
+          "name": "recommendation_pair_jobs_recommendation_index",
+          "columns": [
+            {
+              "expression": "recommendation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "recommendation_pair_jobs_member_id_members_id_fk": {
+          "name": "recommendation_pair_jobs_member_id_members_id_fk",
+          "tableFrom": "recommendation_pair_jobs",
+          "tableTo": "members",
+          "columnsFrom": [
+            "member_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "recommendation_pair_jobs_candidate_member_id_members_id_fk": {
+          "name": "recommendation_pair_jobs_candidate_member_id_members_id_fk",
+          "tableFrom": "recommendation_pair_jobs",
+          "tableTo": "members",
+          "columnsFrom": [
+            "candidate_member_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "recommendation_pair_jobs_recommendation_id_candidate_recommendations_id_fk": {
+          "name": "recommendation_pair_jobs_recommendation_id_candidate_recommendations_id_fk",
+          "tableFrom": "recommendation_pair_jobs",
+          "tableTo": "candidate_recommendations",
+          "columnsFrom": [
+            "recommendation_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "recommendation_pair_jobs_agent_job_id_agent_jobs_id_fk": {
+          "name": "recommendation_pair_jobs_agent_job_id_agent_jobs_id_fk",
+          "tableFrom": "recommendation_pair_jobs",
+          "tableTo": "agent_jobs",
+          "columnsFrom": [
+            "agent_job_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "recommendation_pair_jobs_pair_evaluation_id_pair_evaluations_id_fk": {
+          "name": "recommendation_pair_jobs_pair_evaluation_id_pair_evaluations_id_fk",
+          "tableFrom": "recommendation_pair_jobs",
+          "tableTo": "pair_evaluations",
+          "columnsFrom": [
+            "pair_evaluation_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "recommendation_pair_jobs_member_portrait_version_id_portrait_versions_id_fk": {
+          "name": "recommendation_pair_jobs_member_portrait_version_id_portrait_versions_id_fk",
+          "tableFrom": "recommendation_pair_jobs",
+          "tableTo": "portrait_versions",
+          "columnsFrom": [
+            "member_portrait_version_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "recommendation_pair_jobs_candidate_portrait_version_id_portrait_versions_id_fk": {
+          "name": "recommendation_pair_jobs_candidate_portrait_version_id_portrait_versions_id_fk",
+          "tableFrom": "recommendation_pair_jobs",
+          "tableTo": "portrait_versions",
+          "columnsFrom": [
+            "candidate_portrait_version_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "recommendation_pair_jobs_member_criteria_version_id_match_criteria_versions_id_fk": {
+          "name": "recommendation_pair_jobs_member_criteria_version_id_match_criteria_versions_id_fk",
+          "tableFrom": "recommendation_pair_jobs",
+          "tableTo": "match_criteria_versions",
+          "columnsFrom": [
+            "member_criteria_version_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "recommendation_pair_jobs_candidate_criteria_version_id_match_criteria_versions_id_fk": {
+          "name": "recommendation_pair_jobs_candidate_criteria_version_id_match_criteria_versions_id_fk",
+          "tableFrom": "recommendation_pair_jobs",
+          "tableTo": "match_criteria_versions",
+          "columnsFrom": [
+            "candidate_criteria_version_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.invitations": {
+      "name": "invitations",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "email": {
+          "name": "email",
+          "type": "varchar(320)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "issued_by": {
+          "name": "issued_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "revoked_at": {
+          "name": "revoked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "used_at": {
+          "name": "used_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "invitations_email_index": {
+          "name": "invitations_email_index",
+          "columns": [
+            {
+              "expression": "email",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "invitations_issued_by_members_id_fk": {
+          "name": "invitations_issued_by_members_id_fk",
+          "tableFrom": "invitations",
+          "tableTo": "members",
+          "columnsFrom": [
+            "issued_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.match_criteria_versions": {
+      "name": "match_criteria_versions",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "member_id": {
+          "name": "member_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "desired_gender": {
+          "name": "desired_gender",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "age_minimum": {
+          "name": "age_minimum",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "age_maximum": {
+          "name": "age_maximum",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "age_mode": {
+          "name": "age_mode",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "height_minimum_cm": {
+          "name": "height_minimum_cm",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "height_maximum_cm": {
+          "name": "height_maximum_cm",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "height_mode": {
+          "name": "height_mode",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "acceptable_cities": {
+          "name": "acceptable_cities",
+          "type": "varchar(60)[]",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "occupation_requirement": {
+          "name": "occupation_requirement",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "occupation_mode": {
+          "name": "occupation_mode",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "match_criteria_member_version_unique": {
+          "name": "match_criteria_member_version_unique",
+          "columns": [
+            {
+              "expression": "member_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "version",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "match_criteria_versions_member_id_members_id_fk": {
+          "name": "match_criteria_versions_member_id_members_id_fk",
+          "tableFrom": "match_criteria_versions",
+          "tableTo": "members",
+          "columnsFrom": [
+            "member_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.members": {
+      "name": "members",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "email": {
+          "name": "email",
+          "type": "varchar(320)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "password_hash": {
+          "name": "password_hash",
+          "type": "varchar(256)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "role": {
+          "name": "role",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "birth_date": {
+          "name": "birth_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "nickname": {
+          "name": "nickname",
+          "type": "varchar(40)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "gender": {
+          "name": "gender",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "height_cm": {
+          "name": "height_cm",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "city": {
+          "name": "city",
+          "type": "varchar(60)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "occupation": {
+          "name": "occupation",
+          "type": "varchar(80)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "suspended_until": {
+          "name": "suspended_until",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "deleted_at": {
+          "name": "deleted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "members_email_unique": {
+          "name": "members_email_unique",
+          "columns": [
+            {
+              "expression": "email",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.otp_challenges": {
+      "name": "otp_challenges",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "email": {
+          "name": "email",
+          "type": "varchar(320)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "code_hash": {
+          "name": "code_hash",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "attempts": {
+          "name": "attempts",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "resend_at": {
+          "name": "resend_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "consumed_at": {
+          "name": "consumed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "otp_challenges_email_index": {
+          "name": "otp_challenges_email_index",
+          "columns": [
+            {
+              "expression": "email",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.sessions": {
+      "name": "sessions",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "member_id": {
+          "name": "member_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "token_hash": {
+          "name": "token_hash",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "password_setup_required": {
+          "name": "password_setup_required",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "sessions_token_hash_unique": {
+          "name": "sessions_token_hash_unique",
+          "columns": [
+            {
+              "expression": "token_hash",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "sessions_member_index": {
+          "name": "sessions_member_index",
+          "columns": [
+            {
+              "expression": "member_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "sessions_member_id_members_id_fk": {
+          "name": "sessions_member_id_members_id_fk",
+          "tableFrom": "sessions",
+          "tableTo": "members",
+          "columnsFrom": [
+            "member_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.member_blocks": {
+      "name": "member_blocks",
+      "schema": "",
+      "columns": {
+        "blocker_member_id": {
+          "name": "blocker_member_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "blocked_member_id": {
+          "name": "blocked_member_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "member_blocks_blocker_member_id_members_id_fk": {
+          "name": "member_blocks_blocker_member_id_members_id_fk",
+          "tableFrom": "member_blocks",
+          "tableTo": "members",
+          "columnsFrom": [
+            "blocker_member_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "member_blocks_blocked_member_id_members_id_fk": {
+          "name": "member_blocks_blocked_member_id_members_id_fk",
+          "tableFrom": "member_blocks",
+          "tableTo": "members",
+          "columnsFrom": [
+            "blocked_member_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "member_blocks_blocker_member_id_blocked_member_id_pk": {
+          "name": "member_blocks_blocker_member_id_blocked_member_id_pk",
+          "columns": [
+            "blocker_member_id",
+            "blocked_member_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.portrait_calibration_answers": {
+      "name": "portrait_calibration_answers",
+      "schema": "",
+      "columns": {
+        "scenario_id": {
+          "name": "scenario_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "rating": {
+          "name": "rating",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "correction": {
+          "name": "correction",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "critical_fabrication": {
+          "name": "critical_fabrication",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "portrait_calibration_answers_scenario_id_portrait_calibration_scenarios_id_fk": {
+          "name": "portrait_calibration_answers_scenario_id_portrait_calibration_scenarios_id_fk",
+          "tableFrom": "portrait_calibration_answers",
+          "tableTo": "portrait_calibration_scenarios",
+          "columnsFrom": [
+            "scenario_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.portrait_calibration_scenarios": {
+      "name": "portrait_calibration_scenarios",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "portrait_version_id": {
+          "name": "portrait_version_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "position": {
+          "name": "position",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "dimensions": {
+          "name": "dimensions",
+          "type": "varchar(40)[]",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "prompt": {
+          "name": "prompt",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "prediction": {
+          "name": "prediction",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "portrait_calibration_version_position_unique": {
+          "name": "portrait_calibration_version_position_unique",
+          "columns": [
+            {
+              "expression": "portrait_version_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "position",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "portrait_calibration_scenarios_portrait_version_id_portrait_versions_id_fk": {
+          "name": "portrait_calibration_scenarios_portrait_version_id_portrait_versions_id_fk",
+          "tableFrom": "portrait_calibration_scenarios",
+          "tableTo": "portrait_versions",
+          "columnsFrom": [
+            "portrait_version_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.portrait_drafts": {
+      "name": "portrait_drafts",
+      "schema": "",
+      "columns": {
+        "member_id": {
+          "name": "member_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "schema_version": {
+          "name": "schema_version",
+          "type": "varchar(80)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "planner_version": {
+          "name": "planner_version",
+          "type": "varchar(80)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "content": {
+          "name": "content",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "completed_dimensions": {
+          "name": "completed_dimensions",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "last_message_sequence": {
+          "name": "last_message_sequence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "portrait_drafts_member_id_members_id_fk": {
+          "name": "portrait_drafts_member_id_members_id_fk",
+          "tableFrom": "portrait_drafts",
+          "tableTo": "members",
+          "columnsFrom": [
+            "member_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.portrait_fixed_answers": {
+      "name": "portrait_fixed_answers",
+      "schema": "",
+      "columns": {
+        "member_id": {
+          "name": "member_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "question_id": {
+          "name": "question_id",
+          "type": "varchar(80)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "selected_option_ids": {
+          "name": "selected_option_ids",
+          "type": "varchar(80)[]",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "none_applies": {
+          "name": "none_applies",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "free_text": {
+          "name": "free_text",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "message_id": {
+          "name": "message_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "portrait_fixed_answers_member_index": {
+          "name": "portrait_fixed_answers_member_index",
+          "columns": [
+            {
+              "expression": "member_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "portrait_fixed_answers_member_id_members_id_fk": {
+          "name": "portrait_fixed_answers_member_id_members_id_fk",
+          "tableFrom": "portrait_fixed_answers",
+          "tableTo": "members",
+          "columnsFrom": [
+            "member_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "portrait_fixed_answers_message_id_conversation_messages_id_fk": {
+          "name": "portrait_fixed_answers_message_id_conversation_messages_id_fk",
+          "tableFrom": "portrait_fixed_answers",
+          "tableTo": "conversation_messages",
+          "columnsFrom": [
+            "message_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "portrait_fixed_answers_member_id_question_id_pk": {
+          "name": "portrait_fixed_answers_member_id_question_id_pk",
+          "columns": [
+            "member_id",
+            "question_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.portrait_member_states": {
+      "name": "portrait_member_states",
+      "schema": "",
+      "columns": {
+        "member_id": {
+          "name": "member_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "submitted_version_id": {
+          "name": "submitted_version_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "published_version_id": {
+          "name": "published_version_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "portrait_member_states_member_id_members_id_fk": {
+          "name": "portrait_member_states_member_id_members_id_fk",
+          "tableFrom": "portrait_member_states",
+          "tableTo": "members",
+          "columnsFrom": [
+            "member_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "portrait_member_states_submitted_version_id_portrait_versions_id_fk": {
+          "name": "portrait_member_states_submitted_version_id_portrait_versions_id_fk",
+          "tableFrom": "portrait_member_states",
+          "tableTo": "portrait_versions",
+          "columnsFrom": [
+            "submitted_version_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "portrait_member_states_published_version_id_portrait_versions_id_fk": {
+          "name": "portrait_member_states_published_version_id_portrait_versions_id_fk",
+          "tableFrom": "portrait_member_states",
+          "tableTo": "portrait_versions",
+          "columnsFrom": [
+            "published_version_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.portrait_versions": {
+      "name": "portrait_versions",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "member_id": {
+          "name": "member_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "client_request_id": {
+          "name": "client_request_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_draft_schema_version": {
+          "name": "source_draft_schema_version",
+          "type": "varchar(80)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "match_profile": {
+          "name": "match_profile",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "persona_context_schema_version": {
+          "name": "persona_context_schema_version",
+          "type": "varchar(80)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "persona_context": {
+          "name": "persona_context",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "calibration_schema_version": {
+          "name": "calibration_schema_version",
+          "type": "varchar(80)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "portrait_versions_member_version_unique": {
+          "name": "portrait_versions_member_version_unique",
+          "columns": [
+            {
+              "expression": "member_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "version",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "portrait_versions_member_request_unique": {
+          "name": "portrait_versions_member_request_unique",
+          "columns": [
+            {
+              "expression": "member_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "client_request_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "portrait_versions_member_id_members_id_fk": {
+          "name": "portrait_versions_member_id_members_id_fk",
+          "tableFrom": "portrait_versions",
+          "tableTo": "members",
+          "columnsFrom": [
+            "member_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {},
+  "schemas": {},
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "views": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}

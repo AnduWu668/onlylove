@@ -88,3 +88,28 @@ export const contactRequests = pgTable(
     ),
   ],
 );
+
+export const contactNotificationOutbox = pgTable(
+  "contact_notification_outbox",
+  {
+    id: uuid("id").primaryKey(),
+    contactRequestId: uuid("contact_request_id")
+      .notNull()
+      .references(() => contactRequests.id),
+    type: varchar("type", { length: 24 })
+      .$type<"contact_request" | "contact_accepted">()
+      .notNull(),
+    email: varchar("email", { length: 320 }).notNull(),
+    nickname: varchar("nickname", { length: 120 }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    sentAt: timestamp("sent_at", { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex("contact_notification_outbox_event_unique").on(
+      table.contactRequestId,
+      table.type,
+      table.email,
+    ),
+    index("contact_notification_outbox_sent_index").on(table.sentAt),
+  ],
+);

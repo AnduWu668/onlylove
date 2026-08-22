@@ -43,7 +43,7 @@ export class MatchingModeration {
   async blocked(
     memberAId: string,
     memberBId: string,
-    database?: DatabaseTransaction,
+    database: Database | DatabaseTransaction = this.db,
   ) {
     return (
       await this.blockedCandidates(memberAId, [memberBId], database)

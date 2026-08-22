@@ -9,8 +9,11 @@ import { AgentJobs } from "./modules/agent-engine/jobs.js";
 import { MatchingConnections } from "./modules/connections/matching.js";
 import { registerConnectionsRoutes } from "./modules/connections/routes.js";
 import { Connections } from "./modules/connections/service.js";
+import { ConnectionConversations } from "./modules/conversations/connections.js";
 import { registerConversationsRoutes } from "./modules/conversations/routes.js";
 import { InterviewConversations } from "./modules/conversations/interview.js";
+import { ConnectionMatching } from "./modules/matching/connections.js";
+import { ConnectionMembers } from "./modules/members/connections.js";
 import type { Mailer } from "./modules/members/mailer.js";
 import {
   bootstrapSuperAdmin,
@@ -22,6 +25,7 @@ import { registerMatchingRoutes } from "./modules/matching/routes.js";
 import { Matching } from "./modules/matching/service.js";
 import { registerPortraitsRoutes } from "./modules/portraits/routes.js";
 import { MatchingPortraits } from "./modules/portraits/matching.js";
+import { ConnectionPortraits } from "./modules/portraits/connections.js";
 import { Portraits } from "./modules/portraits/service.js";
 
 export interface AppOptions {
@@ -33,6 +37,7 @@ export interface AppOptions {
   production?: boolean;
   agentModel?: AgentModelOptions;
   agentInputTokenBudget?: number;
+  connectionMaintenanceIntervalMs?: number;
 }
 
 export async function createApp(options: AppOptions) {
@@ -46,7 +51,17 @@ export async function createApp(options: AppOptions) {
   const agentJobs = new AgentJobs(db);
   const interviewConversations = new InterviewConversations(db);
   const portraits = new Portraits(db, now, interviewConversations, agentJobs);
-  const connections = new Connections(db, now, options.mailer);
+  const matchingModeration = new MatchingModeration(db);
+  const connections = new Connections(
+    db,
+    now,
+    options.mailer,
+    new ConnectionConversations(db),
+    new ConnectionMatching(db),
+    new ConnectionMembers(db),
+    matchingModeration,
+    new ConnectionPortraits(db),
+  );
   const matching = new Matching(
     db,
     now,
@@ -54,12 +69,13 @@ export async function createApp(options: AppOptions) {
     agentEngine.matchingDefinition,
     new MatchingMembers(db),
     new MatchingPortraits(db),
-    new MatchingModeration(db),
+    matchingModeration,
     new MatchingConnections(db),
   );
 
   await migrateDatabase(db);
   await bootstrapSuperAdmin(db, options.superAdminEmail, now());
+  await connections.runMaintenance();
   await app.register(cookie);
   app.get("/api/health", async () => ({ status: "ok" }));
   registerMembersRoutes(app, {
@@ -110,7 +126,12 @@ export async function createApp(options: AppOptions) {
   });
   registerConnectionsRoutes(app, { connections, db, now });
   registerMatchingRoutes(app, { db, now, matching });
+  const connectionMaintenance = setInterval(() => {
+    void connections.runMaintenance().catch((error) => app.log.error(error));
+  }, options.connectionMaintenanceIntervalMs ?? 60_000);
+  connectionMaintenance.unref();
   app.addHook("onClose", async () => {
+    clearInterval(connectionMaintenance);
     agentEngine.close();
     await pool.end();
   });

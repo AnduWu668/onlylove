@@ -1979,7 +1979,7 @@ async function withdrawPortrait() {
             :disabled="contactRequestPending || candidateTwinSending"
             @click="createContactRequest"
           >
-            {{ contactRequestPending ? "发送中…" : "发起真人联系" }}
+            {{ contactRequestPending ? "发送中…" : "发出联系请求" }}
           </button>
         </div>
         <form

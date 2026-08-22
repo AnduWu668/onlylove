@@ -1,7 +1,15 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { Pool } from "pg";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { createApp } from "../src/app.js";
 import { loadRootEnv } from "../src/env.js";
 import { MemoryMailer } from "../src/modules/members/mailer.js";
@@ -222,13 +230,15 @@ describe("Contact requests HTTP seam", () => {
     await pool.end();
     now = new Date("2026-08-22T08:00:00.000Z");
     mailer = new MemoryMailer();
-    app = await createApp({
+    const appOptions = {
       databaseUrl,
       mailer,
       otpSecret: "test-only-secret",
       superAdminEmail: "admin@onlylove.test",
       now: () => now,
-    });
+      connectionMaintenanceIntervalMs: 10,
+    };
+    app = await createApp(appOptions);
   });
 
   afterAll(async () => {
@@ -273,7 +283,7 @@ describe("Contact requests HTTP seam", () => {
           heightCm: 165,
           city: "上海",
           occupation: "设计师",
-          reason: "你们都愿意认真讨论长期关系。",
+          reason: "你们的公开资料和择偶条件相互匹配。",
         },
       }),
     ]);
@@ -283,6 +293,81 @@ describe("Contact requests HTTP seam", () => {
     expect(
       (mailer as MemoryMailer & { notifications: unknown[] }).notifications,
     ).toHaveLength(1);
+
+    const outbox = await app.inject({
+      method: "GET",
+      url: "/api/member/contact-requests",
+      headers: { cookie: seeded.requester.cookie },
+    });
+    expect(outbox.json().outgoing[0].candidate.reason).toBe(
+      "你们都愿意认真讨论长期关系。",
+    );
+  });
+
+  it("retries committed contact notifications without failing the request", async () => {
+    class FlakyMailer extends MemoryMailer {
+      requestFailures = 1;
+      acceptedFailures = 1;
+
+      override async sendContactRequest(email: string, nickname: string) {
+        if (this.requestFailures-- > 0) throw new Error("smtp unavailable");
+        await super.sendContactRequest(email, nickname);
+      }
+
+      override async sendContactAccepted(email: string, nickname: string) {
+        if (this.acceptedFailures-- > 0) throw new Error("smtp unavailable");
+        await super.sendContactAccepted(email, nickname);
+      }
+    }
+
+    await app.close();
+    const flakyMailer = new FlakyMailer();
+    const appOptions = {
+      databaseUrl,
+      mailer: flakyMailer,
+      otpSecret: "test-only-secret",
+      superAdminEmail: "admin@onlylove.test",
+      now: () => now,
+      connectionMaintenanceIntervalMs: 60_000,
+    };
+    app = await createApp(appOptions);
+    const seeded = await seedCandidateConversation();
+
+    const created = await app.inject({
+      method: "POST",
+      url: `/api/member/recommendations/${seeded.recommendationId}/contact-request`,
+      headers: { cookie: seeded.requester.cookie },
+    });
+    expect(created.statusCode).toBe(201);
+    expect(flakyMailer.notifications).toHaveLength(0);
+
+    await app.inject({
+      method: "GET",
+      url: "/api/member/contact-requests",
+      headers: { cookie: seeded.recipient.cookie },
+    });
+    expect(flakyMailer.notifications).toEqual([
+      expect.objectContaining({ type: "contact_request" }),
+    ]);
+
+    const accepted = await app.inject({
+      method: "POST",
+      url: `/api/member/contact-requests/${created.json().id}/accept`,
+      headers: { cookie: seeded.recipient.cookie },
+    });
+    expect(accepted.statusCode).toBe(200);
+    expect(
+      flakyMailer.notifications.filter(({ type }) => type === "contact_accepted"),
+    ).toHaveLength(1);
+
+    await app.inject({
+      method: "GET",
+      url: "/api/member/contact-requests",
+      headers: { cookie: seeded.recipient.cookie },
+    });
+    expect(
+      flakyMailer.notifications.filter(({ type }) => type === "contact_accepted"),
+    ).toHaveLength(2);
   });
 
   it("lets only the recipient win one concurrent acceptance and makes retries idempotent", async () => {
@@ -393,6 +478,158 @@ describe("Contact requests HTTP seam", () => {
     ).toHaveLength(2);
   });
 
+  it("rejects a request created while either member establishes another contact", async () => {
+    const pool = new Pool({ connectionString: databaseUrl });
+    const requester = await seedMember(pool, {
+      email: "requester@onlylove.test",
+      nickname: "林夏",
+      birthDate: "1992-04-12",
+      gender: "female",
+    });
+    const firstRecipient = await seedMember(pool, {
+      email: "first-recipient@onlylove.test",
+      nickname: "北川",
+      birthDate: "1990-03-02",
+      gender: "male",
+    });
+    const secondRecipient = await seedMember(pool, {
+      email: "second-recipient@onlylove.test",
+      nickname: "远山",
+      birthDate: "1991-06-08",
+      gender: "male",
+    });
+    const first = await seedCandidateRelationship(
+      pool,
+      requester,
+      firstRecipient,
+      "ANON00000003",
+    );
+    const second = await seedCandidateRelationship(
+      pool,
+      requester,
+      secondRecipient,
+      "ANON00000004",
+    );
+    const firstRequest = await app.inject({
+      method: "POST",
+      url: `/api/member/recommendations/${first.recommendationId}/contact-request`,
+      headers: { cookie: requester.cookie },
+    });
+
+    const lockClient = await pool.connect();
+    await lockClient.query("BEGIN");
+    await lockClient.query(
+      "SELECT pg_advisory_xact_lock(hashtext($1))",
+      [`current-contact:${requester.memberId}`],
+    );
+    const accepting = app.inject({
+      method: "POST",
+      url: `/api/member/contact-requests/${firstRequest.json().id}/accept`,
+      headers: { cookie: firstRecipient.cookie },
+    });
+    await vi.waitFor(async () => {
+      const result = await pool.query<{ count: string }>(
+        `SELECT COUNT(*)::text AS count
+           FROM pg_stat_activity
+          WHERE wait_event = 'advisory'`,
+      );
+      expect(Number(result.rows[0]!.count)).toBeGreaterThanOrEqual(1);
+    });
+    const creating = app.inject({
+      method: "POST",
+      url: `/api/member/recommendations/${second.recommendationId}/contact-request`,
+      headers: { cookie: requester.cookie },
+    });
+    await vi.waitFor(async () => {
+      const [waiting, created] = await Promise.all([
+        pool.query<{ count: string }>(
+          `SELECT COUNT(*)::text AS count
+             FROM pg_stat_activity
+            WHERE wait_event = 'advisory'`,
+        ),
+        pool.query<{ count: string }>(
+          "SELECT COUNT(*)::text AS count FROM contact_requests WHERE recommendation_id = $1",
+          [second.recommendationId],
+        ),
+      ]);
+      expect(
+        Number(waiting.rows[0]!.count) >= 2 ||
+          Number(created.rows[0]!.count) === 1,
+      ).toBe(true);
+    });
+    await lockClient.query("COMMIT");
+    lockClient.release();
+    await pool.end();
+
+    expect((await accepting).statusCode).toBe(200);
+    const rejected = await creating;
+    expect(rejected.statusCode).toBe(409);
+    expect(rejected.json().code).toBe("CONTACT_REQUEST_NOT_AVAILABLE");
+  });
+
+  it("serializes accepting and rejecting the same request", async () => {
+    const seeded = await seedCandidateConversation();
+    const created = await app.inject({
+      method: "POST",
+      url: `/api/member/recommendations/${seeded.recommendationId}/contact-request`,
+      headers: { cookie: seeded.requester.cookie },
+    });
+    const pool = new Pool({ connectionString: databaseUrl });
+    const lockClient = await pool.connect();
+    await lockClient.query("BEGIN");
+    await lockClient.query(
+      "SELECT pg_advisory_xact_lock(hashtext($1))",
+      [`contact-request:${created.json().id}`],
+    );
+    const rejecting = app.inject({
+      method: "POST",
+      url: `/api/member/contact-requests/${created.json().id}/reject`,
+      headers: { cookie: seeded.recipient.cookie },
+    });
+    await vi.waitFor(async () => {
+      const waiting = await pool.query<{ count: string }>(
+        `SELECT COUNT(*)::text AS count
+           FROM pg_stat_activity
+          WHERE wait_event = 'advisory'`,
+      );
+      expect(Number(waiting.rows[0]!.count)).toBeGreaterThanOrEqual(1);
+    });
+    const accepting = app.inject({
+      method: "POST",
+      url: `/api/member/contact-requests/${created.json().id}/accept`,
+      headers: { cookie: seeded.recipient.cookie },
+    });
+    await vi.waitFor(async () => {
+      const [waiting, connections] = await Promise.all([
+        pool.query<{ count: string }>(
+          `SELECT COUNT(*)::text AS count
+             FROM pg_stat_activity
+            WHERE wait_event = 'advisory'`,
+        ),
+        pool.query<{ count: string }>(
+          "SELECT COUNT(*)::text AS count FROM member_connections WHERE status = 'active'",
+        ),
+      ]);
+      expect(
+        Number(waiting.rows[0]!.count) >= 2 ||
+          Number(connections.rows[0]!.count) === 1,
+      ).toBe(true);
+    });
+    await lockClient.query("COMMIT");
+    lockClient.release();
+    await pool.end();
+
+    expect((await rejecting).statusCode).toBe(200);
+    expect((await accepting).statusCode).toBe(409);
+    const state = await app.inject({
+      method: "GET",
+      url: "/api/member/contact-requests",
+      headers: { cookie: seeded.recipient.cookie },
+    });
+    expect(state.json().incoming[0].status).toBe("rejected");
+    expect(state.json().currentConnection).toBeNull();
+  });
+
   it("lets the recipient talk to the requester's twin before deciding", async () => {
     const seeded = await seedCandidateConversation();
     const created = await app.inject({
@@ -480,6 +717,14 @@ describe("Contact requests HTTP seam", () => {
       headers: { cookie: expiringSeed.requester.cookie },
     });
     now = new Date(now.getTime() + 7 * 24 * 60 * 60_000);
+    const auditPool = new Pool({ connectionString: databaseUrl });
+    await vi.waitFor(async () => {
+      const status = await auditPool.query<{ status: string }>(
+        "SELECT status FROM contact_requests WHERE id = $1",
+        [expiring.json().id],
+      );
+      expect(status.rows[0]!.status).toBe("expired");
+    });
     const expiredState = await app.inject({
       method: "GET",
       url: "/api/member/contact-requests",
@@ -496,7 +741,6 @@ describe("Contact requests HTTP seam", () => {
       headers: { cookie: expiringSeed.recipient.cookie },
     });
     expect(expiredAccept.statusCode).toBe(409);
-    const auditPool = new Pool({ connectionString: databaseUrl });
     const recommendation = await auditPool.query<{ status: string }>(
       "SELECT status FROM candidate_recommendations WHERE id = $1",
       [expiringSeed.recommendationId],
@@ -504,9 +748,77 @@ describe("Contact requests HTTP seam", () => {
     const connections = await auditPool.query<{ count: string }>(
       "SELECT COUNT(*)::text AS count FROM member_connections WHERE status = 'active'",
     );
-    await auditPool.end();
     expect(recommendation.rows[0]!.status).toBe("requested");
     expect(connections.rows[0]!.count).toBe("0");
+
+    await app.close();
+    app = await createApp({
+      databaseUrl,
+      mailer,
+      otpSecret: "test-only-secret",
+      superAdminEmail: "admin@onlylove.test",
+      now: () => now,
+      connectionMaintenanceIntervalMs: 60_000,
+    });
+    await auditPool.query("TRUNCATE sessions, members CASCADE");
+    const requester = await seedMember(auditPool, {
+      email: "expiry-requester@onlylove.test",
+      nickname: "林夏",
+      birthDate: "1992-04-12",
+      gender: "female",
+    });
+    const firstRecipient = await seedMember(auditPool, {
+      email: "expired-recipient@onlylove.test",
+      nickname: "北川",
+      birthDate: "1990-03-02",
+      gender: "male",
+    });
+    const secondRecipient = await seedMember(auditPool, {
+      email: "accepted-recipient@onlylove.test",
+      nickname: "远山",
+      birthDate: "1991-06-08",
+      gender: "male",
+    });
+    const firstRelationship = await seedCandidateRelationship(
+      auditPool,
+      requester,
+      firstRecipient,
+      "ANON00000005",
+    );
+    const secondRelationship = await seedCandidateRelationship(
+      auditPool,
+      requester,
+      secondRecipient,
+      "ANON00000006",
+    );
+    const firstRequest = await app.inject({
+      method: "POST",
+      url: `/api/member/recommendations/${firstRelationship.recommendationId}/contact-request`,
+      headers: { cookie: requester.cookie },
+    });
+    const secondRequest = await app.inject({
+      method: "POST",
+      url: `/api/member/recommendations/${secondRelationship.recommendationId}/contact-request`,
+      headers: { cookie: requester.cookie },
+    });
+    await auditPool.query(
+      "UPDATE contact_requests SET expires_at = $2 WHERE id = $1",
+      [firstRequest.json().id, now],
+    );
+    const acceptedSecond = await app.inject({
+      method: "POST",
+      url: `/api/member/contact-requests/${secondRequest.json().id}/accept`,
+      headers: { cookie: secondRecipient.cookie },
+    });
+    expect(acceptedSecond.statusCode).toBe(200);
+    const related = await auditPool.query<{ status: string }>(
+      "SELECT status FROM contact_requests",
+    );
+    await auditPool.end();
+    expect(related.rows.map(({ status }) => status).sort()).toEqual([
+      "accepted",
+      "expired",
+    ]);
   });
 
   it("rechecks blocked, unavailable, unpublished, and already connected members", async () => {

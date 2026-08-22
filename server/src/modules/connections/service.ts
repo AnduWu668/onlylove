@@ -5,7 +5,6 @@ import {
   eq,
   gt,
   inArray,
-  isNotNull,
   isNull,
   lte,
   ne,
@@ -13,14 +12,15 @@ import {
   sql,
 } from "drizzle-orm";
 import type { Database, DatabaseTransaction } from "../../db.js";
-import { conversationMessages, conversations } from "../conversations/schema.js";
-import { candidateRecommendations } from "../matching/schema.js";
+import type { ConnectionConversations } from "../conversations/connections.js";
+import type { ConnectionMatching } from "../matching/connections.js";
 import { ageOn } from "../matching/service.js";
+import type { ConnectionMembers } from "../members/connections.js";
 import type { Mailer } from "../members/mailer.js";
-import { matchCriteriaVersions, members } from "../members/schema.js";
-import { memberBlocks } from "../moderation/schema.js";
-import { portraitMemberStates } from "../portraits/schema.js";
+import type { MatchingModeration } from "../moderation/matching.js";
+import type { ConnectionPortraits } from "../portraits/connections.js";
 import {
+  contactNotificationOutbox,
   contactRequests,
   currentConnectionMembers,
   memberConnections,
@@ -38,14 +38,23 @@ export class ConnectionsError extends Error {
 }
 
 export class Connections {
+  private notificationFlush?: Promise<void>;
+
   constructor(
     private readonly db: Database,
     private readonly now: () => Date,
     private readonly mailer: Mailer,
+    private readonly conversations: ConnectionConversations,
+    private readonly matching: ConnectionMatching,
+    private readonly members: ConnectionMembers,
+    private readonly moderation: MatchingModeration,
+    private readonly portraits: ConnectionPortraits,
   ) {}
 
   private async availablePair(
-    recommendation: typeof candidateRecommendations.$inferSelect,
+    recommendation: NonNullable<
+      Awaited<ReturnType<ConnectionMatching["byId"]>>
+    >,
     database: Database | DatabaseTransaction,
   ) {
     const memberIds = [
@@ -53,50 +62,36 @@ export class Connections {
       recommendation.candidateMemberId,
     ];
     // A transaction owns one pg client, so keep these checks sequential.
-    const memberRows = await database
-      .select()
-      .from(members)
-      .where(
-        and(
-          inArray(members.id, memberIds),
-          eq(members.role, "member"),
-          isNull(members.deletedAt),
-        ),
+    const pair = await this.members.eligiblePair(
+      {
+        requesterMemberId: recommendation.memberId,
+        recipientMemberId: recommendation.candidateMemberId,
+        requesterCriteriaVersionId: recommendation.memberCriteriaVersionId,
+        recipientCriteriaVersionId:
+          recommendation.candidateCriteriaVersionId,
+      },
+      this.now(),
+      database,
+    );
+    if (!pair) return undefined;
+    const blocked = await this.moderation.blocked(
+      recommendation.memberId,
+      recommendation.candidateMemberId,
+      database,
+    );
+    if (blocked) return undefined;
+    const publishedVersionsMatch =
+      await this.portraits.publishedVersionsMatch(
+        new Map([
+          [recommendation.memberId, recommendation.memberPortraitVersionId],
+          [
+            recommendation.candidateMemberId,
+            recommendation.candidatePortraitVersionId,
+          ],
+        ]),
+        database,
       );
-    const criteriaRows = await database
-      .select({
-        id: matchCriteriaVersions.id,
-        memberId: matchCriteriaVersions.memberId,
-      })
-      .from(matchCriteriaVersions)
-      .where(inArray(matchCriteriaVersions.memberId, memberIds))
-      .orderBy(desc(matchCriteriaVersions.version));
-    const portraitRows = await database
-      .select()
-      .from(portraitMemberStates)
-      .where(inArray(portraitMemberStates.memberId, memberIds));
-    const block = await database
-      .select({ blockerMemberId: memberBlocks.blockerMemberId })
-      .from(memberBlocks)
-      .where(
-        or(
-          and(
-            eq(memberBlocks.blockerMemberId, recommendation.memberId),
-            eq(
-              memberBlocks.blockedMemberId,
-              recommendation.candidateMemberId,
-            ),
-          ),
-          and(
-            eq(
-              memberBlocks.blockerMemberId,
-              recommendation.candidateMemberId,
-            ),
-            eq(memberBlocks.blockedMemberId, recommendation.memberId),
-          ),
-        ),
-      )
-      .limit(1);
+    if (!publishedVersionsMatch) return undefined;
     const currentConnection = await database
       .select({ id: memberConnections.id })
       .from(memberConnections)
@@ -115,40 +110,9 @@ export class Connections {
       .from(currentConnectionMembers)
       .where(inArray(currentConnectionMembers.memberId, memberIds))
       .limit(1);
-    const memberById = new Map(memberRows.map((member) => [member.id, member]));
-    const latestCriteria = new Map<string, string>();
-    for (const criteria of criteriaRows) {
-      if (!latestCriteria.has(criteria.memberId)) {
-        latestCriteria.set(criteria.memberId, criteria.id);
-      }
-    }
-    const portraitById = new Map(
-      portraitRows.map((portrait) => [portrait.memberId, portrait]),
-    );
-    if (
-      memberById.size !== 2 ||
-      memberRows.some(
-        (member) =>
-          member.suspendedUntil && member.suspendedUntil > this.now(),
-      ) ||
-      block.length ||
-      currentConnection.length ||
-      currentMembership.length ||
-      latestCriteria.get(recommendation.memberId) !==
-        recommendation.memberCriteriaVersionId ||
-      latestCriteria.get(recommendation.candidateMemberId) !==
-        recommendation.candidateCriteriaVersionId ||
-      portraitById.get(recommendation.memberId)?.publishedVersionId !==
-        recommendation.memberPortraitVersionId ||
-      portraitById.get(recommendation.candidateMemberId)?.publishedVersionId !==
-        recommendation.candidatePortraitVersionId
-    ) {
-      return undefined;
-    }
-    return {
-      requester: memberById.get(recommendation.memberId)!,
-      recipient: memberById.get(recommendation.candidateMemberId)!,
-    };
+    return currentConnection.length || currentMembership.length
+      ? undefined
+      : pair;
   }
 
   async createRequest(requesterMemberId: string, recommendationId: string) {
@@ -157,18 +121,11 @@ export class Connections {
       await transaction.execute(
         sql`select pg_advisory_xact_lock(hashtext(${`contact-request:${recommendationId}`}))`,
       );
-      const recommendation = (
-        await transaction
-          .select()
-          .from(candidateRecommendations)
-          .where(
-            and(
-              eq(candidateRecommendations.id, recommendationId),
-              eq(candidateRecommendations.memberId, requesterMemberId),
-            ),
-          )
-          .limit(1)
-      )[0];
+      const recommendation = await this.matching.byId(
+        recommendationId,
+        requesterMemberId,
+        transaction,
+      );
       if (!recommendation) {
         throw new ConnectionsError("RECOMMENDATION_NOT_FOUND", 404);
       }
@@ -183,27 +140,25 @@ export class Connections {
       if (!["pending", "rechecking"].includes(recommendation.status)) {
         throw new ConnectionsError("CONTACT_REQUEST_NOT_AVAILABLE");
       }
+      for (const memberId of [
+        recommendation.memberId,
+        recommendation.candidateMemberId,
+      ].sort()) {
+        await transaction.execute(
+          sql`select pg_advisory_xact_lock(hashtext(${`current-contact:${memberId}`}))`,
+        );
+      }
       const pair = await this.availablePair(recommendation, transaction);
       if (!pair) throw new ConnectionsError("CONTACT_REQUEST_NOT_AVAILABLE");
-      const conversation = (
-        await transaction
-          .select({ id: conversations.id })
-          .from(conversations)
-          .innerJoin(
-            conversationMessages,
-            eq(conversationMessages.conversationId, conversations.id),
-          )
-          .where(
-            and(
-              eq(conversations.type, "TWIN"),
-              eq(conversations.memberId, recommendation.candidateMemberId),
-              eq(conversations.visitorMemberId, requesterMemberId),
-              eq(conversations.recommendationId, recommendationId),
-              eq(conversationMessages.role, "member"),
-            ),
-          )
-          .limit(1)
-      )[0];
+      const conversation =
+        await this.conversations.requesterConversationWithMessage(
+          {
+            recommendationId,
+            requesterMemberId,
+            recipientMemberId: recommendation.candidateMemberId,
+          },
+          transaction,
+        );
       if (!conversation) {
         throw new ConnectionsError("CANDIDATE_TWIN_CONVERSATION_REQUIRED");
       }
@@ -221,27 +176,30 @@ export class Connections {
           })
           .returning()
       )[0]!;
-      await transaction
-        .update(candidateRecommendations)
-        .set({ status: "requested", updatedAt: createdAt })
-        .where(eq(candidateRecommendations.id, recommendationId));
-      await transaction
-        .update(conversations)
-        .set({ contactRequestId: request.id })
-        .where(eq(conversations.id, conversation.id));
+      await this.matching.markRequested(
+        recommendationId,
+        createdAt,
+        transaction,
+      );
+      await this.conversations.linkRequest(
+        conversation.id,
+        request.id,
+        transaction,
+      );
+      await transaction.insert(contactNotificationOutbox).values({
+        id: randomUUID(),
+        contactRequestId: request.id,
+        type: "contact_request",
+        email: pair.recipient.email,
+        nickname: pair.requester.nickname ?? "一位候选人",
+        createdAt,
+      });
       return {
         created: true as const,
-        recipientEmail: pair.recipient.email,
-        requesterNickname: pair.requester.nickname ?? "一位候选人",
         request,
       };
     });
-    if (result.created) {
-      await this.mailer.sendContactRequest?.(
-        result.recipientEmail,
-        result.requesterNickname,
-      );
-    }
+    await this.flushNotifications();
     return {
       created: result.created,
       request: this.publicRequest(result.request),
@@ -276,13 +234,11 @@ export class Connections {
     ) {
       return undefined;
     }
-    const recommendation = (
-      await database
-        .select()
-        .from(candidateRecommendations)
-        .where(eq(candidateRecommendations.id, request.recommendationId))
-        .limit(1)
-    )[0];
+    const recommendation = await this.matching.byId(
+      request.recommendationId,
+      undefined,
+      database,
+    );
     if (
       !recommendation ||
       !(await this.availablePair(recommendation, database))
@@ -314,6 +270,66 @@ export class Connections {
       );
   }
 
+  private async deliverNotifications() {
+    const pending = await this.db
+      .select({ id: contactNotificationOutbox.id })
+      .from(contactNotificationOutbox)
+      .where(isNull(contactNotificationOutbox.sentAt))
+      .orderBy(contactNotificationOutbox.createdAt);
+    for (const { id } of pending) {
+      await this.db.transaction(async (transaction) => {
+        const notification = (
+          await transaction
+            .select()
+            .from(contactNotificationOutbox)
+            .where(
+              and(
+                eq(contactNotificationOutbox.id, id),
+                isNull(contactNotificationOutbox.sentAt),
+              ),
+            )
+            .limit(1)
+            .for("update", { skipLocked: true })
+        )[0];
+        if (!notification) return;
+        try {
+          if (notification.type === "contact_request") {
+            await this.mailer.sendContactRequest?.(
+              notification.email,
+              notification.nickname,
+            );
+          } else {
+            await this.mailer.sendContactAccepted?.(
+              notification.email,
+              notification.nickname,
+            );
+          }
+        } catch {
+          return;
+        }
+        await transaction
+          .update(contactNotificationOutbox)
+          .set({ sentAt: this.now() })
+          .where(eq(contactNotificationOutbox.id, notification.id));
+      });
+    }
+  }
+
+  private async flushNotifications() {
+    if (!this.notificationFlush) {
+      const run = this.deliverNotifications().finally(() => {
+        if (this.notificationFlush === run) this.notificationFlush = undefined;
+      });
+      this.notificationFlush = run;
+    }
+    await this.notificationFlush;
+  }
+
+  async runMaintenance() {
+    await this.expirePending();
+    await this.flushNotifications();
+  }
+
   async acceptRequest(recipientMemberId: string, requestId: string) {
     const acceptedAt = this.now();
     const result = await this.db.transaction(async (transaction) => {
@@ -331,6 +347,9 @@ export class Connections {
       if (initial.recipientMemberId !== recipientMemberId) {
         throw new ConnectionsError("CONTACT_REQUEST_NOT_FOUND", 404);
       }
+      await transaction.execute(
+        sql`select pg_advisory_xact_lock(hashtext(${`contact-request:${requestId}`}))`,
+      );
       for (const memberId of [
         initial.requesterMemberId,
         initial.recipientMemberId,
@@ -373,13 +392,11 @@ export class Connections {
           .where(eq(contactRequests.id, current.id));
         return { error: "CONTACT_REQUEST_EXPIRED" } as const;
       }
-      const recommendation = (
-        await transaction
-          .select()
-          .from(candidateRecommendations)
-          .where(eq(candidateRecommendations.id, current.recommendationId))
-          .limit(1)
-      )[0];
+      const recommendation = await this.matching.byId(
+        current.recommendationId,
+        undefined,
+        transaction,
+      );
       const pair = recommendation
         ? await this.availablePair(recommendation, transaction)
         : undefined;
@@ -422,6 +439,26 @@ export class Connections {
           resolvedAt: acceptedAt,
         })
         .where(eq(contactRequests.id, current.id));
+      const involvesCurrentMembers = or(
+        inArray(contactRequests.requesterMemberId, [
+          current.requesterMemberId,
+          current.recipientMemberId,
+        ]),
+        inArray(contactRequests.recipientMemberId, [
+          current.requesterMemberId,
+          current.recipientMemberId,
+        ]),
+      );
+      await transaction
+        .update(contactRequests)
+        .set({ status: "expired", resolvedAt: acceptedAt })
+        .where(
+          and(
+            eq(contactRequests.status, "pending"),
+            lte(contactRequests.expiresAt, acceptedAt),
+            involvesCurrentMembers,
+          ),
+        );
       await transaction
         .update(contactRequests)
         .set({ status: "cancelled", resolvedAt: acceptedAt })
@@ -429,40 +466,36 @@ export class Connections {
           and(
             eq(contactRequests.status, "pending"),
             ne(contactRequests.id, current.id),
-            or(
-              inArray(contactRequests.requesterMemberId, [
-                current.requesterMemberId,
-                current.recipientMemberId,
-              ]),
-              inArray(contactRequests.recipientMemberId, [
-                current.requesterMemberId,
-                current.recipientMemberId,
-              ]),
-            ),
+            involvesCurrentMembers,
           ),
         );
+      await transaction.insert(contactNotificationOutbox).values([
+        {
+          id: randomUUID(),
+          contactRequestId: current.id,
+          type: "contact_accepted",
+          email: pair.requester.email,
+          nickname: pair.recipient.nickname ?? "对方",
+          createdAt: acceptedAt,
+        },
+        {
+          id: randomUUID(),
+          contactRequestId: current.id,
+          type: "contact_accepted",
+          email: pair.recipient.email,
+          nickname: pair.requester.nickname ?? "对方",
+          createdAt: acceptedAt,
+        },
+      ]);
       return {
         accepted: true as const,
         connection,
-        recipient: pair.recipient,
-        requester: pair.requester,
       };
     });
     if ("error" in result && result.error) {
       throw new ConnectionsError(result.error);
     }
-    if (result.accepted) {
-      await Promise.all([
-        this.mailer.sendContactAccepted?.(
-          result.requester.email,
-          result.recipient.nickname ?? "对方",
-        ),
-        this.mailer.sendContactAccepted?.(
-          result.recipient.email,
-          result.requester.nickname ?? "对方",
-        ),
-      ]);
-    }
+    await this.flushNotifications();
     return {
       connection: {
         id: result.connection.id,
@@ -534,13 +567,7 @@ export class Connections {
       row.connection.memberAId === memberId
         ? row.connection.memberBId
         : row.connection.memberAId;
-    const candidate = (
-      await this.db
-        .select()
-        .from(members)
-        .where(eq(members.id, otherMemberId))
-        .limit(1)
-    )[0];
+    const candidate = (await this.members.byIds([otherMemberId]))[0];
     return {
       id: row.connection.id,
       createdAt: row.connection.createdAt.toISOString(),
@@ -558,7 +585,7 @@ export class Connections {
   }
 
   async state(memberId: string) {
-    await this.expirePending();
+    await this.runMaintenance();
     const [requests, currentConnection] = await Promise.all([
       this.db
         .select()
@@ -576,43 +603,16 @@ export class Connections {
       return { incoming: [], outgoing: [], currentConnection };
     }
     const [recommendations, memberRows, conversationRows] = await Promise.all([
-      this.db
-        .select()
-        .from(candidateRecommendations)
-        .where(
-          inArray(
-            candidateRecommendations.id,
-            requests.map((request) => request.recommendationId),
-          ),
-        ),
-      this.db
-        .select()
-        .from(members)
-        .where(
-          inArray(
-            members.id,
-            requests.flatMap((request) => [
-              request.requesterMemberId,
-              request.recipientMemberId,
-            ]),
-          ),
-        ),
-      this.db
-        .select({
-          anonymousCode: conversations.anonymousCode,
-          contactRequestId: conversations.contactRequestId,
-          id: conversations.id,
-        })
-        .from(conversations)
-        .where(
-          and(
-            inArray(
-              conversations.contactRequestId,
-              requests.map((request) => request.id),
-            ),
-            isNotNull(conversations.recommendationId),
-          ),
-        ),
+      this.matching.byIds(
+        requests.map((request) => request.recommendationId),
+      ),
+      this.members.byIds(
+        requests.flatMap((request) => [
+          request.requesterMemberId,
+          request.recipientMemberId,
+        ]),
+      ),
+      this.conversations.byRequestIds(requests.map((request) => request.id)),
     ]);
     const recommendationById = new Map(
       recommendations.map((recommendation) => [recommendation.id, recommendation]),
@@ -649,7 +649,9 @@ export class Connections {
           heightCm: candidate.heightCm,
           city: candidate.city ?? "",
           occupation: candidate.occupation ?? "",
-          reason: recommendation.reason,
+          reason: incoming
+            ? "你们的公开资料和择偶条件相互匹配。"
+            : recommendation.reason,
         },
         ...(incoming && conversation
           ? {
