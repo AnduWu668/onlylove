@@ -120,6 +120,8 @@ export async function createApp(options: AppOptions) {
         requesterMemberId,
         transaction,
       ),
+    humanConversationAccess: (memberId, connectionId, database) =>
+      connections.humanConversationAccess(memberId, connectionId, database),
     db,
     now,
     portraits,

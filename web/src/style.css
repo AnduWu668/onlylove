@@ -783,7 +783,8 @@ button:disabled {
   background: #eee5da;
 }
 
-.chat-message[data-role="member"] {
+.chat-message[data-role="member"],
+.chat-message[data-role="self"] {
   justify-self: end;
   border-radius: 18px 18px 5px;
   color: #fffaf3;
@@ -1304,6 +1305,34 @@ button:disabled {
 .current-connection {
   border-color: rgb(111 24 49 / 25%);
   background: #e9dfd4;
+}
+
+.open-human-conversation {
+  margin-top: 16px;
+}
+
+.open-human-conversation span {
+  margin-left: 8px;
+  font-size: 11px;
+}
+
+.human-conversation {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid rgb(91 52 57 / 12%);
+}
+
+.human-conversation-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.human-conversation-heading h3 {
+  margin: 0;
 }
 
 .owned-candidate-conversations {

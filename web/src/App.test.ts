@@ -1579,6 +1579,27 @@ describe("OnlyLove UI seam", () => {
   });
 
   it("sends and handles contact requests from the member UI", async () => {
+    class FakeEventSource {
+      static current: FakeEventSource;
+      static instances: FakeEventSource[] = [];
+      readonly listeners = new Map<string, (event: MessageEvent) => void>();
+
+      constructor(readonly url: string) {
+        FakeEventSource.current = this;
+        FakeEventSource.instances.push(this);
+      }
+
+      addEventListener(type: string, listener: (event: MessageEvent) => void) {
+        this.listeners.set(type, listener);
+      }
+
+      close() {}
+
+      emit(type: string, data: object) {
+        this.listeners.get(type)?.({ data: JSON.stringify(data) } as MessageEvent);
+      }
+    }
+    vi.stubGlobal("EventSource", FakeEventSource);
     const candidate = {
       id: "4ac4601b-4694-4da7-bd75-07f4330c94d5",
       avatarText: "北",
@@ -1590,6 +1611,8 @@ describe("OnlyLove UI seam", () => {
       reason: "你们可以进一步了解。",
     };
     let connected = false;
+    let delayHumanConversation = false;
+    let resolveHumanConversation: (() => void) | undefined;
     const contactState = () => ({
       incoming: [
         {
@@ -1617,6 +1640,7 @@ describe("OnlyLove UI seam", () => {
         ? {
             id: "current-connection",
             createdAt: "2026-08-22T08:00:00.000Z",
+            conversation: { id: "human-conversation", unreadCount: 1 },
             candidate: {
               avatarText: "林",
               nickname: "林夏",
@@ -1693,6 +1717,66 @@ describe("OnlyLove UI seam", () => {
       }
       if (url === "/api/member/contact-requests") {
         return { ok: true, status: 200, json: async () => contactState() };
+      }
+      if (
+        url === "/api/member/human-conversations/human-conversation" &&
+        !options?.method
+      ) {
+        if (delayHumanConversation) {
+          await new Promise<void>((resolve) => {
+            resolveHumanConversation = resolve;
+          });
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            conversationId: "human-conversation",
+            createdAt: "2026-08-22T08:00:00.000Z",
+            canSend: true,
+            otherMember: { displayName: "林夏", deleted: false },
+            messages: [
+              {
+                id: "history-message",
+                sender: "other",
+                content: "很高兴正式认识你。",
+                sequence: 1,
+                createdAt: "2026-08-22T08:05:00.000Z",
+              },
+            ],
+            unreadCount: 0,
+            eventsUrl:
+              "/api/member/human-conversations/human-conversation/events?after=1",
+          }),
+        };
+      }
+      if (
+        url === "/api/member/human-conversations/human-conversation/messages" &&
+        options?.method === "POST"
+      ) {
+        const body = JSON.parse(options.body as string) as {
+          clientMessageId: string;
+          content: string;
+        };
+        return {
+          ok: true,
+          status: 201,
+          json: async () => ({
+            message: {
+              id: "sent-human-message",
+              sender: "self",
+              content: body.content,
+              sequence: 2,
+              createdAt: "2026-08-22T08:06:00.000Z",
+            },
+          }),
+        };
+      }
+      if (
+        url === "/api/member/human-conversations/human-conversation/read" &&
+        options?.method === "POST"
+      ) {
+        return { ok: true, status: 204, json: async () => undefined };
       }
       if (
         url ===
@@ -1780,6 +1864,56 @@ describe("OnlyLove UI seam", () => {
     await flushPromises();
     expect(wrapper.text()).toContain("当前联系");
     expect(wrapper.text()).toContain("已与林夏建立联系");
+    expect(wrapper.text()).toContain("1 条未读");
+
+    await wrapper.get("button.open-human-conversation").trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("很高兴正式认识你。");
+    expect(FakeEventSource.current.url).toContain(
+      "/api/member/human-conversations/human-conversation/events",
+    );
+
+    await wrapper
+      .get("form.human-conversation-composer textarea")
+      .setValue("微信 onlylove_2026，电话 13800138000。");
+    await wrapper.get("form.human-conversation-composer").trigger("submit");
+    await flushPromises();
+    expect(wrapper.text()).toContain("微信 onlylove_2026，电话 13800138000。");
+    FakeEventSource.current.emit("message", {
+      id: "live-human-message",
+      sender: "other",
+      content: "收到，我们晚点聊。",
+      sequence: 3,
+      createdAt: "2026-08-22T08:07:00.000Z",
+    });
+    await flushPromises();
+    expect(wrapper.text()).toContain("收到，我们晚点聊。");
+    expect(request).toHaveBeenCalledWith(
+      "/api/member/human-conversations/human-conversation/read",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ lastReadSequence: 3 }),
+      }),
+    );
+
+    await wrapper.get(".human-conversation-heading button").trigger("click");
+    delayHumanConversation = true;
+    await wrapper.get("button.open-human-conversation").trigger("click");
+    await flushPromises();
+    expect(resolveHumanConversation).toBeTypeOf("function");
+    await wrapper
+      .findAll("nav button")
+      .find((button) => button.text().includes("我的"))!
+      .trigger("click");
+    resolveHumanConversation!();
+    await flushPromises();
+    await wrapper
+      .findAll("nav button")
+      .find((button) => button.text().includes("联系"))!
+      .trigger("click");
+    await flushPromises();
+    expect(wrapper.find(".human-conversation").exists()).toBe(false);
+    expect(FakeEventSource.instances).toHaveLength(1);
   });
 
   it("lets a super administrator update matching and agent quota settings", async () => {
