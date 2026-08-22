@@ -1005,6 +1005,29 @@ export class Connections {
     };
   }
 
+  async administrationMetrics() {
+    const [requests, connections, followups] = await Promise.all([
+      this.db.select().from(contactRequests),
+      this.db.select().from(memberConnections),
+      this.db.select().from(connectionFollowupResponses),
+    ]);
+    return {
+      requested: requests.length,
+      accepted: requests.filter((request) => request.status === "accepted")
+        .length,
+      current: connections.filter((connection) => connection.status === "active")
+        .length,
+      ended: connections.filter((connection) => connection.status === "ended")
+        .length,
+      confirmed: connections.filter(
+        (connection) => connection.status === "confirmed",
+      ).length,
+      sevenDayResponses: new Set(
+        followups.map(({ connectionId }) => connectionId),
+      ).size,
+    };
+  }
+
   private followupState(
     connection: typeof memberConnections.$inferSelect,
     memberId: string,

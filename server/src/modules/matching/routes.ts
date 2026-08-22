@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import type { Database } from "../../db.js";
+import type { AdministrationAuditInput } from "../members/administration.js";
 import {
   memberForRequest,
   superAdminForRequest,
@@ -8,7 +9,14 @@ import { Matching, MatchingError } from "./service.js";
 
 export function registerMatchingRoutes(
   app: FastifyInstance,
-  options: { db: Database; now: () => Date; matching: Matching },
+  options: {
+    db: Database;
+    now: () => Date;
+    matching: Matching;
+    recordAdministrationAudit: (
+      input: AdministrationAuditInput,
+    ) => Promise<unknown>;
+  },
 ) {
   const { db, now, matching } = options;
 
@@ -98,8 +106,15 @@ export function registerMatchingRoutes(
   );
 
   app.get("/api/admin/matching-settings/audit", async (request, reply) => {
-    const actor = await superAdminForRequest(request, db, now());
+    const viewedAt = now();
+    const actor = await superAdminForRequest(request, db, viewedAt);
     if (!actor) return reply.code(403).send({ code: "FORBIDDEN" });
-    return { audits: await matching.settingsAudit() };
+    const audits = await matching.settingsAudit();
+    await options.recordAdministrationAudit({
+      actorMemberId: actor.id,
+      action: "matching_settings_audit_viewed",
+      createdAt: viewedAt,
+    });
+    return { audits };
   });
 }

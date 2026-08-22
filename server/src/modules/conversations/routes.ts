@@ -17,7 +17,7 @@ import {
 import type { Database, DatabaseTransaction } from "../../db.js";
 import { AgentEngine, AgentRunError } from "../agent-engine/engine.js";
 import { type AgentJob, AgentJobs } from "../agent-engine/jobs.js";
-import { recordAdministrationAudit } from "../administration/routes.js";
+import type { AdministrationAuditInput } from "../members/administration.js";
 import {
   activeAdminById,
   adminForRequest,
@@ -73,6 +73,9 @@ export interface ConversationsOptions {
     memberId: string,
     completedAt: Date,
   ) => Promise<void>;
+  recordAdministrationAudit: (
+    input: AdministrationAuditInput,
+  ) => Promise<unknown>;
   now: () => Date;
   portraits: Portraits;
 }
@@ -1297,14 +1300,19 @@ export function registerConversationsRoutes(
   );
 
   app.get("/api/admin/agent-quota-settings/audit", async (request, reply) => {
-    const actor = await superAdminForRequest(request, db, now());
+    const viewedAt = now();
+    const actor = await superAdminForRequest(request, db, viewedAt);
     if (!actor) return reply.code(403).send({ code: "FORBIDDEN" });
-    return {
-      audits: await db
-        .select()
-        .from(agentQuotaSettingsAudits)
-        .orderBy(desc(agentQuotaSettingsAudits.createdAt)),
-    };
+    const audits = await db
+      .select()
+      .from(agentQuotaSettingsAudits)
+      .orderBy(desc(agentQuotaSettingsAudits.createdAt));
+    await options.recordAdministrationAudit({
+      actorMemberId: actor.id,
+      action: "agent_quota_settings_audit_viewed",
+      createdAt: viewedAt,
+    });
+    return { audits };
   });
 
   app.post<{
@@ -2003,7 +2011,7 @@ export function registerConversationsRoutes(
     const actor = await adminForRequest(request, db, viewedAt);
     if (!actor) return reply.code(403).send({ code: "FORBIDDEN" });
     const runs = await options.agentJobs.listRuns(actor);
-    await recordAdministrationAudit(db, {
+    await options.recordAdministrationAudit({
       actorMemberId: actor.id,
       action: "agent_runs_viewed",
       createdAt: viewedAt,
@@ -2016,7 +2024,7 @@ export function registerConversationsRoutes(
     const actor = await adminForRequest(request, db, viewedAt);
     if (!actor) return reply.code(403).send({ code: "FORBIDDEN" });
     const jobs = await options.agentJobs.listFailed(actor);
-    await recordAdministrationAudit(db, {
+    await options.recordAdministrationAudit({
       actorMemberId: actor.id,
       action: "failed_agent_jobs_viewed",
       createdAt: viewedAt,
@@ -2055,7 +2063,7 @@ export function registerConversationsRoutes(
       if (!actor) return reply.code(403).send({ code: "FORBIDDEN" });
       const job = await options.agentJobs.retryFailed(request.params.jobId, actor);
       if (!job) return reply.code(409).send({ code: "AGENT_JOB_NOT_RETRYABLE" });
-      await recordAdministrationAudit(db, {
+      await options.recordAdministrationAudit({
         actorMemberId: actor.id,
         targetMemberId: job.memberId,
         resourceId: job.id,
@@ -2096,7 +2104,7 @@ export function registerConversationsRoutes(
         request.body.adminId,
       );
       if (!job) return reply.code(409).send({ code: "AGENT_JOB_NOT_ASSIGNABLE" });
-      await recordAdministrationAudit(db, {
+      await options.recordAdministrationAudit({
         actorMemberId: actor.id,
         targetMemberId: job.memberId,
         resourceId: job.id,

@@ -62,6 +62,7 @@ interface DashboardMetrics {
   members: {
     registered: number;
     profileCompleted: number;
+    structuredCriteriaCompleted: number;
     portraitStarted: number;
     portraitComplete: number;
     submitted: number;
@@ -836,6 +837,7 @@ function formatCost(value: number) {
       <div class="relationship-metric-list">
         <span>注册 {{ dashboard.members.registered }}</span>
         <span>基础档案完整 {{ dashboard.members.profileCompleted }}</span>
+        <span>结构化择偶条件完整 {{ dashboard.members.structuredCriteriaCompleted }}</span>
         <span>开始画像 {{ dashboard.members.portraitStarted }}</span>
         <span>画像完整 {{ dashboard.members.portraitComplete }}</span>
         <span>已提交 {{ dashboard.members.submitted }}</span>
@@ -968,7 +970,7 @@ function formatCost(value: number) {
       <div class="list-heading">
         <div>
           <h2>成员敏感详情</h2>
-          <p>仅按成员进入隐藏画像、特征证据、配对结果和聊天；不提供全站聊天信息流。</p>
+          <p>仅按成员进入匹配档案、特征证据、配对评估结果和聊天；不提供全站聊天信息流。</p>
         </div>
         <span>{{ members.length }} 人</span>
       </div>
@@ -985,16 +987,16 @@ function formatCost(value: number) {
       </div>
       <article v-if="selectedMember" class="moderation-case-detail member-sensitive-detail">
         <h3>{{ selectedMember.member.nickname || selectedMember.member.email }}</h3>
-        <p>隐藏分身上下文：{{ selectedMember.portrait?.personaContext || '暂无' }}</p>
+        <p>分身上下文：{{ selectedMember.portrait?.personaContext || '暂无' }}</p>
         <details v-if="selectedMember.portrait">
-          <summary>隐藏画像与特征证据</summary>
+          <summary>匹配档案与特征证据</summary>
           <pre>{{ JSON.stringify(selectedMember.portrait.matchProfile, null, 2) }}</pre>
           <p v-for="message in selectedMember.evidence" :key="message.id">
             {{ message.content }}
           </p>
         </details>
         <details>
-          <summary>配对结果与匹配分（{{ selectedMember.pairEvaluations.length }}）</summary>
+          <summary>配对评估结果与方向 / 互惠适合度（{{ selectedMember.pairEvaluations.length }}）</summary>
           <pre v-for="evaluation in selectedMember.pairEvaluations" :key="evaluation.id">{{ JSON.stringify(evaluation.result, null, 2) }}</pre>
         </details>
         <details>

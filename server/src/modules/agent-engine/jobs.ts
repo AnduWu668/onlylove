@@ -20,6 +20,15 @@ export type AgentJob = typeof agentJobs.$inferSelect;
 const MAX_JOB_ATTEMPTS = 3;
 type TaskAdmin = { id: string; role: "admin" | "super_admin" };
 
+function beijingDate(value: Date) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(value);
+}
+
 export class AgentJobs {
   constructor(private readonly db: Database) {}
 
@@ -479,6 +488,96 @@ export class AgentJobs {
       ...run,
       ...jobReferences,
     }));
+  }
+
+  async observability() {
+    // ponytail: in-memory grouping keeps one source of truth; move to SQL GROUP BY when run volume affects latency.
+    const runs = await this.db
+      .select()
+      .from(agentRuns)
+      .orderBy(desc(agentRuns.createdAt));
+    type Aggregate = {
+      date: string;
+      role: string;
+      provider: string;
+      model: string;
+      inputTokens: number;
+      outputTokens: number;
+      estimatedCostMicroCny: number;
+      latencyMs: number;
+      runs: number;
+      failures: number;
+      modelSwitches: number;
+    };
+    const grouped = new Map<string, Aggregate>();
+    for (const run of runs) {
+      const date = beijingDate(run.createdAt);
+      const key = [date, run.role, run.provider, run.actualModel].join("\u0000");
+      const aggregate = grouped.get(key) ?? {
+        date,
+        role: run.role,
+        provider: run.provider,
+        model: run.actualModel,
+        inputTokens: 0,
+        outputTokens: 0,
+        estimatedCostMicroCny: 0,
+        latencyMs: 0,
+        runs: 0,
+        failures: 0,
+        modelSwitches: 0,
+      };
+      aggregate.inputTokens += run.inputTokens;
+      aggregate.outputTokens += run.outputTokens;
+      aggregate.estimatedCostMicroCny += run.estimatedCostMicroCny;
+      aggregate.latencyMs += run.latencyMs;
+      aggregate.runs += 1;
+      aggregate.failures += Number(Boolean(run.error));
+      aggregate.modelSwitches += Number(run.switchedModel);
+      grouped.set(key, aggregate);
+    }
+    const totalLatency = runs.reduce((total, run) => total + run.latencyMs, 0);
+    const microCost = runs.reduce(
+      (total, run) => total + run.estimatedCostMicroCny,
+      0,
+    );
+    const pricing = [
+      ...new Map(
+        runs
+          .filter((run) => run.pricingEffectiveDate)
+          .map((run) => [
+            [run.provider, run.actualModel, run.pricingEffectiveDate].join("\u0000"),
+            {
+              provider: run.provider,
+              model: run.actualModel,
+              effectiveDate: run.pricingEffectiveDate,
+              inputCostCnyPerMillionTokens:
+                run.inputCostCnyPerMillionTokens,
+              outputCostCnyPerMillionTokens:
+                run.outputCostCnyPerMillionTokens,
+            },
+          ]),
+      ).values(),
+    ];
+    return {
+      summary: {
+        inputTokens: runs.reduce((total, run) => total + run.inputTokens, 0),
+        outputTokens: runs.reduce((total, run) => total + run.outputTokens, 0),
+        estimatedCostCny: microCost / 1_000_000,
+        averageLatencyMs: runs.length ? Math.round(totalLatency / runs.length) : 0,
+        failures: runs.filter((run) => run.error).length,
+        modelSwitches: runs.filter((run) => run.switchedModel).length,
+      },
+      groups: [...grouped.values()]
+        .sort((left, right) => right.date.localeCompare(left.date))
+        .map((group) => ({
+          ...group,
+          estimatedCostCny: group.estimatedCostMicroCny / 1_000_000,
+          averageLatencyMs: Math.round(group.latencyMs / group.runs),
+        })),
+      pricing,
+      disclaimer:
+        "人民币成本为按生效单价计算的估算值，供应商最终账单是最终费用依据。",
+    };
   }
 
   async listFailed(actor: TaskAdmin) {

@@ -369,11 +369,13 @@ describe("Candidate recommendations HTTP seam", () => {
       task: string;
       actual_model: string;
       agent_job_id: string;
+      recommendation_id: string;
     }>(
-      `SELECT j.task, r.actual_model, e.agent_job_id
+      `SELECT j.task, r.actual_model, e.agent_job_id, p.recommendation_id
          FROM pair_evaluations e
          JOIN agent_jobs j ON j.id = e.agent_job_id
          JOIN agent_runs r ON r.job_id = j.id
+         JOIN recommendation_pair_jobs p ON p.agent_job_id = j.id
         LIMIT 1`,
     );
     await auditPool.end();
@@ -381,6 +383,7 @@ describe("Candidate recommendations HTTP seam", () => {
       task: "evaluate_pair",
       actual_model: "matching-v0",
       agent_job_id: expect.any(String),
+      recommendation_id: response.json().candidates[0].id,
     });
 
     await app.inject({

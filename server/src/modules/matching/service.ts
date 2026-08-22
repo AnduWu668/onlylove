@@ -292,6 +292,48 @@ export class Matching {
       .orderBy(desc(matchingSettingsAudits.createdAt));
   }
 
+  administrationMemberEvaluations(memberId: string) {
+    return this.db
+      .select()
+      .from(pairEvaluations)
+      .where(
+        or(
+          eq(pairEvaluations.memberAId, memberId),
+          eq(pairEvaluations.memberBId, memberId),
+        ),
+      )
+      .orderBy(desc(pairEvaluations.createdAt));
+  }
+
+  async administrationMetrics() {
+    const [dailyRuns, pairJobs, recommendations] = await Promise.all([
+      this.db.select().from(recommendationDailyRuns),
+      this.db.select().from(recommendationPairJobs),
+      this.db.select().from(candidateRecommendations),
+    ]);
+    const runsWithCandidate = new Set(
+      pairJobs
+        .filter((job) => job.runDate && job.recommendationId)
+        .map((job) => `${job.memberId}:${job.runDate}`),
+    );
+    const recommendationDates = new Set(
+      recommendations.map(
+        (recommendation) =>
+          `${recommendation.memberId}:${beijingDate(recommendation.createdAt)}`,
+      ),
+    );
+    return {
+      requested: dailyRuns.length,
+      generated: recommendations.length,
+      noCandidate: dailyRuns.filter(
+        (run) =>
+          run.status === "completed" &&
+          !runsWithCandidate.has(`${run.memberId}:${run.runDate}`) &&
+          !recommendationDates.has(`${run.memberId}:${run.runDate}`),
+      ).length,
+    };
+  }
+
   private async qualifications(memberIds: string[]) {
     const ids = [...new Set(memberIds)];
     const [
@@ -808,23 +850,32 @@ export class Matching {
       0,
       available,
     )) {
-      await this.db
-        .insert(candidateRecommendations)
-        .values({
-          id: randomUUID(),
-          memberId: request.memberId,
-          candidateMemberId: request.candidateMemberId,
-          pairEvaluationId: evaluation.id,
-          memberPortraitVersionId: request.memberPortraitVersionId,
-          candidatePortraitVersionId: request.candidatePortraitVersionId,
-          memberCriteriaVersionId: request.memberCriteriaVersionId,
-          candidateCriteriaVersionId: request.candidateCriteriaVersionId,
-          reason,
-          status: "pending",
-          createdAt: at,
-          updatedAt: at,
-        })
-        .onConflictDoNothing();
+      const recommendation = (
+        await this.db
+          .insert(candidateRecommendations)
+          .values({
+            id: randomUUID(),
+            memberId: request.memberId,
+            candidateMemberId: request.candidateMemberId,
+            pairEvaluationId: evaluation.id,
+            memberPortraitVersionId: request.memberPortraitVersionId,
+            candidatePortraitVersionId: request.candidatePortraitVersionId,
+            memberCriteriaVersionId: request.memberCriteriaVersionId,
+            candidateCriteriaVersionId: request.candidateCriteriaVersionId,
+            reason,
+            status: "pending",
+            createdAt: at,
+            updatedAt: at,
+          })
+          .onConflictDoNothing()
+          .returning({ id: candidateRecommendations.id })
+      )[0];
+      if (recommendation) {
+        await this.db
+          .update(recommendationPairJobs)
+          .set({ recommendationId: recommendation.id, updatedAt: at })
+          .where(eq(recommendationPairJobs.id, request.id));
+      }
     }
     await this.markDailyRun(memberId, runDate, "completed");
     return true;

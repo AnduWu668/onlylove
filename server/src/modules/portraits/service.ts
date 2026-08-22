@@ -38,6 +38,21 @@ const CALIBRATION_JOB_HEARTBEAT_MS = 30 * 1_000;
 const INLINE_MESSAGE_ID =
   /\s*[（(]?\s*\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b\s*[）)]?/giu;
 
+function collectEvidenceIds(value: unknown, ids = new Set<string>()) {
+  if (Array.isArray(value)) {
+    for (const item of value) collectEvidenceIds(item, ids);
+  } else if (value && typeof value === "object") {
+    for (const [key, item] of Object.entries(value)) {
+      if (key === "evidenceMessageIds" && Array.isArray(item)) {
+        for (const id of item) if (typeof id === "string") ids.add(id);
+      } else {
+        collectEvidenceIds(item, ids);
+      }
+    }
+  }
+  return ids;
+}
+
 const DIMENSION_LABELS: Record<PortraitDimension, string> = {
   long_term_planning: "长期规划",
   values: "价值观",
@@ -1585,5 +1600,85 @@ export class Portraits {
       await recordAttempts(attempts);
       throw error;
     }
+  }
+
+  async administrationDetail(memberId: string) {
+    const versions = await this.db
+      .select()
+      .from(portraitVersions)
+      .where(eq(portraitVersions.memberId, memberId))
+      .orderBy(desc(portraitVersions.version));
+    return {
+      portrait: versions[0] ?? null,
+      portraitVersions: versions,
+      evidenceMessageIds: [
+        ...collectEvidenceIds(versions.map((version) => version.matchProfile)),
+      ],
+    };
+  }
+
+  async administrationMetrics() {
+    const [drafts, states, calibration] = await Promise.all([
+      this.db.select().from(portraitDrafts),
+      this.db.select().from(portraitMemberStates),
+      this.db
+        .select({
+          portraitVersionId: portraitCalibrationScenarios.portraitVersionId,
+          rating: portraitCalibrationAnswers.rating,
+          criticalFabrication: portraitCalibrationAnswers.criticalFabrication,
+        })
+        .from(portraitCalibrationAnswers)
+        .innerJoin(
+          portraitCalibrationScenarios,
+          eq(
+            portraitCalibrationScenarios.id,
+            portraitCalibrationAnswers.scenarioId,
+          ),
+        ),
+    ]);
+    const calibrationByVersion = new Map<
+      string,
+      { total: number; likes: number; fabrication: boolean }
+    >();
+    for (const answer of calibration) {
+      const outcome = calibrationByVersion.get(answer.portraitVersionId) ?? {
+        total: 0,
+        likes: 0,
+        fabrication: false,
+      };
+      outcome.total += 1;
+      outcome.likes += Number(answer.rating === "like");
+      outcome.fabrication ||= answer.criticalFabrication;
+      calibrationByVersion.set(answer.portraitVersionId, outcome);
+    }
+    const completed = [...calibrationByVersion.entries()].filter(
+      ([, outcome]) => outcome.total === 10,
+    );
+    const passedVersions = new Set(
+      completed
+        .filter(([, outcome]) => outcome.likes >= 8 && !outcome.fabrication)
+        .map(([versionId]) => versionId),
+    );
+    return {
+      portraitStarted: drafts.length,
+      portraitComplete: drafts.filter((draft) => draft.completedDimensions === 8)
+        .length,
+      submitted: states.length,
+      calibrationPassed: passedVersions.size,
+      published: states.filter((state) => state.publishedVersionId).length,
+      publishedPassingMemberIds: states
+        .filter(
+          (state) =>
+            state.publishedVersionId &&
+            passedVersions.has(state.publishedVersionId),
+        )
+        .map(({ memberId }) => memberId),
+      calibrationPassRate: completed.length
+        ? Math.round((passedVersions.size / completed.length) * 10_000) / 100
+        : 0,
+      criticalFabrications: calibration.filter(
+        (answer) => answer.criticalFabrication,
+      ).length,
+    };
   }
 }

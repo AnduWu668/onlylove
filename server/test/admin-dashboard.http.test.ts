@@ -296,9 +296,14 @@ describe("issue 16 administration HTTP seam", () => {
   it("aggregates lifecycle, quality, token, cost, latency, failure and model data", async () => {
     const superAdmin = await seedMember("owner@onlylove.test", "super_admin");
     const member = await seedMember("member@onlylove.test");
-    await seedMember("candidate@onlylove.test");
+    const candidate = await seedMember("candidate@onlylove.test");
     const portraitId = randomUUID();
+    const candidatePortraitId = randomUUID();
+    const criteriaId = randomUUID();
+    const candidateCriteriaId = randomUUID();
     const jobId = randomUUID();
+    const matchingJobId = randomUUID();
+    const evaluationId = randomUUID();
 
     await pool.query(
       `INSERT INTO portrait_drafts
@@ -312,9 +317,28 @@ describe("issue 16 administration HTTP seam", () => {
         (id, member_id, version, client_request_id, source_draft_schema_version,
          match_profile, persona_context_schema_version, persona_context,
          calibration_schema_version, created_at)
-       VALUES ($1, $2, 1, $3, 'portrait-draft-v1', '{}',
-               'persona-context-v1', '隐藏上下文', 'portrait-calibration-v1', $4)`,
-      [portraitId, member.id, randomUUID(), now],
+       VALUES
+        ($1, $2, 1, $3, 'portrait-draft-v1', '{}',
+         'persona-context-v1', '隐藏上下文', 'portrait-calibration-v1', $4),
+        ($5, $6, 1, $7, 'portrait-draft-v1', '{}',
+         'persona-context-v1', '候选隐藏上下文', 'portrait-calibration-v1', $4)`,
+      [
+        portraitId,
+        member.id,
+        randomUUID(),
+        now,
+        candidatePortraitId,
+        candidate.id,
+        randomUUID(),
+      ],
+    );
+    await pool.query(
+      `INSERT INTO match_criteria_versions
+        (id, member_id, version, desired_gender, acceptable_cities, created_at)
+       VALUES
+        ($1, $2, 1, 'male', ARRAY['上海'], $5),
+        ($3, $4, 1, 'female', ARRAY['上海'], $5)`,
+      [criteriaId, member.id, candidateCriteriaId, candidate.id, now],
     );
     await pool.query(
       `INSERT INTO portrait_member_states
@@ -325,8 +349,10 @@ describe("issue 16 administration HTTP seam", () => {
     await pool.query(
       `INSERT INTO recommendation_daily_runs
         (member_id, run_date, status, created_at, completed_at)
-       VALUES ($1, '2026-08-23', 'completed', $2, $2)`,
-      [member.id, now],
+       VALUES
+        ($1, '2026-08-23', 'completed', $3, $3),
+        ($2, '2026-08-23', 'completed', $3, $3)`,
+      [member.id, candidate.id, now],
     );
     await pool.query(
       `INSERT INTO agent_jobs
@@ -336,6 +362,55 @@ describe("issue 16 administration HTTP seam", () => {
                'portrait-interviewer-v1', 'portrait-interviewer-prompt-v1', $2,
                'failed', 3, true, true, $3, $3)`,
       [jobId, member.id, now],
+    );
+    await pool.query(
+      `INSERT INTO agent_jobs
+        (id, role, task, definition_version, prompt_version, schema_version,
+         member_id, status, retry_count, switched_model, quota_refunded,
+         created_at, completed_at)
+       VALUES ($1, 'match_evaluator', 'evaluate_pair', 'match-evaluator-v0',
+               'match-evaluator-prompt-v0', 'pair-evaluation-schema-v0', $2,
+               'completed', 0, false, false, $3, $3)`,
+      [matchingJobId, member.id, now],
+    );
+    await pool.query(
+      `INSERT INTO pair_evaluations
+        (id, member_a_id, member_b_id, portrait_version_a_id,
+         portrait_version_b_id, criteria_version_a_id, criteria_version_b_id,
+         agent_job_id, rubric_version, result, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
+               'matching-rubric-v0', '{"reciprocalScore":80}', $9)`,
+      [
+        evaluationId,
+        member.id,
+        candidate.id,
+        portraitId,
+        candidatePortraitId,
+        criteriaId,
+        candidateCriteriaId,
+        matchingJobId,
+        now,
+      ],
+    );
+    await pool.query(
+      `INSERT INTO candidate_recommendations
+        (id, member_id, candidate_member_id, pair_evaluation_id,
+         member_portrait_version_id, candidate_portrait_version_id,
+         member_criteria_version_id, candidate_criteria_version_id,
+         reason, status, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
+               '测试推荐理由', 'pending', $9, $9)`,
+      [
+        randomUUID(),
+        member.id,
+        candidate.id,
+        evaluationId,
+        portraitId,
+        candidatePortraitId,
+        criteriaId,
+        candidateCriteriaId,
+        now,
+      ],
     );
     await pool.query(
       `INSERT INTO agent_runs
@@ -360,7 +435,7 @@ describe("issue 16 administration HTTP seam", () => {
     expect(dashboard.statusCode).toBe(200);
     expect(dashboard.json()).toMatchObject({
       members: { registered: 2, portraitStarted: 1, submitted: 1, published: 1 },
-      recommendations: { requested: 1, noCandidate: 1 },
+      recommendations: { requested: 2, generated: 1, noCandidate: 1 },
       quality: {
         calibrationPassRate: expect.any(Number),
         criticalFabrications: 0,
@@ -416,5 +491,30 @@ describe("issue 16 administration HTTP seam", () => {
       updatePolicy: expect.stringContaining("benchmark"),
     });
     expect(runtime.body).not.toContain("test-secret-that-must-not-leak");
+
+    for (const url of [
+      "/api/admin/moderation-access-audit",
+      "/api/admin/matching-settings/audit",
+      "/api/admin/agent-quota-settings/audit",
+    ]) {
+      const response = await app.inject({
+        method: "GET",
+        url,
+        headers: { cookie: superAdmin.cookie },
+      });
+      expect(response.statusCode, url).toBe(200);
+    }
+    const audits = await app.inject({
+      method: "GET",
+      url: "/api/admin/audits",
+      headers: { cookie: superAdmin.cookie },
+    });
+    expect(audits.json().audits.map(({ action }: { action: string }) => action)).toEqual(
+      expect.arrayContaining([
+        "moderation_audit_viewed",
+        "matching_settings_audit_viewed",
+        "agent_quota_settings_audit_viewed",
+      ]),
+    );
   });
 });

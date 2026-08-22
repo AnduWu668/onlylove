@@ -172,7 +172,7 @@ export class AgentRunError extends Error {
     super(code);
     this.code = code;
     this.attempts = attempts;
-    this.retryCount = Math.max(0, attempts.length - 1);
+    this.retryCount = attempts.length;
     this.switchedModel = attempts.some((attempt) => attempt.switchedModel);
   }
 }

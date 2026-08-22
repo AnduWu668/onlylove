@@ -1,12 +1,12 @@
 import cookie from "@fastify/cookie";
 import Fastify from "fastify";
+import { registerAdministrationRoutes } from "./admin.js";
 import { migrateDatabase, openDatabase } from "./db.js";
 import {
   AgentEngine,
   type AgentModelOptions,
 } from "./modules/agent-engine/engine.js";
 import { AgentJobs } from "./modules/agent-engine/jobs.js";
-import { registerAdministrationRoutes } from "./modules/administration/routes.js";
 import { MatchingConnections } from "./modules/connections/matching.js";
 import { ModerationConnections } from "./modules/connections/moderation.js";
 import { registerConnectionsRoutes } from "./modules/connections/routes.js";
@@ -19,6 +19,7 @@ import { InterviewConversations } from "./modules/conversations/interview.js";
 import { ConnectionMatching } from "./modules/matching/connections.js";
 import { ModerationMatching } from "./modules/matching/moderation.js";
 import { ConnectionMembers } from "./modules/members/connections.js";
+import { MembersAdministration } from "./modules/members/administration.js";
 import type { Mailer } from "./modules/members/mailer.js";
 import {
   bootstrapSuperAdmin,
@@ -62,6 +63,7 @@ export async function createApp(options: AppOptions) {
   const matchingModeration = new MatchingModeration(db);
   const moderationConnections = new ModerationConnections(db);
   const memberConversations = new MemberConversations(db);
+  const membersAdministration = new MembersAdministration(db);
   const connections = new Connections(
     db,
     now,
@@ -170,18 +172,39 @@ export async function createApp(options: AppOptions) {
       connections.humanConversationAccess(memberId, connectionId, database),
     completeConnectionReview: (memberId, completedAt) =>
       connections.completeReview(memberId, completedAt),
+    recordAdministrationAudit: (input) =>
+      membersAdministration.recordAudit(input),
     db,
     now,
     portraits,
   });
   registerConnectionsRoutes(app, { connections, db, now });
-  registerMatchingRoutes(app, { db, now, matching });
-  registerModerationRoutes(app, { db, moderation, now });
+  registerMatchingRoutes(app, {
+    db,
+    now,
+    matching,
+    recordAdministrationAudit: (input) =>
+      membersAdministration.recordAudit(input),
+  });
+  registerModerationRoutes(app, {
+    db,
+    moderation,
+    now,
+    recordAdministrationAudit: (input) =>
+      membersAdministration.recordAudit(input),
+  });
   registerAdministrationRoutes(app, {
     db,
     now,
     agentEngine,
+    agentJobs,
     agentModel: options.agentModel,
+    connections,
+    conversations: memberConversations,
+    matching,
+    members: membersAdministration,
+    moderation,
+    portraits,
   });
   const connectionMaintenance = setInterval(() => {
     void connections.runMaintenance().catch((error) => app.log.error(error));

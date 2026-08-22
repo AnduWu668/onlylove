@@ -155,6 +155,32 @@ describe("Agent Engine continueInterview seam", () => {
     engine.close();
   });
 
+  it("reports three exhausted attempts so the job enters the error list", async () => {
+    const engine = new AgentEngine({
+      provider: "deterministic-fake",
+      model: "primary-v1",
+      attempts: [
+        { error: "first failure" },
+        { error: "second failure" },
+        { error: "third failure" },
+      ],
+    });
+
+    const failure = await engine
+      .continueInterview(
+        interviewContext(),
+        "继续",
+        () => undefined,
+        async () => undefined,
+      )
+      .catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(AgentRunError);
+    expect((failure as AgentRunError).attempts).toHaveLength(3);
+    expect((failure as AgentRunError).retryCount).toBe(3);
+    engine.close();
+  });
+
   it("retries an unpersisted twin prediction after a partial model failure", async () => {
     const engine = new AgentEngine({
       provider: "deterministic-fake",
