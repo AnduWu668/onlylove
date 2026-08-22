@@ -17,6 +17,7 @@ import {
 import type { Database, DatabaseTransaction } from "../../db.js";
 import { AgentEngine, AgentRunError } from "../agent-engine/engine.js";
 import { type AgentJob, AgentJobs } from "../agent-engine/jobs.js";
+import { recordAdministrationAudit } from "../administration/routes.js";
 import {
   activeAdminById,
   adminForRequest,
@@ -1998,16 +1999,28 @@ export function registerConversationsRoutes(
   );
 
   app.get("/api/admin/agent-runs", async (request, reply) => {
-    const actor = await adminForRequest(request, db, now());
+    const viewedAt = now();
+    const actor = await adminForRequest(request, db, viewedAt);
     if (!actor) return reply.code(403).send({ code: "FORBIDDEN" });
     const runs = await options.agentJobs.listRuns(actor);
+    await recordAdministrationAudit(db, {
+      actorMemberId: actor.id,
+      action: "agent_runs_viewed",
+      createdAt: viewedAt,
+    });
     return { runs };
   });
 
   app.get("/api/admin/agent-jobs/failed", async (request, reply) => {
-    const actor = await adminForRequest(request, db, now());
+    const viewedAt = now();
+    const actor = await adminForRequest(request, db, viewedAt);
     if (!actor) return reply.code(403).send({ code: "FORBIDDEN" });
     const jobs = await options.agentJobs.listFailed(actor);
+    await recordAdministrationAudit(db, {
+      actorMemberId: actor.id,
+      action: "failed_agent_jobs_viewed",
+      createdAt: viewedAt,
+    });
     return {
       jobs: jobs.map((job) => ({
         id: job.id,
@@ -2037,10 +2050,18 @@ export function registerConversationsRoutes(
       },
     },
     async (request, reply) => {
-      const actor = await adminForRequest(request, db, now());
+      const retriedAt = now();
+      const actor = await adminForRequest(request, db, retriedAt);
       if (!actor) return reply.code(403).send({ code: "FORBIDDEN" });
       const job = await options.agentJobs.retryFailed(request.params.jobId, actor);
       if (!job) return reply.code(409).send({ code: "AGENT_JOB_NOT_RETRYABLE" });
+      await recordAdministrationAudit(db, {
+        actorMemberId: actor.id,
+        targetMemberId: job.memberId,
+        resourceId: job.id,
+        action: "failed_agent_job_retried",
+        createdAt: retriedAt,
+      });
       return reply.code(202).send({ jobId: job.id, status: job.status });
     },
   );
@@ -2064,7 +2085,8 @@ export function registerConversationsRoutes(
       },
     },
     async (request, reply) => {
-      const actor = await superAdminForRequest(request, db, now());
+      const assignedAt = now();
+      const actor = await superAdminForRequest(request, db, assignedAt);
       if (!actor) return reply.code(403).send({ code: "FORBIDDEN" });
       if (!(await activeAdminById(request.body.adminId, db))) {
         return reply.code(400).send({ code: "ADMIN_ASSIGNEE_REQUIRED" });
@@ -2074,6 +2096,14 @@ export function registerConversationsRoutes(
         request.body.adminId,
       );
       if (!job) return reply.code(409).send({ code: "AGENT_JOB_NOT_ASSIGNABLE" });
+      await recordAdministrationAudit(db, {
+        actorMemberId: actor.id,
+        targetMemberId: job.memberId,
+        resourceId: job.id,
+        action: "failed_agent_job_assigned",
+        createdAt: assignedAt,
+        details: { assignedAdminId: request.body.adminId },
+      });
       return { jobId: job.id, assignedAdminId: job.assignedAdminId };
     },
   );

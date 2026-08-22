@@ -6,6 +6,7 @@ import {
   type AgentModelOptions,
 } from "./modules/agent-engine/engine.js";
 import { AgentJobs } from "./modules/agent-engine/jobs.js";
+import { registerAdministrationRoutes } from "./modules/administration/routes.js";
 import { MatchingConnections } from "./modules/connections/matching.js";
 import { ModerationConnections } from "./modules/connections/moderation.js";
 import { registerConnectionsRoutes } from "./modules/connections/routes.js";
@@ -176,6 +177,12 @@ export async function createApp(options: AppOptions) {
   registerConnectionsRoutes(app, { connections, db, now });
   registerMatchingRoutes(app, { db, now, matching });
   registerModerationRoutes(app, { db, moderation, now });
+  registerAdministrationRoutes(app, {
+    db,
+    now,
+    agentEngine,
+    agentModel: options.agentModel,
+  });
   const connectionMaintenance = setInterval(() => {
     void connections.runMaintenance().catch((error) => app.log.error(error));
   }, options.connectionMaintenanceIntervalMs ?? 60_000);

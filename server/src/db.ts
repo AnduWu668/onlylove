@@ -2,6 +2,7 @@ import { fileURLToPath } from "node:url";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Pool } from "pg";
+import * as administrationSchema from "./modules/administration/schema.js";
 import * as agentEngineSchema from "./modules/agent-engine/schema.js";
 import * as connectionsSchema from "./modules/connections/schema.js";
 import * as conversationsSchema from "./modules/conversations/schema.js";
@@ -11,6 +12,7 @@ import * as moderationSchema from "./modules/moderation/schema.js";
 import * as portraitsSchema from "./modules/portraits/schema.js";
 
 const schema = {
+  ...administrationSchema,
   ...membersSchema,
   ...matchingSchema,
   ...connectionsSchema,
