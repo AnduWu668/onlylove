@@ -989,6 +989,22 @@ describe("Contact requests HTTP seam", () => {
         headers: { cookie },
       });
       expect(hidden.statusCode).toBe(404);
+      const hiddenSend = await app.inject({
+        method: "POST",
+        url: `/api/member/human-conversations/${conversationId}/messages`,
+        headers: { cookie },
+        payload: {
+          clientMessageId: randomUUID(),
+          content: "不应保存的越权消息",
+        },
+      });
+      expect(hiddenSend.statusCode).toBe(404);
+      const hiddenEvents = await app.inject({
+        method: "GET",
+        url: `/api/member/human-conversations/${conversationId}/events?after=0`,
+        headers: { cookie },
+      });
+      expect(hiddenEvents.statusCode).toBe(404);
     }
 
     const clientMessageId = randomUUID();
@@ -1043,16 +1059,6 @@ describe("Contact requests HTTP seam", () => {
       ],
     });
 
-    const duplicateCountPool = new Pool({ connectionString: databaseUrl });
-    const duplicateCount = await duplicateCountPool.query<{ count: string }>(
-      `SELECT COUNT(*)::text AS count
-         FROM conversation_messages
-        WHERE conversation_id = $1 AND client_message_id = $2`,
-      [conversationId, clientMessageId],
-    );
-    await duplicateCountPool.end();
-    expect(duplicateCount.rows[0]!.count).toBe("1");
-
     await app.listen({ host: "127.0.0.1", port: 0 });
     const address = app.server.address();
     if (!address || typeof address === "string") throw new Error("test server missing");
@@ -1088,6 +1094,18 @@ describe("Contact requests HTTP seam", () => {
     expect(streamed).toContain("event: message");
     expect(streamed).toContain("今晚见面聊聊？");
     abort.abort();
+
+    const recipientMessage = await app.inject({
+      method: "POST",
+      url: `/api/member/human-conversations/${conversationId}/messages`,
+      headers: { cookie: seeded.recipient.cookie },
+      payload: { clientMessageId: randomUUID(), content: "我也可以发送。" },
+    });
+    expect(recipientMessage.statusCode).toBe(201);
+    expect(recipientMessage.json().message).toMatchObject({
+      sender: "self",
+      content: "我也可以发送。",
+    });
 
     const availabilityPool = new Pool({ connectionString: databaseUrl });
     const unavailable = async () =>

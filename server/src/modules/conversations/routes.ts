@@ -7,7 +7,6 @@ import {
   desc,
   eq,
   gt,
-  inArray,
   isNotNull,
   isNull,
   lt,
@@ -19,10 +18,6 @@ import type { Database, DatabaseTransaction } from "../../db.js";
 import { AgentEngine, AgentRunError } from "../agent-engine/engine.js";
 import { type AgentJob, AgentJobs } from "../agent-engine/jobs.js";
 import {
-  currentConnectionMembers,
-  memberConnections,
-} from "../connections/schema.js";
-import {
   activeAdminById,
   adminForRequest,
   candidatePublicProfileById,
@@ -31,8 +26,6 @@ import {
   publicProfile,
   superAdminForRequest,
 } from "../members/routes.js";
-import { members } from "../members/schema.js";
-import { memberBlocks } from "../moderation/schema.js";
 import {
   agentQuotaSettings,
   agentQuotaSettingsAudits,
@@ -64,6 +57,17 @@ export interface ConversationsOptions {
     requesterMemberId?: string,
     transaction?: DatabaseTransaction,
   ) => Promise<string | undefined>;
+  humanConversationAccess: (
+    memberId: string,
+    connectionId: string,
+    database?: Database | DatabaseTransaction,
+  ) => Promise<
+    | {
+        canSend: boolean;
+        otherMember: { displayName: string; deleted: boolean };
+      }
+    | undefined
+  >;
   now: () => Date;
   portraits: Portraits;
 }
@@ -104,18 +108,15 @@ function publicHumanMessage(
 }
 
 async function humanConversationForMember(
+  options: ConversationsOptions,
   database: Database | DatabaseTransaction,
   conversationId: string,
   memberId: string,
 ) {
-  return (
+  const conversation = (
     await database
-      .select({ conversation: conversations, connection: memberConnections })
+      .select()
       .from(conversations)
-      .innerJoin(
-        memberConnections,
-        eq(conversations.connectionId, memberConnections.id),
-      )
       .where(
         and(
           eq(conversations.id, conversationId),
@@ -128,63 +129,13 @@ async function humanConversationForMember(
       )
       .limit(1)
   )[0];
-}
-
-async function humanConversationCanSend(
-  database: Database | DatabaseTransaction,
-  state: NonNullable<Awaited<ReturnType<typeof humanConversationForMember>>>,
-  at: Date,
-) {
-  if (state.connection.status !== "active") return false;
-  const memberIds = [
-    state.connection.memberAId,
-    state.connection.memberBId,
-  ];
-  const currentMembers = await database
-    .select({ memberId: currentConnectionMembers.memberId })
-    .from(currentConnectionMembers)
-    .where(
-      and(
-        eq(currentConnectionMembers.connectionId, state.connection.id),
-        inArray(currentConnectionMembers.memberId, memberIds),
-      ),
-    );
-  const participantRows = await database
-    .select({
-      id: members.id,
-      role: members.role,
-      deletedAt: members.deletedAt,
-      suspendedUntil: members.suspendedUntil,
-    })
-    .from(members)
-    .where(inArray(members.id, memberIds));
-  const blocked = await database
-    .select({ blockerMemberId: memberBlocks.blockerMemberId })
-    .from(memberBlocks)
-    .where(
-      or(
-        and(
-          eq(memberBlocks.blockerMemberId, memberIds[0]!),
-          eq(memberBlocks.blockedMemberId, memberIds[1]!),
-        ),
-        and(
-          eq(memberBlocks.blockerMemberId, memberIds[1]!),
-          eq(memberBlocks.blockedMemberId, memberIds[0]!),
-        ),
-      ),
-    )
-    .limit(1);
-  return (
-    currentMembers.length === 2 &&
-    participantRows.length === 2 &&
-    participantRows.every(
-      (member) =>
-        member.role === "member" &&
-        !member.deletedAt &&
-        (!member.suspendedUntil || member.suspendedUntil <= at),
-    ) &&
-    !blocked.length
+  if (!conversation?.connectionId) return undefined;
+  const access = await options.humanConversationAccess(
+    memberId,
+    conversation.connectionId,
+    database,
   );
+  return access ? { conversation, access } : undefined;
 }
 
 async function humanConversationState(
@@ -193,6 +144,7 @@ async function humanConversationState(
   viewerMemberId: string,
 ) {
   const state = await humanConversationForMember(
+    options,
     options.db,
     conversationId,
     viewerMemberId,
@@ -218,29 +170,11 @@ async function humanConversationState(
       )
       .where(eq(conversations.id, conversationId));
   }
-  const otherMemberId = viewerIsMember
-    ? state.conversation.visitorMemberId!
-    : state.conversation.memberId;
-  const otherMember = (
-    await options.db
-      .select({ nickname: members.nickname, deletedAt: members.deletedAt })
-      .from(members)
-      .where(eq(members.id, otherMemberId))
-      .limit(1)
-  )[0]!;
   return {
     conversationId,
     createdAt: state.conversation.createdAt.toISOString(),
-    canSend: await humanConversationCanSend(options.db, state, options.now()),
-    otherMember: otherMember.deletedAt
-      ? {
-          displayName: "已注销成员（历史消息已保留）",
-          deleted: true,
-        }
-      : {
-          displayName: otherMember.nickname ?? "联系成员",
-          deleted: false,
-        },
+    canSend: state.access.canSend,
+    otherMember: state.access.otherMember,
     messages: messagesInConversation.map((message) =>
       publicHumanMessage(message, viewerMemberId),
     ),
@@ -264,6 +198,7 @@ async function reserveHumanMessage(
       sql`select pg_advisory_xact_lock(hashtext(${input.conversationId}))`,
     );
     const state = await humanConversationForMember(
+      options,
       transaction,
       input.conversationId,
       input.memberId,
@@ -287,7 +222,7 @@ async function reserveHumanMessage(
     if (duplicate) {
       return { created: false as const, message: duplicate };
     }
-    if (!(await humanConversationCanSend(transaction, state, input.submittedAt))) {
+    if (!state.access.canSend) {
       return { readOnly: true as const };
     }
     const lastSequence = (
@@ -1169,6 +1104,7 @@ export function registerConversationsRoutes(
         return reply.code(404).send({ code: "CONVERSATION_NOT_FOUND" });
       }
       const state = await humanConversationForMember(
+        options,
         db,
         request.params.conversationId,
         member.id,
@@ -1233,6 +1169,7 @@ export function registerConversationsRoutes(
         !member ||
         member.role !== "member" ||
         !(await humanConversationForMember(
+          options,
           db,
           request.params.conversationId,
           member.id,

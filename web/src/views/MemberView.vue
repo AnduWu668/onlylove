@@ -2329,7 +2329,7 @@ async function withdrawPortrait() {
                   v-for="message in humanConversation.messages"
                   :key="message.id"
                   class="chat-message"
-                  :data-role="message.sender === 'self' ? 'member' : 'agent'"
+                  :data-role="message.sender"
                 >
                   <span>
                     {{ message.sender === "self" ? "我" : humanConversation.otherMember.displayName }}

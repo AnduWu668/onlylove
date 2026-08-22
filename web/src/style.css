@@ -783,7 +783,8 @@ button:disabled {
   background: #eee5da;
 }
 
-.chat-message[data-role="member"] {
+.chat-message[data-role="member"],
+.chat-message[data-role="self"] {
   justify-self: end;
   border-radius: 18px 18px 5px;
   color: #fffaf3;

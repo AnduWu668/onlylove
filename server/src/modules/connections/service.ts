@@ -51,6 +51,83 @@ export class Connections {
     private readonly portraits: ConnectionPortraits,
   ) {}
 
+  private ensureHumanConversation(
+    connection: typeof memberConnections.$inferSelect,
+    database: Database | DatabaseTransaction = this.db,
+  ) {
+    return this.conversations.ensureHuman(
+      {
+        connectionId: connection.id,
+        memberAId: connection.memberAId,
+        memberBId: connection.memberBId,
+        createdAt: connection.createdAt,
+      },
+      database,
+    );
+  }
+
+  async humanConversationAccess(
+    memberId: string,
+    connectionId: string,
+    database: Database | DatabaseTransaction = this.db,
+  ) {
+    const connection = (
+      await database
+        .select()
+        .from(memberConnections)
+        .where(
+          and(
+            eq(memberConnections.id, connectionId),
+            or(
+              eq(memberConnections.memberAId, memberId),
+              eq(memberConnections.memberBId, memberId),
+            ),
+          ),
+        )
+        .limit(1)
+    )[0];
+    if (!connection) return undefined;
+    const memberIds = [connection.memberAId, connection.memberBId];
+    const currentMembers = await database
+      .select({ memberId: currentConnectionMembers.memberId })
+      .from(currentConnectionMembers)
+      .where(
+        and(
+          eq(currentConnectionMembers.connectionId, connection.id),
+          inArray(currentConnectionMembers.memberId, memberIds),
+        ),
+      );
+    const participantRows = await this.members.byIds(memberIds, database);
+    const blocked = await this.moderation.blocked(
+      connection.memberAId,
+      connection.memberBId,
+      database,
+    );
+    const otherMember = participantRows.find(({ id }) => id !== memberId)!;
+    return {
+      canSend:
+        connection.status === "active" &&
+        currentMembers.length === 2 &&
+        participantRows.length === 2 &&
+        participantRows.every(
+          (member) =>
+            member.role === "member" &&
+            !member.deletedAt &&
+            (!member.suspendedUntil || member.suspendedUntil <= this.now()),
+        ) &&
+        !blocked,
+      otherMember: otherMember.deletedAt
+        ? {
+            displayName: "已注销成员（历史消息已保留）",
+            deleted: true,
+          }
+        : {
+            displayName: otherMember.nickname ?? "联系成员",
+            deleted: false,
+          },
+    };
+  }
+
   private async availablePair(
     recommendation: NonNullable<
       Awaited<ReturnType<ConnectionMatching["byId"]>>
@@ -375,15 +452,7 @@ export class Connections {
             .where(eq(memberConnections.id, current.connectionId))
             .limit(1)
         )[0]!;
-        await this.conversations.ensureHuman(
-          {
-            connectionId: connection.id,
-            memberAId: connection.memberAId,
-            memberBId: connection.memberBId,
-            createdAt: connection.createdAt,
-          },
-          transaction,
-        );
+        await this.ensureHumanConversation(connection, transaction);
         return { accepted: false as const, connection };
       }
       if (current.status !== "pending") {
@@ -430,15 +499,7 @@ export class Connections {
           })
           .returning()
       )[0]!;
-      await this.conversations.ensureHuman(
-        {
-          connectionId: connection.id,
-          memberAId: connection.memberAId,
-          memberBId: connection.memberBId,
-          createdAt: connection.createdAt,
-        },
-        transaction,
-      );
+      await this.ensureHumanConversation(connection, transaction);
       await transaction.insert(currentConnectionMembers).values([
         {
           memberId: current.requesterMemberId,
@@ -583,12 +644,7 @@ export class Connections {
         .limit(1)
     )[0];
     if (!row) return null;
-    await this.conversations.ensureHuman({
-      connectionId: row.connection.id,
-      memberAId: row.connection.memberAId,
-      memberBId: row.connection.memberBId,
-      createdAt: row.connection.createdAt,
-    });
+    await this.ensureHumanConversation(row.connection);
     const conversation = await this.conversations.humanState(
       row.connection.id,
       memberId,
