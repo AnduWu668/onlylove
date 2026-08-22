@@ -400,7 +400,7 @@ describe("OnlyLove UI seam", () => {
       nickname: "已离开的人",
       deletedAt: "2026-08-22T08:00:00.000Z",
     };
-    let deletedMembers = [deletedMember];
+    let deletedMemberLoads = 0;
     const request = vi.fn(async (url: string, options?: RequestInit) => {
       if (url === "/api/session") {
         return {
@@ -412,14 +412,15 @@ describe("OnlyLove UI seam", () => {
         };
       }
       if (url === `/api/admin/deleted-members/${deletedMember.id}/restore`) {
-        deletedMembers = [];
         return { ok: true, status: 200, json: async () => deletedMember };
       }
       if (url === "/api/admin/deleted-members") {
+        deletedMemberLoads += 1;
+        if (deletedMemberLoads > 1) throw new Error("list reload unavailable");
         return {
           ok: true,
           status: 200,
-          json: async () => ({ members: deletedMembers }),
+          json: async () => ({ members: [deletedMember] }),
         };
       }
       if (url === "/api/admin/invitations") {

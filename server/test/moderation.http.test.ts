@@ -946,4 +946,91 @@ describe("Moderation HTTP seam", () => {
       suspendedUntil: "9999-12-31T23:59:59.999Z",
     });
   });
+
+  it("keeps a surviving member's punishment when the reporter is permanently purged", async () => {
+    const seeded = await seedScenario();
+    const retainedCaseId = (await reportHumanMessage(seeded)).json().case.id as string;
+    await app.inject({
+      method: "POST",
+      url: `/api/admin/moderation-cases/${retainedCaseId}/decision`,
+      headers: { cookie: seeded.admin.cookie },
+      payload: {
+        action: "suspended",
+        reason: "该处置不随举报人账户清除而失效。",
+        suspendedUntil: new Date(now.getTime() + 7 * 86_400_000).toISOString(),
+      },
+    });
+
+    const appealedCaseId = randomUUID();
+    const pool = new Pool({ connectionString: databaseUrl });
+    await pool.query(
+      `INSERT INTO moderation_cases
+        (id, type, reporter_member_id, reported_member_id, target_kind, target_id,
+         message_id, conversation_id, reason, evidence, status, created_at, resolved_at)
+       VALUES ($1, 'report', $2, $3, 'human_message', $4, $4, $5,
+               '另一起举报', '另一起证据', 'resolved', $6, $6)`,
+      [
+        appealedCaseId,
+        seeded.outsider.memberId,
+        seeded.reported.memberId,
+        seeded.humanMessageId,
+        seeded.humanConversationId,
+        now,
+      ],
+    );
+    await pool.query(
+      `INSERT INTO moderation_decisions
+        (case_id, decided_by_member_id, action, reason, created_at)
+       VALUES ($1, $2, 'banned', '另一起处置', $3)`,
+      [appealedCaseId, seeded.admin.memberId, now],
+    );
+    await pool.query(
+      `INSERT INTO member_recommendation_restrictions
+        (member_id, source_case_id, created_at)
+       VALUES ($1, $2, $3)`,
+      [seeded.reported.memberId, appealedCaseId, now],
+    );
+    await pool.end();
+
+    expect(
+      (
+        await app.inject({
+          method: "DELETE",
+          url: "/api/member",
+          headers: { cookie: seeded.reporter.cookie },
+        })
+      ).statusCode,
+    ).toBe(204);
+    expect(
+      (
+        await app.inject({
+          method: "DELETE",
+          url: `/api/admin/deleted-members/${seeded.reporter.memberId}`,
+          headers: { cookie: seeded.superAdmin.cookie },
+        })
+      ).statusCode,
+    ).toBe(204);
+
+    const appeal = await app.inject({
+      method: "POST",
+      url: `/api/member/moderation-cases/${appealedCaseId}/appeal`,
+      headers: { cookie: seeded.reported.cookie },
+      payload: { reason: "申请复核另一起处置。", evidence: "补充案件上下文。" },
+    });
+    expect(appeal.statusCode).toBe(201);
+    const review = await app.inject({
+      method: "POST",
+      url: `/api/admin/moderation-cases/${appeal.json().case.id}/decision`,
+      headers: { cookie: seeded.admin.cookie },
+      payload: { action: "dismissed", reason: "仅撤销另一起处置。" },
+    });
+    expect(review.statusCode).toBe(200);
+
+    const profile = await app.inject({
+      method: "GET",
+      url: "/api/member/profile",
+      headers: { cookie: seeded.reported.cookie },
+    });
+    expect(profile.statusCode).toBe(401);
+  });
 });

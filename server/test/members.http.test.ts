@@ -818,6 +818,20 @@ describe("Members HTTP seam", () => {
     expect(unauthenticated.statusCode).toBe(401);
   });
 
+  it("audits each super-administrator read of the member deletion log", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/admin/member-deletion-audit",
+      headers: { cookie: await signInAdmin() },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().audits[0]).toMatchObject({
+      action: "audit_viewed",
+      targetMemberId: null,
+    });
+  });
+
   it("logically deletes a member and lets only the super administrator restore or purge it", async () => {
     const email = "deleted@onlylove.test";
     const memberCookie = await signInMember(email);
@@ -923,6 +937,7 @@ describe("Members HTTP seam", () => {
     });
     expect(afterPurge.json().members).toEqual([]);
 
+    currentTime = new Date(currentTime.getTime() + 1);
     const audit = await app.inject({
       method: "GET",
       url: "/api/admin/member-deletion-audit",
@@ -932,6 +947,7 @@ describe("Members HTTP seam", () => {
     expect(
       audit.json().audits.map(({ action }: { action: string }) => action),
     ).toEqual([
+      "audit_viewed",
       "viewed",
       "purged",
       "deleted",

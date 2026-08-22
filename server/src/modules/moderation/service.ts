@@ -446,14 +446,7 @@ export class Moderation {
       );
     await database
       .delete(memberRecommendationRestrictions)
-      .where(
-        or(
-          eq(memberRecommendationRestrictions.memberId, memberId),
-          caseIds.length
-            ? inArray(memberRecommendationRestrictions.sourceCaseId, caseIds)
-            : undefined,
-        ),
-      );
+      .where(eq(memberRecommendationRestrictions.memberId, memberId));
     if (caseIds.length) {
       await database
         .update(moderationCases)
@@ -466,7 +459,7 @@ export class Moderation {
         .where(inArray(moderationCases.id, caseIds));
       await database
         .update(moderationDecisions)
-        .set({ reason: "成员资料已永久清除", suspendedUntil: null })
+        .set({ reason: "成员资料已永久清除" })
         .where(inArray(moderationDecisions.caseId, caseIds));
     }
     await database

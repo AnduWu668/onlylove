@@ -1367,12 +1367,22 @@ export function registerMembersRoutes(
   );
 
   app.get("/api/admin/member-deletion-audit", async (request, reply) => {
-    const actor = await superAdminForRequest(request, db, now());
+    const viewedAt = now();
+    const actor = await superAdminForRequest(request, db, viewedAt);
     if (!actor) return reply.code(403).send({ code: "FORBIDDEN" });
-    const rows = await db
-      .select()
-      .from(memberDeletionAudits)
-      .orderBy(desc(memberDeletionAudits.createdAt));
+    const rows = await db.transaction(async (transaction) => {
+      await transaction.insert(memberDeletionAudits).values({
+        id: randomUUID(),
+        actorMemberId: actor.id,
+        targetMemberId: null,
+        action: "audit_viewed",
+        createdAt: viewedAt,
+      });
+      return transaction
+        .select()
+        .from(memberDeletionAudits)
+        .orderBy(desc(memberDeletionAudits.createdAt));
+    });
     return {
       audits: rows.map((audit) => ({
         ...audit,

@@ -288,7 +288,9 @@ async function manageDeletedMember(
       { method: permanent ? "DELETE" : "POST" },
     );
     if (!response.ok) throw new Error();
-    await loadDeletedMembers();
+    deletedMembers.value = deletedMembers.value.filter(
+      (item) => item.id !== member.id,
+    );
     memberLifecycleSuccess.value = permanent
       ? "成员账户资料已永久清除，操作已写入审计。"
       : "成员已恢复，操作已写入审计。";
