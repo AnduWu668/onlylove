@@ -817,4 +817,130 @@ describe("Members HTTP seam", () => {
     });
     expect(unauthenticated.statusCode).toBe(401);
   });
+
+  it("logically deletes a member and lets only the super administrator restore or purge it", async () => {
+    const email = "deleted@onlylove.test";
+    const memberCookie = await signInMember(email);
+    const superAdminCookie = await signInAdmin();
+
+    const memberCannotManageDeletedAccounts = await app.inject({
+      method: "GET",
+      url: "/api/admin/deleted-members",
+      headers: { cookie: memberCookie },
+    });
+    expect(memberCannotManageDeletedAccounts.statusCode).toBe(403);
+
+    const deleted = await app.inject({
+      method: "DELETE",
+      url: "/api/member",
+      headers: { cookie: memberCookie },
+    });
+    expect(deleted.statusCode).toBe(204);
+    expect(deleted.cookies[0]).toMatchObject({
+      name: "onlylove_session",
+      value: "",
+    });
+    expect(
+      (
+        await app.inject({
+          method: "GET",
+          url: "/api/session",
+          headers: { cookie: memberCookie },
+        })
+      ).statusCode,
+    ).toBe(401);
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: "/api/auth/login",
+          payload: { email, password: "secure-pass-123" },
+        })
+      ).statusCode,
+    ).toBe(401);
+
+    const listed = await app.inject({
+      method: "GET",
+      url: "/api/admin/deleted-members",
+      headers: { cookie: superAdminCookie },
+    });
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json().members).toEqual([
+      expect.objectContaining({ email, nickname: null }),
+    ]);
+    const memberId = listed.json().members[0].id;
+
+    await invite(email);
+    const retainedEmail = await app.inject({
+      method: "POST",
+      url: "/api/auth/otp",
+      payload: { email },
+    });
+    expect(retainedEmail.statusCode).toBe(403);
+    expect(retainedEmail.json().code).toBe("ACCOUNT_DELETED");
+
+    currentTime = new Date(currentTime.getTime() + 1);
+    const restored = await app.inject({
+      method: "POST",
+      url: `/api/admin/deleted-members/${memberId}/restore`,
+      headers: { cookie: superAdminCookie },
+    });
+    expect(restored.statusCode).toBe(200);
+    expect(restored.json()).toMatchObject({ id: memberId, email });
+
+    const signedInAgain = await app.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { email, password: "secure-pass-123" },
+    });
+    expect(signedInAgain.statusCode).toBe(200);
+    const restoredCookie =
+      signedInAgain.cookies[0]?.name + "=" + signedInAgain.cookies[0]?.value;
+    currentTime = new Date(currentTime.getTime() + 1);
+    expect(
+      (
+        await app.inject({
+          method: "DELETE",
+          url: "/api/member",
+          headers: { cookie: restoredCookie },
+        })
+      ).statusCode,
+    ).toBe(204);
+
+    currentTime = new Date(currentTime.getTime() + 1);
+    const purged = await app.inject({
+      method: "DELETE",
+      url: `/api/admin/deleted-members/${memberId}`,
+      headers: { cookie: superAdminCookie },
+    });
+    expect(purged.statusCode).toBe(204);
+    const afterPurge = await app.inject({
+      method: "GET",
+      url: "/api/admin/deleted-members",
+      headers: { cookie: superAdminCookie },
+    });
+    expect(afterPurge.json().members).toEqual([]);
+
+    const audit = await app.inject({
+      method: "GET",
+      url: "/api/admin/member-deletion-audit",
+      headers: { cookie: superAdminCookie },
+    });
+    expect(audit.statusCode).toBe(200);
+    expect(audit.json().audits.map(({ action }: { action: string }) => action)).toEqual([
+      "purged",
+      "deleted",
+      "restored",
+      "deleted",
+    ]);
+
+    await invite(email);
+    const emailAvailableAgain = await app.inject({
+      method: "POST",
+      url: "/api/auth/otp",
+      payload: { email },
+    });
+    expect(emailAvailableAgain.statusCode).toBe(202);
+    expect(emailAvailableAgain.json().requiresBirthDate).toBe(true);
+  });
 });

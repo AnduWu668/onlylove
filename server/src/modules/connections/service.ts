@@ -1113,17 +1113,27 @@ export class Connections {
         ...(request.status === "expired"
           ? { resolutionMessage: "请求已过期，不计为拒绝。" }
           : {}),
-        candidate: {
-          avatarText: candidate.nickname?.trim().slice(0, 1) || "爱",
-          nickname: candidate.nickname ?? "候选成员",
-          age: ageOn(candidate.birthDate, this.now()),
-          heightCm: candidate.heightCm,
-          city: candidate.city ?? "",
-          occupation: candidate.occupation ?? "",
-          reason: incoming
-            ? "你们的公开资料和择偶条件相互匹配。"
-            : recommendation.reason,
-        },
+        candidate: candidate.deletedAt
+          ? {
+              avatarText: "已",
+              nickname: "已注销成员",
+              age: null,
+              heightCm: null,
+              city: "",
+              occupation: "",
+              reason: "该成员已注销，历史请求仅保留状态记录。",
+            }
+          : {
+              avatarText: candidate.nickname?.trim().slice(0, 1) || "爱",
+              nickname: candidate.nickname ?? "候选成员",
+              age: ageOn(candidate.birthDate, this.now()),
+              heightCm: candidate.heightCm,
+              city: candidate.city ?? "",
+              occupation: candidate.occupation ?? "",
+              reason: incoming
+                ? "你们的公开资料和择偶条件相互匹配。"
+                : recommendation.reason,
+            },
         ...(incoming && conversation
           ? {
               conversation: {

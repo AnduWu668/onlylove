@@ -244,6 +244,7 @@ const member = ref<{ email: string; role: string; suspendedUntil?: string | null
 const loading = ref(true);
 const profileLoaded = ref(false);
 const saving = ref(false);
+const deletingAccount = ref(false);
 const error = ref("");
 const success = ref("");
 const version = ref<number>();
@@ -476,6 +477,28 @@ onUnmounted(() => {
 async function signOut() {
   await fetch("/api/session", { method: "DELETE" });
   await router.replace("/login");
+}
+
+async function deleteAccount() {
+  if (
+    deletingAccount.value ||
+    !window.confirm(
+      "注销会立即退出登录、结束当前联系并取消待处理请求。历史真人消息仍会为对方保留，确定继续吗？",
+    )
+  ) {
+    return;
+  }
+  deletingAccount.value = true;
+  error.value = "";
+  try {
+    const response = await fetch("/api/member", { method: "DELETE" });
+    if (!response.ok) throw new Error();
+    await router.replace("/login");
+  } catch {
+    error.value = "账户未注销，请刷新后重试。";
+  } finally {
+    deletingAccount.value = false;
+  }
 }
 
 async function loadModeration() {
@@ -2304,6 +2327,21 @@ async function withdrawPortrait() {
       </div>
       <button class="security-link" type="button" @click="showTab('moderation')">
         查看治理记录
+      </button>
+    </section>
+
+    <section class="account-security">
+      <div>
+        <strong>注销账户</strong>
+        <p>立即停止登录、推荐和联系；历史真人消息会匿名保留。</p>
+      </div>
+      <button
+        class="security-link delete-account"
+        type="button"
+        :disabled="deletingAccount"
+        @click="deleteAccount"
+      >
+        {{ deletingAccount ? "注销中…" : "确认注销" }}
       </button>
     </section>
 

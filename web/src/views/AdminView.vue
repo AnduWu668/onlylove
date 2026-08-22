@@ -43,6 +43,13 @@ interface ModerationCaseDetail {
   } | null;
 }
 
+interface DeletedMember {
+  id: string;
+  email: string;
+  nickname: string | null;
+  deletedAt: string;
+}
+
 const router = useRouter();
 const adminRole = ref<"admin" | "super_admin">();
 const email = ref("");
@@ -59,6 +66,8 @@ const relationshipMetrics = ref<RelationshipMetrics>();
 const moderationCases = ref<ModerationCase[]>([]);
 const moderationMetrics = ref({ distortionFeedbackCount: 0, openCaseCount: 0 });
 const selectedModerationCase = ref<ModerationCaseDetail>();
+const deletedMembers = ref<DeletedMember[]>([]);
+const memberLifecycleSuccess = ref("");
 
 const statusText: Record<Invitation["status"], string> = {
   active: "有效",
@@ -93,6 +102,13 @@ async function loadRelationshipMetrics() {
   const response = await fetch("/api/admin/relationship-metrics");
   if (!response.ok) throw new Error("无法读取关系指标");
   relationshipMetrics.value = await response.json();
+}
+
+async function loadDeletedMembers() {
+  const response = await fetch("/api/admin/deleted-members");
+  if (!response.ok) throw new Error("无法读取已注销成员");
+  const data = await response.json();
+  deletedMembers.value = Array.isArray(data.members) ? data.members : [];
 }
 
 async function loadModeration() {
@@ -140,6 +156,7 @@ onMounted(async () => {
             loadMatchingSettings(),
             loadAgentQuotaSettings(),
             loadRelationshipMetrics(),
+            loadDeletedMembers(),
           ]
         : []),
     ]);
@@ -243,6 +260,40 @@ async function saveAgentQuotaSettings() {
     quotaSettingsSuccess.value = "Agent 额度已保存，修改记录已写入审计。";
   } catch (caught) {
     error.value = caught instanceof Error ? caught.message : "Agent 额度保存失败。";
+  } finally {
+    busy.value = false;
+  }
+}
+
+async function manageDeletedMember(
+  member: DeletedMember,
+  action: "restore" | "purge",
+) {
+  const permanent = action === "purge";
+  if (
+    !window.confirm(
+      permanent
+        ? `永久清除 ${member.email} 的账户资料后不能恢复，确定继续吗？`
+        : `恢复 ${member.email} 的登录资格吗？`,
+    )
+  ) {
+    return;
+  }
+  busy.value = true;
+  error.value = "";
+  memberLifecycleSuccess.value = "";
+  try {
+    const response = await fetch(
+      `/api/admin/deleted-members/${member.id}${permanent ? "" : "/restore"}`,
+      { method: permanent ? "DELETE" : "POST" },
+    );
+    if (!response.ok) throw new Error();
+    await loadDeletedMembers();
+    memberLifecycleSuccess.value = permanent
+      ? "成员账户资料已永久清除，操作已写入审计。"
+      : "成员已恢复，操作已写入审计。";
+  } catch {
+    error.value = "成员状态已变化，请刷新后重试。";
   } finally {
     busy.value = false;
   }
@@ -413,6 +464,49 @@ function formatDate(value: string) {
         <span>确认关系 {{ relationshipMetrics.confirmed }}</span>
         <span>待恢复 {{ relationshipMetrics.recoveryPending }}</span>
         <span>已恢复推荐 {{ relationshipMetrics.resumed }}</span>
+      </div>
+    </section>
+
+    <section
+      v-if="adminRole === 'super_admin'"
+      class="admin-panel moderation-admin-panel"
+    >
+      <div class="list-heading">
+        <div>
+          <h2>已注销成员</h2>
+          <p>恢复会重新允许登录；永久清除会释放原邮箱且无法撤销。</p>
+        </div>
+        <span>{{ deletedMembers.length }} 人</span>
+      </div>
+      <p v-if="memberLifecycleSuccess" class="save-success" role="status">
+        {{ memberLifecycleSuccess }}
+      </p>
+      <div class="moderation-case-list">
+        <article v-for="item in deletedMembers" :key="item.id">
+          <div>
+            <strong>{{ item.nickname || '未填写昵称' }}</strong>
+            <p>{{ item.email }} · 注销于 {{ formatDate(item.deletedAt) }}</p>
+          </div>
+          <div class="invitation-actions">
+            <button
+              type="button"
+              class="invitation-action"
+              :disabled="busy"
+              @click="manageDeletedMember(item, 'restore')"
+            >
+              恢复
+            </button>
+            <button
+              type="button"
+              class="invitation-action"
+              :disabled="busy"
+              @click="manageDeletedMember(item, 'purge')"
+            >
+              永久清除
+            </button>
+          </div>
+        </article>
+        <p v-if="!deletedMembers.length" class="empty-state">暂无已注销成员。</p>
       </div>
     </section>
 

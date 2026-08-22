@@ -300,6 +300,10 @@ button:disabled {
   text-underline-offset: 4px;
 }
 
+.delete-account {
+  color: #8f1736;
+}
+
 .loading-state {
   padding: 32px 0;
   color: #806f6d;

@@ -1210,10 +1210,25 @@ describe("Contact requests HTTP seam", () => {
       new Date(now.getTime() + 86_400_000),
     ]);
     expect((await unavailable()).json().code).toBe("HUMAN_CONVERSATION_READ_ONLY");
-    await availabilityPool.query("UPDATE members SET suspended_until = NULL, deleted_at = $2 WHERE id = $1", [
-      seeded.recipient.memberId,
-      now,
-    ]);
+    await availabilityPool.query(
+      "UPDATE members SET suspended_until = NULL WHERE id = $1",
+      [seeded.recipient.memberId],
+    );
+    const deleted = await app.inject({
+      method: "DELETE",
+      url: "/api/member",
+      headers: { cookie: seeded.recipient.cookie },
+    });
+    expect(deleted.statusCode).toBe(204);
+    expect(
+      (
+        await app.inject({
+          method: "GET",
+          url: "/api/member/contact-requests",
+          headers: { cookie: seeded.recipient.cookie },
+        })
+      ).statusCode,
+    ).toBe(401);
     expect((await unavailable()).json().code).toBe("HUMAN_CONVERSATION_READ_ONLY");
     const retained = await app.inject({
       method: "GET",
@@ -1224,14 +1239,27 @@ describe("Contact requests HTTP seam", () => {
       displayName: "已注销成员（历史消息已保留）",
       deleted: true,
     });
-    await availabilityPool.query("UPDATE members SET deleted_at = NULL WHERE id = $1", [
-      seeded.recipient.memberId,
-    ]);
-    await availabilityPool.query(
-      "UPDATE member_connections SET status = 'ended', ended_at = $2 WHERE id = $1",
-      [accepted.json().connection.id, now],
+    expect(retained.json().messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ content: "我也可以发送。" }),
+      ]),
     );
-    expect((await unavailable()).json().code).toBe("HUMAN_CONVERSATION_READ_ONLY");
+    const afterDeletion = await app.inject({
+      method: "GET",
+      url: "/api/member/contact-requests",
+      headers: { cookie: seeded.requester.cookie },
+    });
+    expect(afterDeletion.json().currentConnection).toBeNull();
+    expect(afterDeletion.json().recovery.status).toBe("review_required");
+    expect(afterDeletion.json().outgoing[0].candidate).toEqual({
+      avatarText: "已",
+      nickname: "已注销成员",
+      age: null,
+      heightCm: null,
+      city: "",
+      occupation: "",
+      reason: "该成员已注销，历史请求仅保留状态记录。",
+    });
     await availabilityPool.end();
   });
 

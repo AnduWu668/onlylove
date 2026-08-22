@@ -58,6 +58,7 @@ export async function createApp(options: AppOptions) {
   const interviewConversations = new InterviewConversations(db);
   const portraits = new Portraits(db, now, interviewConversations, agentJobs);
   const matchingModeration = new MatchingModeration(db);
+  const moderationConnections = new ModerationConnections(db);
   const connections = new Connections(
     db,
     now,
@@ -83,7 +84,7 @@ export async function createApp(options: AppOptions) {
     now,
     options.mailer,
     new ModerationConversations(db),
-    new ModerationConnections(db),
+    moderationConnections,
     new ModerationMatching(db),
     new ModerationMembers(db),
   );
@@ -100,6 +101,8 @@ export async function createApp(options: AppOptions) {
     now,
     otpSecret: options.otpSecret,
     production: options.production ?? false,
+    endMemberInteractions: (memberId, endedAt, transaction) =>
+      moderationConnections.endForMember(memberId, endedAt, transaction),
     recheckRecommendations: (memberId) => matching.recheckForMember(memberId),
   });
   registerPortraitsRoutes(app, {

@@ -8,12 +8,23 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { and, desc, eq, gt, inArray, isNull, ne, sql } from "drizzle-orm";
-import type { Database } from "../../db.js";
+import {
+  and,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  ne,
+  sql,
+} from "drizzle-orm";
+import type { Database, DatabaseTransaction } from "../../db.js";
 import type { Mailer } from "./mailer.js";
 import {
   invitations,
   matchCriteriaVersions,
+  memberDeletionAudits,
   members,
   otpChallenges,
   sessions,
@@ -157,6 +168,11 @@ export interface MembersOptions {
   now: () => Date;
   otpSecret: string;
   production: boolean;
+  endMemberInteractions: (
+    memberId: string,
+    endedAt: Date,
+    transaction: DatabaseTransaction,
+  ) => Promise<void>;
   recheckRecommendations?: (memberId: string) => Promise<void>;
 }
 
@@ -607,6 +623,7 @@ export function registerMembersRoutes(
     now,
     otpSecret,
     production,
+    endMemberInteractions,
     recheckRecommendations,
   }: MembersOptions,
 ) {
@@ -656,8 +673,11 @@ export function registerMembersRoutes(
       const member = await db
         .select()
         .from(members)
-        .where(and(eq(members.email, email), isNull(members.deletedAt)))
+        .where(eq(members.email, email))
         .limit(1);
+      if (member[0]?.deletedAt) {
+        return reply.code(403).send({ code: "ACCOUNT_DELETED" });
+      }
       if (!member[0]) {
         const invitation = await db
           .select({ id: invitations.id })
@@ -800,9 +820,13 @@ export function registerMembersRoutes(
           await transaction
             .select()
             .from(members)
-            .where(and(eq(members.email, email), isNull(members.deletedAt)))
+            .where(eq(members.email, email))
             .limit(1)
         )[0];
+
+        if (signedInMember?.deletedAt) {
+          return { error: "ACCOUNT_DELETED" as const };
+        }
 
         if (!signedInMember) {
           if (!request.body.birthDate || !isAdult(request.body.birthDate, signedInAt)) {
@@ -1013,6 +1037,55 @@ export function registerMembersRoutes(
     return reply.code(204).send();
   });
 
+  app.delete("/api/member", async (request, reply) => {
+    const deletedAt = now();
+    const member = await authenticatedMemberForRequest(request, db, deletedAt);
+    if (!member || member.role !== "member") {
+      return reply.code(401).send({ code: "UNAUTHENTICATED" });
+    }
+    const deleted = await db.transaction(async (transaction) => {
+      await transaction.execute(
+        sql`select pg_advisory_xact_lock(hashtext(${`member-lifecycle:${member.id}`}))`,
+      );
+      const current = (
+        await transaction
+          .update(members)
+          .set({ deletedAt })
+          .where(
+            and(
+              eq(members.id, member.id),
+              eq(members.role, "member"),
+              isNull(members.deletedAt),
+              isNull(members.purgedAt),
+            ),
+          )
+          .returning({ id: members.id })
+      )[0];
+      if (!current) return false;
+      await endMemberInteractions(member.id, deletedAt, transaction);
+      await transaction.delete(sessions).where(eq(sessions.memberId, member.id));
+      await transaction.insert(memberDeletionAudits).values({
+        id: randomUUID(),
+        actorMemberId: member.id,
+        targetMemberId: member.id,
+        action: "deleted",
+        createdAt: deletedAt,
+      });
+      return true;
+    });
+    if (!deleted) return reply.code(409).send({ code: "ACCOUNT_UNAVAILABLE" });
+    try {
+      await recheckRecommendations?.(member.id);
+    } catch (error) {
+      request.log.error(
+        { err: error, memberId: member.id },
+        "Recommendation recheck after member deletion failed",
+      );
+    }
+    reply.clearCookie("onlylove_session", { path: "/" });
+    return reply.code(204).send();
+  });
+
   app.get("/api/admin/invitations", async (request, reply) => {
     const requestedAt = now();
     const actor = await adminForRequest(request, db, requestedAt);
@@ -1119,4 +1192,172 @@ export function registerMembersRoutes(
       return reply.code(201).send(publicInvitation(invitation, changedAt));
     },
   );
+
+  app.get("/api/admin/deleted-members", async (request, reply) => {
+    const actor = await superAdminForRequest(request, db, now());
+    if (!actor) return reply.code(403).send({ code: "FORBIDDEN" });
+    const rows = await db
+      .select({
+        id: members.id,
+        email: members.email,
+        nickname: members.nickname,
+        deletedAt: members.deletedAt,
+      })
+      .from(members)
+      .where(
+        and(
+          eq(members.role, "member"),
+          isNotNull(members.deletedAt),
+          isNull(members.purgedAt),
+        ),
+      )
+      .orderBy(desc(members.deletedAt));
+    return {
+      members: rows.map((member) => ({
+        ...member,
+        deletedAt: member.deletedAt!.toISOString(),
+      })),
+    };
+  });
+
+  app.post<{ Params: { id: string } }>(
+    "/api/admin/deleted-members/:id/restore",
+    {
+      schema: {
+        params: {
+          type: "object",
+          additionalProperties: false,
+          required: ["id"],
+          properties: { id: { type: "string", format: "uuid" } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const restoredAt = now();
+      const actor = await superAdminForRequest(request, db, restoredAt);
+      if (!actor) return reply.code(403).send({ code: "FORBIDDEN" });
+      const restored = await db.transaction(async (transaction) => {
+        await transaction.execute(
+          sql`select pg_advisory_xact_lock(hashtext(${`member-lifecycle:${request.params.id}`}))`,
+        );
+        const current = (
+          await transaction
+            .update(members)
+            .set({ deletedAt: null })
+            .where(
+              and(
+                eq(members.id, request.params.id),
+                eq(members.role, "member"),
+                isNotNull(members.deletedAt),
+                isNull(members.purgedAt),
+              ),
+            )
+            .returning()
+        )[0];
+        if (!current) return undefined;
+        await transaction.insert(memberDeletionAudits).values({
+          id: randomUUID(),
+          actorMemberId: actor.id,
+          targetMemberId: current.id,
+          action: "restored",
+          createdAt: restoredAt,
+        });
+        return current;
+      });
+      if (!restored) {
+        return reply.code(404).send({ code: "DELETED_MEMBER_NOT_FOUND" });
+      }
+      return {
+        id: restored.id,
+        email: restored.email,
+        nickname: restored.nickname,
+        deletedAt: null,
+      };
+    },
+  );
+
+  app.delete<{ Params: { id: string } }>(
+    "/api/admin/deleted-members/:id",
+    {
+      schema: {
+        params: {
+          type: "object",
+          additionalProperties: false,
+          required: ["id"],
+          properties: { id: { type: "string", format: "uuid" } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const purgedAt = now();
+      const actor = await superAdminForRequest(request, db, purgedAt);
+      if (!actor) return reply.code(403).send({ code: "FORBIDDEN" });
+      const purged = await db.transaction(async (transaction) => {
+        await transaction.execute(
+          sql`select pg_advisory_xact_lock(hashtext(${`member-lifecycle:${request.params.id}`}))`,
+        );
+        const current = (
+          await transaction
+            .select({ id: members.id, email: members.email })
+            .from(members)
+            .where(
+              and(
+                eq(members.id, request.params.id),
+                eq(members.role, "member"),
+                isNotNull(members.deletedAt),
+                isNull(members.purgedAt),
+              ),
+            )
+            .limit(1)
+            .for("update")
+        )[0];
+        if (!current) return false;
+        await transaction.delete(sessions).where(eq(sessions.memberId, current.id));
+        await transaction.delete(otpChallenges).where(eq(otpChallenges.email, current.email));
+        await transaction.delete(invitations).where(eq(invitations.email, current.email));
+        await transaction
+          .update(members)
+          .set({
+            email: `purged-${current.id}@onlylove.invalid`,
+            passwordHash: null,
+            birthDate: null,
+            nickname: null,
+            gender: null,
+            heightCm: null,
+            city: null,
+            occupation: null,
+            suspendedUntil: null,
+            purgedAt,
+          })
+          .where(eq(members.id, current.id));
+        await transaction.insert(memberDeletionAudits).values({
+          id: randomUUID(),
+          actorMemberId: actor.id,
+          targetMemberId: current.id,
+          action: "purged",
+          createdAt: purgedAt,
+        });
+        return true;
+      });
+      if (!purged) {
+        return reply.code(404).send({ code: "DELETED_MEMBER_NOT_FOUND" });
+      }
+      return reply.code(204).send();
+    },
+  );
+
+  app.get("/api/admin/member-deletion-audit", async (request, reply) => {
+    const actor = await superAdminForRequest(request, db, now());
+    if (!actor) return reply.code(403).send({ code: "FORBIDDEN" });
+    const rows = await db
+      .select()
+      .from(memberDeletionAudits)
+      .orderBy(desc(memberDeletionAudits.createdAt));
+    return {
+      audits: rows.map((audit) => ({
+        ...audit,
+        createdAt: audit.createdAt.toISOString(),
+      })),
+    };
+  });
 }

@@ -30,6 +30,7 @@ export const members = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
     suspendedUntil: timestamp("suspended_until", { withTimezone: true }),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    purgedAt: timestamp("purged_at", { withTimezone: true }),
   },
   (table) => [uniqueIndex("members_email_unique").on(table.email)],
 );
@@ -115,4 +116,22 @@ export const sessions = pgTable(
     uniqueIndex("sessions_token_hash_unique").on(table.tokenHash),
     index("sessions_member_index").on(table.memberId),
   ],
+);
+
+export const memberDeletionAudits = pgTable(
+  "member_deletion_audits",
+  {
+    id: uuid("id").primaryKey(),
+    actorMemberId: uuid("actor_member_id")
+      .notNull()
+      .references(() => members.id),
+    targetMemberId: uuid("target_member_id")
+      .notNull()
+      .references(() => members.id),
+    action: varchar("action", { length: 16 })
+      .$type<"deleted" | "restored" | "purged">()
+      .notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [index("member_deletion_audits_created_index").on(table.createdAt)],
 );

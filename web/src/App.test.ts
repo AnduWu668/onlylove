@@ -294,6 +294,45 @@ describe("OnlyLove UI seam", () => {
     expect(wrapper.get('button[type="submit"]').text()).toContain("获取验证码");
   });
 
+  it("confirms logical account deletion from My and returns to sign in", async () => {
+    const request = vi.fn(async (url: string, options?: RequestInit) => {
+      if (url === "/api/session") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            member: { email: "member@example.com", role: "member" },
+          }),
+        };
+      }
+      if (url === "/api/member/profile") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ profile: null, matchCriteria: null }),
+        };
+      }
+      if (url === "/api/member" && options?.method === "DELETE") {
+        return { ok: true, status: 204 };
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", request);
+    vi.stubGlobal("confirm", vi.fn().mockReturnValue(true));
+    const router = createRouter({ history: createMemoryHistory(), routes });
+    await router.push("/app");
+    await router.isReady();
+    const wrapper = mount(App, { global: { plugins: [router] } });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("注销账户");
+    await wrapper.get("button.delete-account").trigger("click");
+    await flushPromises();
+
+    expect(request).toHaveBeenCalledWith("/api/member", { method: "DELETE" });
+    expect(router.currentRoute.value.path).toBe("/login");
+  });
+
   it("shows the independent invitation-management entry to a super administrator", async () => {
     const original = {
       id: "1dc8b163-2270-42b6-a90a-dbb3b887501e",
@@ -352,6 +391,105 @@ describe("OnlyLove UI seam", () => {
     );
     expect(wrapper.findAll(".invitation-list article")).toHaveLength(2);
     expect(wrapper.text()).toContain("已撤销");
+  });
+
+  it("lets a super administrator restore a logically deleted member", async () => {
+    const deletedMember = {
+      id: "1dc8b163-2270-42b6-a90a-dbb3b887501e",
+      email: "deleted@example.com",
+      nickname: "已离开的人",
+      deletedAt: "2026-08-22T08:00:00.000Z",
+    };
+    let deletedMembers = [deletedMember];
+    const request = vi.fn(async (url: string, options?: RequestInit) => {
+      if (url === "/api/session") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            member: { email: "admin@example.com", role: "super_admin" },
+          }),
+        };
+      }
+      if (url === `/api/admin/deleted-members/${deletedMember.id}/restore`) {
+        deletedMembers = [];
+        return { ok: true, status: 200, json: async () => deletedMember };
+      }
+      if (url === "/api/admin/deleted-members") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ members: deletedMembers }),
+        };
+      }
+      if (url === "/api/admin/invitations") {
+        return { ok: true, status: 200, json: async () => ({ invitations: [] }) };
+      }
+      if (url === "/api/admin/moderation-cases") {
+        return { ok: true, status: 200, json: async () => ({ cases: [] }) };
+      }
+      if (url === "/api/admin/moderation-metrics") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ distortionFeedbackCount: 0, openCaseCount: 0 }),
+        };
+      }
+      if (url === "/api/admin/matching-settings") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ candidateCapacity: 5, minimumReciprocalScore: 60 }),
+        };
+      }
+      if (url === "/api/admin/agent-quota-settings") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ ownAgentDailyLimit: 100, candidateTwinDailyLimit: 50 }),
+        };
+      }
+      if (url === "/api/admin/relationship-metrics") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            dueConnections: 0,
+            mutualContinue: 0,
+            noFeedback: 0,
+            ended: 0,
+            confirmed: 0,
+            recoveryPending: 0,
+            resumed: 0,
+            mutualContinueRate: 0,
+          }),
+        };
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", request);
+    vi.stubGlobal("confirm", vi.fn().mockReturnValue(true));
+    const router = createRouter({ history: createMemoryHistory(), routes });
+    await router.push("/admin");
+    await router.isReady();
+    const wrapper = mount(App, { global: { plugins: [router] } });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("已注销成员");
+    expect(wrapper.text()).toContain("deleted@example.com");
+    expect(wrapper.text()).toContain("永久清除");
+    const restore = wrapper
+      .findAll("button")
+      .find((button) => button.text() === "恢复")!;
+    await restore.trigger("click");
+    await flushPromises();
+
+    expect(request).toHaveBeenCalledWith(
+      `/api/admin/deleted-members/${deletedMember.id}/restore`,
+      { method: "POST" },
+    );
+    expect(wrapper.text()).toContain("成员已恢复");
+    expect(wrapper.text()).not.toContain("deleted@example.com");
   });
 
   it("validates, saves, and edits a member profile and match criteria", async () => {
@@ -2236,6 +2374,13 @@ describe("OnlyLove UI seam", () => {
             resumed: 4,
             mutualContinueRate: 60,
           }),
+        };
+      }
+      if (url === "/api/admin/deleted-members") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ members: [] }),
         };
       }
       throw new Error(`Unexpected request: ${url}`);

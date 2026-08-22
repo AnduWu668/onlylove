@@ -662,11 +662,12 @@ describe("Candidate recommendations HTTP seam", () => {
     });
     expect(outsiderStream.statusCode).toBe(404);
 
-    const deletedPool = new Pool({ connectionString: databaseUrl });
-    await deletedPool.query(
-      "UPDATE members SET deleted_at = $1 WHERE id = $2",
-      [currentTime, candidateMemberId],
-    );
+    const deleted = await app.inject({
+      method: "DELETE",
+      url: "/api/member",
+      headers: { cookie: candidateCookie },
+    });
+    expect(deleted.statusCode).toBe(204);
     const afterCandidateDeletion = await app.inject({
       method: "POST",
       url: `/api/member/candidate-twin-conversations/${conversationId}/messages`,
@@ -676,10 +677,13 @@ describe("Candidate recommendations HTTP seam", () => {
     expect(afterCandidateDeletion.statusCode).toBe(409);
     expect(afterCandidateDeletion.json().code).toBe("CANDIDATE_TWIN_UNAVAILABLE");
 
-    await deletedPool.query(
-      "UPDATE members SET deleted_at = NULL WHERE id = $1",
-      [candidateMemberId],
-    );
+    const restored = await app.inject({
+      method: "POST",
+      url: `/api/admin/deleted-members/${candidateMemberId}/restore`,
+      headers: { cookie: adminCookie },
+    });
+    expect(restored.statusCode).toBe(200);
+    const deletedPool = new Pool({ connectionString: databaseUrl });
     await addCriteriaVersion(deletedPool, memberEmail);
     await deletedPool.end();
     const afterCriteriaChange = await app.inject({
