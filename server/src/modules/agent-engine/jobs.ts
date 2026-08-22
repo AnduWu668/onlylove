@@ -4,6 +4,7 @@ import {
   asc,
   desc,
   eq,
+  gte,
   inArray,
   isNotNull,
   isNull,
@@ -27,6 +28,13 @@ function beijingDate(value: Date) {
     month: "2-digit",
     day: "2-digit",
   }).format(value);
+}
+
+function terminalFailure() {
+  return or(
+    gte(agentJobs.retryCount, MAX_JOB_ATTEMPTS),
+    isNotNull(agentJobs.conversationId),
+  );
 }
 
 export class AgentJobs {
@@ -179,7 +187,7 @@ export class AgentJobs {
           and(
             eq(agentJobs.id, id),
             eq(agentJobs.status, "failed"),
-            eq(agentJobs.retryCount, MAX_JOB_ATTEMPTS),
+            terminalFailure(),
             actor.role === "super_admin"
               ? undefined
               : eq(agentJobs.assignedAdminId, actor.id),
@@ -587,7 +595,7 @@ export class AgentJobs {
       .where(
         and(
           eq(agentJobs.status, "failed"),
-          eq(agentJobs.retryCount, MAX_JOB_ATTEMPTS),
+          terminalFailure(),
           actor.role === "super_admin"
             ? undefined
             : eq(agentJobs.assignedAdminId, actor.id),
@@ -605,7 +613,7 @@ export class AgentJobs {
           and(
             eq(agentJobs.id, id),
             eq(agentJobs.status, "failed"),
-            eq(agentJobs.retryCount, MAX_JOB_ATTEMPTS),
+            terminalFailure(),
           ),
         )
         .returning()

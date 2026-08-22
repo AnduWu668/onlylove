@@ -10,19 +10,8 @@ import type { MemberConversations } from "./modules/conversations/members.js";
 import type { Matching } from "./modules/matching/service.js";
 import type { MembersAdministration } from "./modules/members/administration.js";
 import { superAdminForRequest } from "./modules/members/routes.js";
-import type { members } from "./modules/members/schema.js";
 import type { Moderation } from "./modules/moderation/service.js";
 import type { Portraits } from "./modules/portraits/service.js";
-
-function administratorView(member: typeof members.$inferSelect) {
-  return {
-    id: member.id,
-    email: member.email,
-    role: member.role,
-    active: member.deletedAt === null,
-    createdAt: member.createdAt.toISOString(),
-  };
-}
 
 const uuidParams = {
   type: "object",
@@ -71,7 +60,7 @@ export function registerAdministrationRoutes(
       action: "administrator_directory_viewed",
       createdAt: viewedAt,
     });
-    return { administrators: rows.map(administratorView) };
+    return { administrators: rows };
   });
 
   app.post<{ Body: { email: string } }>(
@@ -98,7 +87,7 @@ export function registerAdministrationRoutes(
         createdAt,
       );
       if (!created) return reply.code(409).send({ code: "EMAIL_IN_USE" });
-      return reply.code(201).send(administratorView(created));
+      return reply.code(201).send(created);
     },
   );
 
@@ -128,7 +117,7 @@ export function registerAdministrationRoutes(
       if (!administrator) {
         return reply.code(404).send({ code: "ADMINISTRATOR_NOT_FOUND" });
       }
-      return administratorView(administrator);
+      return administrator;
     },
   );
 
@@ -280,15 +269,26 @@ export function registerAdministrationRoutes(
       action: "audit_log_viewed",
       createdAt: viewedAt,
     });
-    const [administration, matchingSettings, agentQuotaSettings] =
+    const [
+      administration,
+      matchingSettings,
+      agentQuotaSettings,
+      moderationAccess,
+      memberDeletion,
+    ] =
       await Promise.all([
         members.audits(),
         matching.settingsAudit(),
         conversations.agentQuotaSettingsAudit(),
+        moderation.accessAudits(),
+        members.deletionAudits(),
       ]);
     return {
       audits: [
-        ...administration,
+        ...administration.map((audit) => ({
+          ...audit,
+          createdAt: audit.createdAt.toISOString(),
+        })),
         ...matchingSettings.map((audit) => ({
           id: audit.id,
           actorMemberId: audit.actorId,
@@ -298,7 +298,7 @@ export function registerAdministrationRoutes(
             candidateCapacity: audit.candidateCapacity,
             minimumReciprocalScore: audit.minimumReciprocalScore,
           },
-          createdAt: audit.createdAt,
+          createdAt: audit.createdAt.toISOString(),
         })),
         ...agentQuotaSettings.map((audit) => ({
           id: audit.id,
@@ -309,11 +309,29 @@ export function registerAdministrationRoutes(
             ownAgentDailyLimit: audit.ownAgentDailyLimit,
             candidateTwinDailyLimit: audit.candidateTwinDailyLimit,
           },
+          createdAt: audit.createdAt.toISOString(),
+        })),
+        ...moderationAccess.audits.map((audit) => ({
+          id: audit.id,
+          actorMemberId: audit.actorMemberId,
+          targetMemberId: null,
+          resourceId: audit.caseId,
+          action: "moderation_case_accessed",
+          details: { caseId: audit.caseId },
           createdAt: audit.createdAt,
+        })),
+        ...memberDeletion.map((audit) => ({
+          id: audit.id,
+          actorMemberId: audit.actorMemberId,
+          targetMemberId: audit.targetMemberId,
+          resourceId: null,
+          action: `member_${audit.action}`,
+          details: {},
+          createdAt: audit.createdAt.toISOString(),
         })),
       ].sort(
         (left, right) =>
-          right.createdAt.getTime() - left.createdAt.getTime(),
+          right.createdAt.localeCompare(left.createdAt),
       ),
     };
   });

@@ -293,6 +293,84 @@ describe("issue 16 administration HTTP seam", () => {
     );
   });
 
+  it("surfaces terminal conversation failures and unifies legacy audits", async () => {
+    const superAdmin = await seedMember("owner@onlylove.test", "super_admin");
+    const member = await seedMember("member@onlylove.test");
+    const reported = await seedMember("reported@onlylove.test");
+    const conversationId = randomUUID();
+    const jobId = randomUUID();
+    const caseId = randomUUID();
+
+    await pool.query(
+      `INSERT INTO conversations (id, type, member_id, created_at)
+       VALUES ($1, 'INTERVIEW', $2, $3)`,
+      [conversationId, member.id, now],
+    );
+    await pool.query(
+      `INSERT INTO agent_jobs
+        (id, role, task, definition_version, prompt_version, member_id,
+         conversation_id, status, retry_count, switched_model, quota_refunded,
+         error, created_at, completed_at)
+       VALUES ($1, 'portrait_interviewer', 'continue_interview', 'v1', 'p1', $2,
+               $3, 'failed', 1, false, false, 'MODEL_REQUEST_FAILED', $4, $4)`,
+      [jobId, member.id, conversationId, now],
+    );
+    await pool.query(
+      `INSERT INTO moderation_cases
+        (id, type, reporter_member_id, reported_member_id, target_kind,
+         target_id, reason, evidence, status, created_at)
+       VALUES ($1, 'report', $2, $3, 'connection', $4, '骚扰', '聊天证据',
+               'pending', $5)`,
+      [caseId, member.id, reported.id, randomUUID(), now],
+    );
+    await pool.query(
+      `INSERT INTO moderation_case_access_audits
+        (id, case_id, actor_member_id, created_at)
+       VALUES ($1, $2, $3, $4)`,
+      [randomUUID(), caseId, superAdmin.id, now],
+    );
+    await pool.query(
+      `INSERT INTO member_deletion_audits
+        (id, actor_member_id, target_member_id, action, created_at)
+       VALUES ($1, $2, $3, 'restored', $4)`,
+      [randomUUID(), superAdmin.id, member.id, now],
+    );
+
+    const failed = await app.inject({
+      method: "GET",
+      url: "/api/admin/agent-jobs/failed",
+      headers: { cookie: superAdmin.cookie },
+    });
+    expect(failed.json().jobs).toEqual([
+      expect.objectContaining({ id: jobId, retryCount: 1 }),
+    ]);
+
+    const retry = await app.inject({
+      method: "POST",
+      url: `/api/admin/agent-jobs/${jobId}/retry`,
+      headers: { cookie: superAdmin.cookie },
+    });
+    expect(retry.statusCode).toBe(202);
+
+    const audits = await app.inject({
+      method: "GET",
+      url: "/api/admin/audits",
+      headers: { cookie: superAdmin.cookie },
+    });
+    expect(audits.json().audits).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: "moderation_case_accessed",
+          details: { caseId },
+        }),
+        expect.objectContaining({
+          action: "member_restored",
+          targetMemberId: member.id,
+        }),
+      ]),
+    );
+  });
+
   it("aggregates lifecycle, quality, token, cost, latency, failure and model data", async () => {
     const superAdmin = await seedMember("owner@onlylove.test", "super_admin");
     const member = await seedMember("member@onlylove.test");

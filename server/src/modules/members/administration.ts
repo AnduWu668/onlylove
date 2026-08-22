@@ -5,6 +5,7 @@ import { normalizeEmail } from "./routes.js";
 import {
   administrationAudits,
   matchCriteriaVersions,
+  memberDeletionAudits,
   members,
   sessions,
   type AdministrationAuditAction,
@@ -17,6 +18,16 @@ export interface AdministrationAuditInput {
   targetMemberId?: string | null;
   resourceId?: string | null;
   details?: Record<string, unknown>;
+}
+
+function administratorView(member: typeof members.$inferSelect) {
+  return {
+    id: member.id,
+    email: member.email,
+    role: member.role,
+    active: member.deletedAt === null,
+    createdAt: member.createdAt.toISOString(),
+  };
 }
 
 export class MembersAdministration {
@@ -36,11 +47,12 @@ export class MembersAdministration {
   }
 
   async administrators() {
-    return this.db
+    const rows = await this.db
       .select()
       .from(members)
       .where(eq(members.role, "admin"))
       .orderBy(desc(members.createdAt));
+    return rows.map(administratorView);
   }
 
   createAdministrator(email: string, actorMemberId: string, createdAt: Date) {
@@ -68,7 +80,7 @@ export class MembersAdministration {
         },
         transaction,
       );
-      return administrator;
+      return administratorView(administrator);
     });
   }
 
@@ -110,7 +122,7 @@ export class MembersAdministration {
         },
         transaction,
       );
-      return administrator;
+      return administratorView(administrator);
     });
   }
 
@@ -197,5 +209,12 @@ export class MembersAdministration {
       .select()
       .from(administrationAudits)
       .orderBy(desc(administrationAudits.createdAt));
+  }
+
+  deletionAudits() {
+    return this.db
+      .select()
+      .from(memberDeletionAudits)
+      .orderBy(desc(memberDeletionAudits.createdAt));
   }
 }
