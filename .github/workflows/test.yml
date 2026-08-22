@@ -1,0 +1,44 @@
+name: Core API
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Typecheck and core interfaces
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: onlylove
+          POSTGRES_USER: onlylove
+          POSTGRES_PASSWORD: onlylove
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U onlylove -d onlylove"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 15
+    env:
+      DATABASE_URL: postgres://onlylove:onlylove@localhost:5432/onlylove
+      TEST_DATABASE_URL: postgres://onlylove:onlylove@localhost:5432/onlylove_test
+      SUPER_ADMIN_EMAIL: admin@onlylove.test
+      OTP_SECRET: onlylove-ci-otp-secret-not-for-production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run test:ci

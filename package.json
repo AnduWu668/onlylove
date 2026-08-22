@@ -13,10 +13,13 @@
   "scripts": {
     "dev": "npm run db:up && concurrently -k -n WEB,SERVER,WORKER \"npm run dev -w web\" \"npm run dev -w server\" \"npm run dev -w agent\"",
     "db:up": "docker compose up -d --wait",
+    "db:ensure": "sh -c 'nc -z 127.0.0.1 ${POSTGRES_PORT:-5433} || npm run db:up'",
     "db:down": "docker compose down",
     "build": "npm run build --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "test": "npm run db:up && npm run test:prepare -w server && npm run test --workspaces --if-present"
+    "test": "npm run db:ensure && npm run test:prepare -w server && npm run test --workspaces --if-present",
+    "test:ci": "npm run test:prepare -w server && npm run typecheck && npm run test --workspaces --if-present",
+    "test:core": "npm run db:ensure && npm run test:prepare -w server && npm run test:core -w server"
   },
   "devDependencies": {
     "concurrently": "9.2.4"
