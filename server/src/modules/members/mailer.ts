@@ -5,15 +5,28 @@ export interface Mailer {
   sendContactRequest?(email: string, requesterNickname: string): Promise<void>;
   sendContactAccepted?(email: string, nickname: string): Promise<void>;
   sendConnectionFollowup?(email: string, nickname: string): Promise<void>;
+  sendModerationDecision?(
+    email: string,
+    message: string,
+    disclosure: "reporter" | "reported",
+  ): Promise<void>;
 }
 
 export class MemoryMailer implements Mailer {
   readonly messages: Array<{ to: string; code: string }> = [];
-  readonly notifications: Array<{
-    to: string;
-    type: "contact_request" | "contact_accepted" | "connection_followup";
-    nickname: string;
-  }> = [];
+  readonly notifications: Array<
+    | {
+        to: string;
+        type: "contact_request" | "contact_accepted" | "connection_followup";
+        nickname: string;
+      }
+    | {
+        to: string;
+        type: "moderation_decision";
+        disclosure: "reporter" | "reported";
+        message: string;
+      }
+  > = [];
 
   async sendOtp(email: string, code: string) {
     this.messages.push({ to: email, code });
@@ -46,6 +59,19 @@ export class MemoryMailer implements Mailer {
       nickname,
     });
   }
+
+  async sendModerationDecision(
+    email: string,
+    message: string,
+    disclosure: "reporter" | "reported",
+  ) {
+    this.notifications.push({
+      to: email,
+      type: "moderation_decision",
+      disclosure,
+      message,
+    });
+  }
 }
 
 export class ConsoleMailer implements Mailer {
@@ -63,6 +89,10 @@ export class ConsoleMailer implements Mailer {
 
   async sendConnectionFollowup(email: string, nickname: string) {
     console.info(`[OnlyLove] ${email} 与 ${nickname} 的七日回访已开放`);
+  }
+
+  async sendModerationDecision(email: string, message: string) {
+    console.info(`[OnlyLove] ${email} ${message}`);
   }
 }
 
@@ -119,6 +149,15 @@ export class SmtpMailer implements Mailer {
       to: email,
       subject: "OnlyLove 七日回访",
       text: `你与 ${nickname} 建立联系已满七天。登录 OnlyLove 分别选择继续了解、结束接触或提出确认关系。`,
+    });
+  }
+
+  async sendModerationDecision(email: string, message: string) {
+    await this.transport.sendMail({
+      from: this.from,
+      to: email,
+      subject: "OnlyLove 审核决定通知",
+      text: message,
     });
   }
 }

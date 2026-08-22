@@ -87,6 +87,49 @@ describe("OnlyLove UI seam", () => {
     expect(router.currentRoute.value.fullPath).toBe("/app");
   });
 
+  it("sends an ordinary administrator to the case review workspace", async () => {
+    const request = vi.fn(async (url: string) => {
+      if (url === "/api/auth/login" || url === "/api/session") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            member: { email: "moderator@example.com", role: "admin" },
+            requiresPasswordSetup: false,
+          }),
+        };
+      }
+      if (url === "/api/admin/moderation-cases") {
+        return { ok: true, status: 200, json: async () => ({ cases: [] }) };
+      }
+      if (url === "/api/admin/moderation-metrics") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ distortionFeedbackCount: 0, openCaseCount: 0 }),
+        };
+      }
+      if (url === "/api/admin/invitations") {
+        return { ok: true, status: 200, json: async () => ({ invitations: [] }) };
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", request);
+    const router = createRouter({ history: createMemoryHistory(), routes });
+    await router.push("/login");
+    await router.isReady();
+    const wrapper = mount(App, { global: { plugins: [router] } });
+
+    await wrapper.get('input[type="email"]').setValue("moderator@example.com");
+    await wrapper.get('input[type="password"]').setValue("secure password");
+    await wrapper.get("form").trigger("submit");
+    await flushPromises();
+
+    expect(router.currentRoute.value.fullPath).toBe("/admin");
+    expect(wrapper.text()).toContain("审核工作台");
+    expect(request).toHaveBeenCalledWith("/api/admin/invitations");
+  });
+
   it("uses an email code to require password setup for a new member", async () => {
     let passwordSet = false;
     const request = vi.fn(async (url: string, options?: RequestInit) => {
@@ -240,6 +283,7 @@ describe("OnlyLove UI seam", () => {
     for (const label of ["我的分身", "候选推荐", "联系", "我的"]) {
       expect(wrapper.get("nav").text()).toContain(label);
     }
+    expect(wrapper.findAll("nav button")).toHaveLength(4);
     const passwordAction = wrapper
       .findAll("a")
       .find((link) => link.text().includes("设置或重置密码"))!;
@@ -292,7 +336,7 @@ describe("OnlyLove UI seam", () => {
     await router.push("/admin");
     await flushPromises();
 
-    expect(wrapper.text()).toContain("邀请管理");
+    expect(wrapper.text()).toContain("管理后台");
     expect(wrapper.get('input[type="email"]')).toBeTruthy();
     expect(wrapper.text()).toContain("invited@example.com");
     expect(wrapper.get("button.invitation-action").text()).toContain("撤销");
@@ -2239,5 +2283,399 @@ describe("OnlyLove UI seam", () => {
     expect(wrapper.text()).toContain("未反馈 2");
     expect(wrapper.text()).toContain("确认关系 3");
     expect(wrapper.text()).toContain("已恢复推荐 4");
+  });
+
+  it("shows governance guidance, correction feedback, and a separate appeal flow", async () => {
+    let appealed = false;
+    const request = vi.fn(async (url: string, options?: RequestInit) => {
+      if (url === "/api/session") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            member: { email: "member@example.com", role: "member" },
+            requiresPasswordSetup: false,
+          }),
+        };
+      }
+      if (url === "/api/member/profile") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            profile: {
+              nickname: "林夏",
+              birthDate: "1992-04-12",
+              gender: "female",
+              heightCm: 165,
+              city: "上海",
+              occupation: "设计师",
+            },
+            matchCriteria: null,
+          }),
+        };
+      }
+      if (url === "/api/member/moderation") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            accessRestricted: false,
+            suspendedUntil: null,
+            receivedFeedback: [
+              {
+                id: "feedback-1",
+                details: "计划描述不准确",
+                createdAt: "2026-08-22T08:00:00.000Z",
+                message: {
+                  id: "message-1",
+                  content: "我永远不会离开上海。",
+                  createdAt: "2026-08-22T08:00:00.000Z",
+                },
+                correctionPrompt: "请通过理解纠正补充真实语境。",
+              },
+            ],
+            submittedReports: [
+              {
+                id: "report-1",
+                status: "resolved",
+                outcome: "processed",
+                createdAt: "2026-08-22T08:00:00.000Z",
+              },
+            ],
+            receivedDecisions: [
+              {
+                caseId: "case-1",
+                caseType: "report",
+                originalCaseId: null,
+                action: "warning",
+                reason: "消息越过了对方边界。",
+                suspendedUntil: null,
+                createdAt: "2026-08-22T08:00:00.000Z",
+                canAppeal: !appealed,
+              },
+              {
+                caseId: "appeal-resolved",
+                caseType: "appeal",
+                originalCaseId: "case-old",
+                action: "dismissed",
+                reason: "复核理由成立。",
+                suspendedUntil: null,
+                createdAt: "2026-08-22T07:00:00.000Z",
+                canAppeal: false,
+              },
+            ],
+          }),
+        };
+      }
+      if (
+        url === "/api/member/moderation-cases/case-1/appeal" &&
+        options?.method === "POST"
+      ) {
+        appealed = true;
+        return {
+          ok: true,
+          status: 201,
+          json: async () => ({ case: { id: "appeal-1", type: "appeal" } }),
+        };
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", request);
+    vi.stubGlobal(
+      "prompt",
+      vi
+        .fn()
+        .mockReturnValueOnce("请求复核上下文")
+        .mockReturnValueOnce("补充证据"),
+    );
+    const router = createRouter({ history: createMemoryHistory(), routes });
+    await router.push("/app");
+    await router.isReady();
+    const wrapper = mount(App, { global: { plugins: [router] } });
+    await flushPromises();
+
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("查看治理记录"))!
+      .trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("普通理解误差用质量反馈");
+    expect(wrapper.text()).toContain("我永远不会离开上海");
+    expect(wrapper.text()).toContain("计划描述不准确");
+    expect(wrapper.text()).toContain("撤销原处置");
+    expect(wrapper.text()).toContain("为保护对方隐私，这里不披露具体处置");
+
+    await wrapper.get(".moderation-list button.quiet-action").trigger("click");
+    await flushPromises();
+    expect(request).toHaveBeenCalledWith(
+      "/api/member/moderation-cases/case-1/appeal",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          reason: "请求复核上下文",
+          evidence: "补充证据",
+        }),
+      }),
+    );
+  });
+
+  it("keeps a permanently banned member inside the review-only workspace", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url === "/api/session") {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              member: {
+                email: "restricted@example.com",
+                role: "member",
+                suspendedUntil: "9999-12-31T23:59:59.999Z",
+              },
+              requiresPasswordSetup: false,
+            }),
+          };
+        }
+        if (url === "/api/member/moderation") {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              accessRestricted: true,
+              permanentlyBanned: true,
+              suspendedUntil: "9999-12-31T23:59:59.999Z",
+              receivedFeedback: [
+                {
+                  id: "feedback-1",
+                  details: "计划描述不准确",
+                  createdAt: "2026-08-22T08:00:00.000Z",
+                  message: {
+                    id: "message-1",
+                    content: "我永远不会离开上海。",
+                    createdAt: "2026-08-22T08:00:00.000Z",
+                  },
+                  correctionPrompt: "请通过理解纠正补充真实语境。",
+                },
+              ],
+              submittedReports: [],
+              receivedDecisions: [],
+            }),
+          };
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      }),
+    );
+    const router = createRouter({ history: createMemoryHistory(), routes });
+    await router.push("/app");
+    await router.isReady();
+    const wrapper = mount(App, { global: { plugins: [router] } });
+    await flushPromises();
+
+    expect(wrapper.get(".moderation-restriction h2").text()).toContain("永久封禁");
+    expect(wrapper.find("nav").exists()).toBe(false);
+    expect(
+      wrapper
+        .findAll("button")
+        .some((button) => button.text().includes("去补充真实语境")),
+    ).toBe(false);
+  });
+
+  it("shows a recoverable error when a governance action loses the network", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, options?: RequestInit) => {
+        if (url === "/api/session") {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              member: { email: "member@example.com", role: "member" },
+              requiresPasswordSetup: false,
+            }),
+          };
+        }
+        if (url === "/api/member/profile") {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              profile: {
+                nickname: "林夏",
+                birthDate: "1992-04-12",
+                gender: "female",
+                heightCm: 165,
+                city: "上海",
+                occupation: "设计师",
+              },
+              matchCriteria: null,
+            }),
+          };
+        }
+        if (url === "/api/member/moderation") {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              accessRestricted: false,
+              permanentlyBanned: false,
+              suspendedUntil: null,
+              receivedFeedback: [],
+              submittedReports: [],
+              receivedDecisions: [
+                {
+                  caseId: "case-1",
+                  caseType: "report",
+                  originalCaseId: null,
+                  action: "warning",
+                  reason: "需要复核。",
+                  suspendedUntil: null,
+                  createdAt: "2026-08-22T08:00:00.000Z",
+                  canAppeal: true,
+                },
+              ],
+            }),
+          };
+        }
+        if (
+          url === "/api/member/moderation-cases/case-1/appeal" &&
+          options?.method === "POST"
+        ) {
+          throw new TypeError("network unavailable");
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      }),
+    );
+    vi.stubGlobal(
+      "prompt",
+      vi.fn().mockReturnValueOnce("申请复核").mockReturnValueOnce("补充证据"),
+    );
+    const router = createRouter({ history: createMemoryHistory(), routes });
+    await router.push("/app");
+    await router.isReady();
+    const wrapper = mount(App, { global: { plugins: [router] } });
+    await flushPromises();
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("查看治理记录"))!
+      .trigger("click");
+    await flushPromises();
+    await wrapper.get(".moderation-list button.quiet-action").trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("复核申请没有提交，请稍后重试");
+  });
+
+  it("lets an ordinary administrator inspect and decide only a case-linked chat", async () => {
+    let decided = false;
+    let detailFails = false;
+    const request = vi.fn(async (url: string, options?: RequestInit) => {
+      if (url === "/api/session") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            member: { email: "moderator@example.com", role: "admin" },
+          }),
+        };
+      }
+      if (url === "/api/admin/invitations") {
+        return { ok: true, status: 200, json: async () => ({ invitations: [] }) };
+      }
+      if (url === "/api/admin/moderation-metrics") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ distortionFeedbackCount: 3, openCaseCount: 1 }),
+        };
+      }
+      if (url === "/api/admin/moderation-cases") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            cases: [
+              {
+                id: "case-1",
+                type: "report",
+                targetKind: "human_message",
+                reason: "伤害性消息",
+                evidence: "关联消息",
+                status: decided ? "resolved" : "pending",
+                createdAt: "2026-08-22T08:00:00.000Z",
+              },
+            ],
+          }),
+        };
+      }
+      if (url === "/api/admin/moderation-cases/case-1" && !options?.method) {
+        if (detailFails) throw new TypeError("network unavailable");
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            case: {
+              id: "case-1",
+              type: "report",
+              targetKind: "human_message",
+              reason: "伤害性消息",
+              evidence: "关联消息",
+              status: decided ? "resolved" : "pending",
+              createdAt: "2026-08-22T08:00:00.000Z",
+            },
+            decision: decided
+              ? { action: "warning", reason: "越过边界", suspendedUntil: null }
+              : null,
+            chat: {
+              conversationId: "conversation-1",
+              messages: [
+                { id: "message-1", content: "这是一条关联消息。", sequence: 1 },
+              ],
+            },
+          }),
+        };
+      }
+      if (
+        url === "/api/admin/moderation-cases/case-1/decision" &&
+        options?.method === "POST"
+      ) {
+        decided = true;
+        return { ok: true, status: 200, json: async () => ({}) };
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", request);
+    vi.stubGlobal("prompt", vi.fn().mockReturnValue("越过边界"));
+    const router = createRouter({ history: createMemoryHistory(), routes });
+    await router.push("/admin");
+    await router.isReady();
+    const wrapper = mount(App, { global: { plugins: [router] } });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("举报与复核案件");
+    expect(wrapper.text()).toContain("累计分身失真反馈 3 条");
+    expect(request).not.toHaveBeenCalledWith("/api/admin/matching-settings");
+    expect(request).toHaveBeenCalledWith("/api/admin/invitations");
+    await wrapper.get(".moderation-case-list button").trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("这是一条关联消息");
+    const warning = wrapper
+      .findAll(".moderation-decision-actions button")
+      .find((button) => button.text() === "警告")!;
+    await warning.trigger("click");
+    await flushPromises();
+    expect(request).toHaveBeenCalledWith(
+      "/api/admin/moderation-cases/case-1/decision",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ action: "warning", reason: "越过边界" }),
+      }),
+    );
+    detailFails = true;
+    await wrapper.get(".moderation-case-list button").trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("无法读取案件关联证据");
+    expect(wrapper.text()).not.toContain("这是一条关联消息");
   });
 });

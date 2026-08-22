@@ -169,6 +169,27 @@
       "when": 1787407908421,
       "tag": "0023_fast_gamma_corps",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1787410281511,
+      "tag": "0024_rare_famine",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1787411453246,
+      "tag": "0025_messy_shinobi_shaw",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1787411734783,
+      "tag": "0026_real_rocket_raccoon",
+      "breakpoints": true
     }
   ]
 }

@@ -20,7 +20,31 @@ interface RelationshipMetrics {
   mutualContinueRate: number;
 }
 
+interface ModerationCase {
+  id: string;
+  type: "report" | "appeal";
+  targetKind: string;
+  reason: string;
+  evidence: string;
+  status: "pending" | "resolved";
+  createdAt: string;
+}
+
+interface ModerationCaseDetail {
+  case: ModerationCase;
+  decision: {
+    action: "dismissed" | "warning" | "suspended" | "banned";
+    reason: string;
+    suspendedUntil: string | null;
+  } | null;
+  chat: {
+    conversationId: string;
+    messages: { id: string; content: string; sequence: number }[];
+  } | null;
+}
+
 const router = useRouter();
+const adminRole = ref<"admin" | "super_admin">();
 const email = ref("");
 const invitations = ref<Invitation[]>([]);
 const busy = ref(false);
@@ -32,6 +56,9 @@ const ownAgentDailyLimit = ref<number | null>(null);
 const candidateTwinDailyLimit = ref<number | null>(null);
 const quotaSettingsSuccess = ref("");
 const relationshipMetrics = ref<RelationshipMetrics>();
+const moderationCases = ref<ModerationCase[]>([]);
+const moderationMetrics = ref({ distortionFeedbackCount: 0, openCaseCount: 0 });
+const selectedModerationCase = ref<ModerationCaseDetail>();
 
 const statusText: Record<Invitation["status"], string> = {
   active: "有效",
@@ -68,6 +95,23 @@ async function loadRelationshipMetrics() {
   relationshipMetrics.value = await response.json();
 }
 
+async function loadModeration() {
+  const [casesResponse, metricsResponse] = await Promise.all([
+    fetch("/api/admin/moderation-cases"),
+    fetch("/api/admin/moderation-metrics"),
+  ]);
+  if (!casesResponse.ok || !metricsResponse.ok) {
+    throw new Error("无法读取审核案件");
+  }
+  const cases = await casesResponse.json();
+  const metrics = await metricsResponse.json();
+  moderationCases.value = Array.isArray(cases.cases) ? cases.cases : [];
+  moderationMetrics.value = {
+    distortionFeedbackCount: Number(metrics.distortionFeedbackCount) || 0,
+    openCaseCount: Number(metrics.openCaseCount) || 0,
+  };
+}
+
 onMounted(async () => {
   const session = await fetch("/api/session");
   if (!session.ok) {
@@ -82,21 +126,77 @@ onMounted(async () => {
     });
     return;
   }
-  if (member.role !== "super_admin") {
+  if (member.role !== "admin" && member.role !== "super_admin") {
     await router.replace("/app");
     return;
   }
+  adminRole.value = member.role;
   try {
     await Promise.all([
       loadInvitations(),
-      loadMatchingSettings(),
-      loadAgentQuotaSettings(),
-      loadRelationshipMetrics(),
+      loadModeration(),
+      ...(member.role === "super_admin"
+        ? [
+            loadMatchingSettings(),
+            loadAgentQuotaSettings(),
+            loadRelationshipMetrics(),
+          ]
+        : []),
     ]);
   } catch (caught) {
     error.value = caught instanceof Error ? caught.message : "暂时无法读取邀请。";
   }
 });
+
+async function inspectModerationCase(caseId: string) {
+  error.value = "";
+  selectedModerationCase.value = undefined;
+  try {
+    const response = await fetch(`/api/admin/moderation-cases/${caseId}`);
+    if (!response.ok) throw new Error();
+    selectedModerationCase.value = await response.json();
+  } catch {
+    error.value = "无法读取案件关联证据。";
+  }
+}
+
+async function decideModerationCase(
+  caseId: string,
+  action: "dismissed" | "warning" | "suspended" | "banned",
+) {
+  const reason = window.prompt("请记录可复核的审核理由。")?.trim();
+  if (!reason) return;
+  const suspendedUntil =
+    action === "suspended"
+      ? window.prompt("请输入停用截止日期（YYYY-MM-DD）。")?.trim()
+      : undefined;
+  if (action === "suspended" && !/^\d{4}-\d{2}-\d{2}$/.test(suspendedUntil ?? "")) {
+    error.value = "限期停用需要有效的截止日期。";
+    return;
+  }
+  busy.value = true;
+  error.value = "";
+  try {
+    const response = await fetch(`/api/admin/moderation-cases/${caseId}/decision`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        action,
+        reason,
+        ...(suspendedUntil
+          ? { suspendedUntil: `${suspendedUntil}T23:59:59+08:00` }
+          : {}),
+      }),
+    });
+    if (!response.ok) throw new Error();
+    await loadModeration();
+    await inspectModerationCase(caseId);
+  } catch {
+    error.value = "案件状态已变化或处置未保存，请刷新后重试。";
+  } finally {
+    busy.value = false;
+  }
+}
 
 async function saveMatchingSettings() {
   busy.value = true;
@@ -200,11 +300,14 @@ function formatDate(value: string) {
     <header class="admin-header">
       <div>
         <p class="eyebrow">ONLYLOVE ADMIN</p>
-        <h1>邀请管理</h1>
-        <p>为指定邮箱签发七天有效、单次使用的注册准入。</p>
+        <h1>{{ adminRole === 'super_admin' ? '管理后台' : '审核工作台' }}</h1>
+        <p v-if="adminRole === 'super_admin'">管理邀请、平台配置与审核案件。</p>
+        <p v-else>管理邀请并处理举报与复核案件，仅在案件内查看关联证据。</p>
       </div>
       <RouterLink to="/app">成员界面</RouterLink>
     </header>
+
+    <p v-if="error" class="form-error" role="alert">{{ error }}</p>
 
     <section class="admin-panel">
       <form class="invite-form" @submit.prevent="issue">
@@ -221,10 +324,9 @@ function formatDate(value: string) {
         </div>
         <button type="submit" :disabled="busy">签发邀请</button>
       </form>
-      <p v-if="error" class="form-error" role="alert">{{ error }}</p>
     </section>
 
-    <section class="admin-panel matching-settings-panel">
+    <section v-if="adminRole === 'super_admin'" class="admin-panel matching-settings-panel">
       <div class="list-heading">
         <div>
           <h2>候选推荐配置</h2>
@@ -245,7 +347,7 @@ function formatDate(value: string) {
       <p v-if="settingsSuccess" class="save-success" role="status">{{ settingsSuccess }}</p>
     </section>
 
-    <section class="admin-panel matching-settings-panel">
+    <section v-if="adminRole === 'super_admin'" class="admin-panel matching-settings-panel">
       <div class="list-heading">
         <div>
           <h2>Agent 每日额度</h2>
@@ -314,7 +416,90 @@ function formatDate(value: string) {
       </div>
     </section>
 
-    <section class="invitation-list" aria-labelledby="invitation-list-title">
+    <section class="admin-panel moderation-admin-panel">
+      <div class="list-heading">
+        <div>
+          <h2>举报与复核案件</h2>
+          <p>普通管理员只能从案件进入关联聊天；处置理由会保留用于复核。</p>
+        </div>
+        <span>{{ moderationMetrics.openCaseCount }} 个待处理</span>
+      </div>
+      <p>累计分身失真反馈 {{ moderationMetrics.distortionFeedbackCount }} 条</p>
+      <div class="moderation-case-list">
+        <article v-for="item in moderationCases" :key="item.id">
+          <div>
+            <strong>{{ item.type === 'appeal' ? '复核案件' : '举报案件' }}</strong>
+            <p>{{ item.reason }}</p>
+          </div>
+          <span class="status">{{ item.status === 'pending' ? '待处理' : '已处理' }}</span>
+          <button type="button" class="quiet-action" @click="inspectModerationCase(item.id)">
+            查看案件
+          </button>
+        </article>
+        <p v-if="!moderationCases.length" class="empty-state">暂无审核案件。</p>
+      </div>
+      <article v-if="selectedModerationCase" class="moderation-case-detail">
+        <h3>案件理由与证据</h3>
+        <p>{{ selectedModerationCase.case.reason }}</p>
+        <p>{{ selectedModerationCase.case.evidence }}</p>
+        <div v-if="selectedModerationCase.chat" class="moderation-case-chat">
+          <strong>仅限本案件的关联聊天</strong>
+          <p
+            v-for="message in selectedModerationCase.chat.messages"
+            :key="message.id"
+          >
+            {{ message.content }}
+          </p>
+        </div>
+        <p v-if="selectedModerationCase.decision">
+          已作出 {{ selectedModerationCase.decision.action }}：
+          {{ selectedModerationCase.decision.reason }}
+        </p>
+        <div
+          v-else
+          class="moderation-decision-actions"
+          aria-label="审核处置"
+        >
+          <button
+            type="button"
+            :disabled="busy"
+            @click="decideModerationCase(selectedModerationCase.case.id, 'dismissed')"
+          >
+            {{
+              selectedModerationCase.case.type === 'appeal' ? '撤销原处置' : '驳回'
+            }}
+          </button>
+          <button
+            type="button"
+            :disabled="busy"
+            @click="decideModerationCase(selectedModerationCase.case.id, 'warning')"
+          >
+            {{
+              selectedModerationCase.case.type === 'appeal' ? '改为警告' : '警告'
+            }}
+          </button>
+          <button
+            type="button"
+            :disabled="busy"
+            @click="decideModerationCase(selectedModerationCase.case.id, 'suspended')"
+          >
+            限期停用
+          </button>
+          <button
+            type="button"
+            :disabled="busy"
+            @click="decideModerationCase(selectedModerationCase.case.id, 'banned')"
+          >
+            永久封禁
+          </button>
+        </div>
+      </article>
+    </section>
+
+    <section
+      class="invitation-list"
+      aria-labelledby="invitation-list-title"
+    >
       <div class="list-heading">
         <h2 id="invitation-list-title">邀请记录</h2>
         <span>{{ invitations.length }} 条</span>

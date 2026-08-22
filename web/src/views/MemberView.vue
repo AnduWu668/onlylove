@@ -203,17 +203,53 @@ interface HumanConversationState {
   eventsUrl: string;
 }
 
+type ModerationTargetKind =
+  | "recommendation"
+  | "contact_request"
+  | "connection"
+  | "twin_message"
+  | "human_message";
+
+interface ModerationState {
+  accessRestricted: boolean;
+  permanentlyBanned: boolean;
+  suspendedUntil: string | null;
+  receivedFeedback: {
+    id: string;
+    details: string;
+    createdAt: string;
+    message: { id: string; content: string; createdAt: string };
+    correctionPrompt: string;
+  }[];
+  submittedReports: {
+    id: string;
+    status: "pending" | "resolved";
+    outcome: "pending" | "processed";
+    createdAt: string;
+  }[];
+  receivedDecisions: {
+    caseId: string;
+    caseType: "report" | "appeal";
+    originalCaseId: string | null;
+    action: "dismissed" | "warning" | "suspended" | "banned";
+    reason: string;
+    suspendedUntil: string | null;
+    createdAt: string;
+    canAppeal: boolean;
+  }[];
+}
+
 const router = useRouter();
-const member = ref<{ email: string; role: string }>();
+const member = ref<{ email: string; role: string; suspendedUntil?: string | null }>();
 const loading = ref(true);
 const profileLoaded = ref(false);
 const saving = ref(false);
 const error = ref("");
 const success = ref("");
 const version = ref<number>();
-const activeTab = ref<"twin" | "recommendations" | "connections" | "profile">(
-  "profile",
-);
+const activeTab = ref<
+  "twin" | "recommendations" | "connections" | "moderation" | "profile"
+>("profile");
 const interviewLoaded = ref(false);
 const interviewLoading = ref(false);
 const interviewSending = ref(false);
@@ -270,6 +306,10 @@ const humanConversationError = ref("");
 const ownedCandidateConversations = ref<CandidateTwinConversationState[]>([]);
 const ownedCandidateConversationsLoading = ref(false);
 const ownedCandidateConversationsLoaded = ref(false);
+const moderationState = ref<ModerationState>();
+const moderationLoading = ref(false);
+const moderationError = ref("");
+const moderationSuccess = ref("");
 let candidateTwinEvents: EventSource | undefined;
 let humanConversationEvents: EventSource | undefined;
 let humanConversationOpenRequest = 0;
@@ -390,7 +430,7 @@ async function loadProfile() {
       return;
     }
     const sessionData = await jsonOrUndefined<{
-      member: { email: string; role: string };
+      member: { email: string; role: string; suspendedUntil?: string | null };
       requiresPasswordSetup?: boolean;
     }>(session);
     if (!sessionData) throw new Error();
@@ -402,6 +442,14 @@ async function loadProfile() {
       return;
     }
     member.value = sessionData.member;
+    if (
+      sessionData.member.suspendedUntil &&
+      new Date(sessionData.member.suspendedUntil) > new Date()
+    ) {
+      activeTab.value = "moderation";
+      await loadModeration();
+      return;
+    }
     const response = await fetch("/api/member/profile");
     const data = response.ok
       ? await jsonOrUndefined<ProfileResponse>(response)
@@ -428,6 +476,119 @@ onUnmounted(() => {
 async function signOut() {
   await fetch("/api/session", { method: "DELETE" });
   await router.replace("/login");
+}
+
+async function loadModeration() {
+  if (moderationLoading.value) return;
+  moderationLoading.value = true;
+  moderationError.value = "";
+  try {
+    const response = await fetch("/api/member/moderation");
+    const state = response.ok
+      ? await jsonOrUndefined<ModerationState>(response)
+      : undefined;
+    if (!state) throw new Error();
+    moderationState.value = state;
+  } catch {
+    moderationError.value = "暂时无法读取治理记录，请稍后重试。";
+  } finally {
+    moderationLoading.value = false;
+  }
+}
+
+async function postModeration(path: string, body: object) {
+  try {
+    return await fetch(path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+async function blockTarget(
+  targetKind: "recommendation" | "contact_request" | "connection",
+  targetId: string,
+) {
+  if (!window.confirm("屏蔽会立即结束双方当前互动，并永久阻止再次推荐。确定继续吗？")) {
+    return;
+  }
+  moderationError.value = "";
+  const response = await postModeration("/api/member/blocks", {
+    targetKind,
+    targetId,
+  });
+  if (!response?.ok) {
+    moderationError.value = "屏蔽没有生效，请刷新后重试。";
+    return;
+  }
+  moderationSuccess.value = "已屏蔽对方，双方当前互动已结束。";
+  closeCandidateTwin();
+  closeHumanConversation();
+  if (targetKind === "recommendation") await loadRecommendations();
+  else await loadConnections();
+}
+
+async function reportTarget(targetKind: ModerationTargetKind, targetId: string) {
+  const reason = window.prompt("请简要说明举报理由。")?.trim();
+  if (!reason) return;
+  const evidence = window.prompt("请补充管理员复核所需的证据或上下文。")?.trim();
+  if (!evidence) return;
+  const block = window.confirm("是否同时屏蔽对方？屏蔽与举报是独立动作。" );
+  moderationError.value = "";
+  const response = await postModeration("/api/member/reports", {
+    targetKind,
+    targetId,
+    reason,
+    evidence,
+    block,
+  });
+  if (!response?.ok) {
+    moderationError.value = "举报没有提交，请刷新后重试。";
+    return;
+  }
+  moderationSuccess.value = block
+    ? "举报案件已创建，同时已屏蔽对方。"
+    : "举报案件已创建，等待管理员处理。";
+  if (block) {
+    closeCandidateTwin();
+    closeHumanConversation();
+    if (targetKind === "recommendation") await loadRecommendations();
+    else await loadConnections();
+  }
+}
+
+async function submitDistortionFeedback(message: InterviewMessage) {
+  const details = window.prompt("哪里不像本人？这会提示分身主人进行理解纠正。")?.trim();
+  if (!details) return;
+  const response = await postModeration("/api/member/distortion-feedback", {
+    messageId: message.id,
+    details,
+  });
+  if (!response?.ok) {
+    moderationError.value = "反馈没有提交，请稍后重试。";
+    return;
+  }
+  moderationSuccess.value = "已记录为分身质量反馈；不会自动修改画像、匹配或处罚。";
+}
+
+async function appealDecision(caseId: string) {
+  const reason = window.prompt("请说明申请复核的理由。")?.trim();
+  if (!reason) return;
+  const evidence = window.prompt("请补充新的证据或需要重新检查的上下文。")?.trim();
+  if (!evidence) return;
+  const response = await postModeration(
+    `/api/member/moderation-cases/${caseId}/appeal`,
+    { reason, evidence },
+  );
+  if (!response?.ok) {
+    moderationError.value = "复核申请没有提交，请稍后重试。";
+    return;
+  }
+  moderationSuccess.value = "已创建新的复核案件，原审核决定记录保持不变。";
+  await loadModeration();
 }
 
 function numberOrNull(value: number | "") {
@@ -964,6 +1125,23 @@ function contactStatus(status: ContactRequestStatus) {
   }[status];
 }
 
+function moderationActionText(
+  decision: ModerationState["receivedDecisions"][number],
+) {
+  if (decision.caseType === "appeal" && decision.action === "dismissed") {
+    return "撤销原处置";
+  }
+  if (decision.caseType === "appeal" && decision.action === "warning") {
+    return "改为警告";
+  }
+  return {
+    dismissed: "驳回",
+    warning: "警告",
+    suspended: "限期停用",
+    banned: "永久封禁",
+  }[decision.action];
+}
+
 function listenForCandidateTwin(eventsUrl: string, answer: InterviewMessage) {
   candidateTwinEvents?.close();
   const events = new EventSource(eventsUrl);
@@ -1266,13 +1444,14 @@ async function submitFixedAnswer() {
 }
 
 function showTab(
-  tab: "twin" | "recommendations" | "connections" | "profile",
+  tab: "twin" | "recommendations" | "connections" | "moderation" | "profile",
 ) {
   if (tab !== "connections") closeHumanConversation();
   activeTab.value = tab;
   if (tab === "twin") void loadInterview();
   if (tab === "recommendations") void loadRecommendations();
   if (tab === "connections") void loadConnections();
+  if (tab === "moderation") void loadModeration();
 }
 
 function showTwinRole(role: "interviewer" | "twin") {
@@ -1563,8 +1742,133 @@ async function withdrawPortrait() {
       </div>
       <button class="quiet-action" type="button" @click="signOut">退出</button>
     </header>
+    <p
+      v-if="activeTab !== 'moderation' && moderationSuccess"
+      class="save-success moderation-toast"
+      role="status"
+    >
+      {{ moderationSuccess }}
+    </p>
+    <p
+      v-if="activeTab !== 'moderation' && moderationError"
+      class="form-error moderation-toast"
+      role="alert"
+    >
+      {{ moderationError }}
+    </p>
 
-    <template v-if="activeTab === 'twin'">
+    <template v-if="activeTab === 'moderation'">
+      <section class="recommendations-intro moderation-intro">
+        <p class="step-label">安全与治理</p>
+        <h1>按问题选择合适的动作</h1>
+        <p>普通理解误差用质量反馈，个人边界用屏蔽，故意夸大、欺骗或伤害用举报。</p>
+        <button
+          v-if="moderationState && !moderationState.accessRestricted"
+          type="button"
+          class="quiet-action"
+          @click="showTab('profile')"
+        >
+          返回我的
+        </button>
+      </section>
+      <section class="moderation-guide" aria-label="治理动作说明">
+        <article>
+          <strong>分身回答不准确</strong>
+          <p>关联具体 AI 消息反馈，帮助主人纠正理解；不会自动改画像、匹配或处罚。</p>
+        </article>
+        <article>
+          <strong>我不想再互动</strong>
+          <p>屏蔽会立即结束请求或当前联系，并永久阻止双方再次推荐。</p>
+        </article>
+        <article>
+          <strong>故意夸大或造成伤害</strong>
+          <p>提交理由和证据进入人工案件；举报时可以另选是否同时屏蔽。</p>
+        </article>
+      </section>
+      <p v-if="moderationLoading" class="loading-state">正在读取治理记录…</p>
+      <p v-if="moderationError" class="form-error" role="alert">
+        {{ moderationError }}
+      </p>
+      <p v-if="moderationSuccess" class="save-success" role="status">
+        {{ moderationSuccess }}
+      </p>
+      <template v-if="moderationState">
+        <section
+          v-if="moderationState.accessRestricted"
+          class="moderation-restriction contact-request-card"
+        >
+          <h2>
+            成员权限当前处于{{ moderationState.permanentlyBanned ? '永久封禁' : '限期停用' }}
+          </h2>
+          <p
+            v-if="moderationState.suspendedUntil && !moderationState.permanentlyBanned"
+          >
+            停用至 {{ new Date(moderationState.suspendedUntil).toLocaleString('zh-CN') }}；期限结束不会自动恢复推荐资格。
+          </p>
+          <p>你仍可查看审核理由并对决定发起复核。</p>
+        </section>
+        <section class="moderation-list contact-request-list">
+          <h2>分身理解纠正</h2>
+          <article
+            v-for="feedback in moderationState.receivedFeedback"
+            :key="feedback.id"
+            class="contact-request-card"
+          >
+            <p>“{{ feedback.message.content }}”</p>
+            <p>{{ feedback.details }}</p>
+            <p>{{ feedback.correctionPrompt }}</p>
+            <button
+              v-if="!moderationState.accessRestricted"
+              type="button"
+              @click="showTab('twin'); showTwinRole('interviewer')"
+            >
+              去补充真实语境
+            </button>
+          </article>
+          <p v-if="!moderationState.receivedFeedback.length" class="empty-state">
+            暂时没有收到分身失真反馈。
+          </p>
+        </section>
+        <section class="moderation-list contact-request-list">
+          <h2>与我有关的审核决定</h2>
+          <article
+            v-for="decision in moderationState.receivedDecisions"
+            :key="decision.caseId"
+            class="contact-request-card"
+          >
+            <strong>{{ moderationActionText(decision) }}</strong>
+            <p>{{ decision.reason }}</p>
+            <button
+              v-if="decision.canAppeal"
+              type="button"
+              class="quiet-action"
+              @click="appealDecision(decision.caseId)"
+            >
+              申请复核
+            </button>
+          </article>
+          <p v-if="!moderationState.receivedDecisions.length" class="empty-state">
+            暂时没有与你有关的审核决定。
+          </p>
+        </section>
+        <section class="moderation-list contact-request-list">
+          <h2>我提交的举报</h2>
+          <article
+            v-for="report in moderationState.submittedReports"
+            :key="report.id"
+            class="contact-request-card"
+          >
+            <strong>{{ report.status === 'pending' ? '等待处理' : '案件已处理' }}</strong>
+            <p v-if="report.status === 'resolved'">为保护对方隐私，这里不披露具体处置。</p>
+          </article>
+          <p v-if="!moderationState.submittedReports.length" class="empty-state">
+            还没有提交举报。
+          </p>
+        </section>
+      </template>
+    </template>
+
+    <template v-else-if="activeTab === 'twin'">
       <section class="interview-intro">
         <div>
           <p class="step-label">我的分身</p>
@@ -1993,6 +2297,16 @@ async function withdrawPortrait() {
       </RouterLink>
     </section>
 
+    <section class="account-security">
+      <div>
+        <strong>安全与治理</strong>
+        <p>查看失真反馈、举报进度、审核决定与复核入口。</p>
+      </div>
+      <button class="security-link" type="button" @click="showTab('moderation')">
+        查看治理记录
+      </button>
+    </section>
+
     <p v-if="loading" class="loading-state">正在读取资料…</p>
     <section v-else-if="!profileLoaded" class="load-failure" role="alert">
       <p>{{ error }}</p>
@@ -2196,6 +2510,25 @@ async function withdrawPortrait() {
           >
             <span>{{ message.role === "member" ? "我" : "恋爱分身 · AI" }}</span>
             <p>{{ message.content || "正在思考…" }}</p>
+            <div
+              v-if="message.role === 'agent' && !message.id.startsWith('pending-')"
+              class="message-moderation-actions"
+            >
+              <button
+                type="button"
+                class="quiet-action"
+                @click="submitDistortionFeedback(message)"
+              >
+                回答不准确
+              </button>
+              <button
+                type="button"
+                class="quiet-action"
+                @click="reportTarget('twin_message', message.id)"
+              >
+                举报这条回答
+              </button>
+            </div>
           </article>
         </div>
         <div v-else class="interview-empty">
@@ -2351,6 +2684,22 @@ async function withdrawPortrait() {
               >
                 跳过这位候选
               </button>
+              <button
+                class="block-candidate quiet-action"
+                type="button"
+                :disabled="recommendationsPending"
+                @click="blockTarget('recommendation', candidate.id)"
+              >
+                屏蔽
+              </button>
+              <button
+                class="report-candidate quiet-action"
+                type="button"
+                :disabled="recommendationsPending"
+                @click="reportTarget('recommendation', candidate.id)"
+              >
+                举报
+              </button>
             </div>
           </article>
         </section>
@@ -2483,6 +2832,22 @@ async function withdrawPortrait() {
                 {{ connections.currentConnection.conversation.unreadCount }} 条未读
               </span>
             </button>
+            <div class="moderation-inline-actions">
+              <button
+                type="button"
+                class="quiet-action block-connection"
+                @click="blockTarget('connection', connections.currentConnection.id)"
+              >
+                屏蔽并结束互动
+              </button>
+              <button
+                type="button"
+                class="quiet-action report-connection"
+                @click="reportTarget('connection', connections.currentConnection.id)"
+              >
+                举报成员
+              </button>
+            </div>
             <div
               v-if="humanConversation"
               class="human-conversation"
@@ -2505,6 +2870,14 @@ async function withdrawPortrait() {
                     {{ message.sender === "self" ? "我" : humanConversation.otherMember.displayName }}
                   </span>
                   <p>{{ message.content }}</p>
+                  <button
+                    v-if="message.sender === 'other'"
+                    type="button"
+                    class="quiet-action report-human-message"
+                    @click="reportTarget('human_message', message.id)"
+                  >
+                    举报这条消息
+                  </button>
                 </article>
                 <p v-if="!humanConversation.messages.length" class="empty-state">
                   还没有消息，打个招呼吧。
@@ -2637,6 +3010,22 @@ async function withdrawPortrait() {
                   拒绝
                 </button>
               </div>
+              <div class="moderation-inline-actions">
+                <button
+                  type="button"
+                  class="quiet-action"
+                  @click="blockTarget('contact_request', contactRequest.id)"
+                >
+                  屏蔽
+                </button>
+                <button
+                  type="button"
+                  class="quiet-action"
+                  @click="reportTarget('contact_request', contactRequest.id)"
+                >
+                  举报
+                </button>
+              </div>
             </article>
             <p v-if="!connections.incoming.length" class="empty-state">
               暂时没有收到联系请求。
@@ -2663,6 +3052,22 @@ async function withdrawPortrait() {
               <p v-if="contactRequest.resolutionMessage" class="contact-resolution">
                 {{ contactRequest.resolutionMessage }}
               </p>
+              <div class="moderation-inline-actions">
+                <button
+                  type="button"
+                  class="quiet-action"
+                  @click="blockTarget('contact_request', contactRequest.id)"
+                >
+                  屏蔽
+                </button>
+                <button
+                  type="button"
+                  class="quiet-action"
+                  @click="reportTarget('contact_request', contactRequest.id)"
+                >
+                  举报
+                </button>
+              </div>
             </article>
             <p v-if="!connections.outgoing.length" class="empty-state">
               还没有发出联系请求。
@@ -2675,7 +3080,11 @@ async function withdrawPortrait() {
       </template>
     </template>
 
-    <nav class="member-nav" aria-label="成员导航">
+    <nav
+      v-if="!moderationState?.accessRestricted"
+      class="member-nav"
+      aria-label="成员导航"
+    >
       <button
         type="button"
         :aria-current="activeTab === 'twin' ? 'page' : undefined"
@@ -2693,7 +3102,9 @@ async function withdrawPortrait() {
       ><i></i>联系</button>
       <button
         type="button"
-        :aria-current="activeTab === 'profile' ? 'page' : undefined"
+        :aria-current="
+          activeTab === 'profile' || activeTab === 'moderation' ? 'page' : undefined
+        "
         @click="showTab('profile')"
       ><i></i>我的</button>
     </nav>

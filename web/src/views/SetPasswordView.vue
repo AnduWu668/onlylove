@@ -18,7 +18,7 @@ function destination(member: Member) {
     typeof route.query.redirect === "string" ? route.query.redirect : "";
   return requested.startsWith("/") && !requested.startsWith("//")
     ? requested
-    : member.role === "super_admin"
+    : member.role === "admin" || member.role === "super_admin"
       ? "/admin"
       : "/app";
 }

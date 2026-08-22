@@ -160,7 +160,16 @@ export class Connections {
       recommendation.candidateMemberId,
       database,
     );
-    if (blocked) return undefined;
+    if (
+      blocked ||
+      (await this.moderation.recommendationRestricted(
+        recommendation.memberId,
+        recommendation.candidateMemberId,
+        database,
+      ))
+    ) {
+      return undefined;
+    }
     const publishedVersionsMatch =
       await this.portraits.publishedVersionsMatch(
         new Map([
