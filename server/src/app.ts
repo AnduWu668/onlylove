@@ -11,6 +11,7 @@ import { ModerationConnections } from "./modules/connections/moderation.js";
 import { registerConnectionsRoutes } from "./modules/connections/routes.js";
 import { Connections } from "./modules/connections/service.js";
 import { ConnectionConversations } from "./modules/conversations/connections.js";
+import { MemberConversations } from "./modules/conversations/members.js";
 import { ModerationConversations } from "./modules/conversations/moderation.js";
 import { registerConversationsRoutes } from "./modules/conversations/routes.js";
 import { InterviewConversations } from "./modules/conversations/interview.js";
@@ -59,6 +60,7 @@ export async function createApp(options: AppOptions) {
   const portraits = new Portraits(db, now, interviewConversations, agentJobs);
   const matchingModeration = new MatchingModeration(db);
   const moderationConnections = new ModerationConnections(db);
+  const memberConversations = new MemberConversations(db);
   const connections = new Connections(
     db,
     now,
@@ -103,6 +105,30 @@ export async function createApp(options: AppOptions) {
     production: options.production ?? false,
     endMemberInteractions: (memberId, endedAt, transaction) =>
       moderationConnections.endForMember(memberId, endedAt, transaction),
+    purgeMemberData: async (memberId, email, transaction) => {
+      const conversationIds = await memberConversations.privateConversationIds(
+        memberId,
+        transaction,
+      );
+      await moderation.purgeMemberData(memberId, transaction);
+      await connections.purgeMemberData(memberId, email, transaction);
+      const matchingJobIds = await matching.purgeMemberData(
+        memberId,
+        transaction,
+      );
+      await agentJobs.purgeMemberData(
+        memberId,
+        conversationIds,
+        matchingJobIds,
+        transaction,
+      );
+      await portraits.purgeMemberData(memberId, transaction);
+      await memberConversations.purgeMemberData(
+        memberId,
+        conversationIds,
+        transaction,
+      );
+    },
     recheckRecommendations: (memberId) => matching.recheckForMember(memberId),
   });
   registerPortraitsRoutes(app, {

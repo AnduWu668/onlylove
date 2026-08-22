@@ -1,0 +1,1 @@
+ALTER TABLE "member_deletion_audits" ALTER COLUMN "target_member_id" DROP NOT NULL;

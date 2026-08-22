@@ -336,6 +336,30 @@ export class AgentJobs {
     )[0];
   }
 
+  async purgeMemberData(
+    memberId: string,
+    conversationIds: string[],
+    relatedJobIds: string[],
+    database: DatabaseTransaction,
+  ) {
+    const jobs = await database
+      .select({ id: agentJobs.id })
+      .from(agentJobs)
+      .where(
+        or(
+          eq(agentJobs.memberId, memberId),
+          conversationIds.length
+            ? inArray(agentJobs.conversationId, conversationIds)
+            : undefined,
+          relatedJobIds.length ? inArray(agentJobs.id, relatedJobIds) : undefined,
+        ),
+      );
+    const ids = jobs.map(({ id }) => id);
+    if (!ids.length) return;
+    await database.delete(agentRuns).where(inArray(agentRuns.jobId, ids));
+    await database.delete(agentJobs).where(inArray(agentJobs.id, ids));
+  }
+
   async recordAttempts(
     job: AgentJob,
     attempts: AgentAttemptResult[],

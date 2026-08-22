@@ -696,6 +696,37 @@ describe("Candidate recommendations HTTP seam", () => {
     expect(afterCriteriaChange.json().code).toBe("CANDIDATE_TWIN_UNAVAILABLE");
   }, 10_000);
 
+  it("removes a logically deleted member from candidate lists and rejects their stale session", async () => {
+    const { memberCookie, candidateCookie } =
+      await createEligiblePair("deleted-candidate");
+    const beforeDeletion = await generate(memberCookie);
+    expect(beforeDeletion.json().candidates).toHaveLength(1);
+
+    const deleted = await app.inject({
+      method: "DELETE",
+      url: "/api/member",
+      headers: { cookie: candidateCookie },
+    });
+    expect(deleted.statusCode).toBe(204);
+
+    const afterDeletion = await app.inject({
+      method: "GET",
+      url: "/api/member/recommendations",
+      headers: { cookie: memberCookie },
+    });
+    expect(afterDeletion.statusCode).toBe(200);
+    expect(afterDeletion.json().candidates).toEqual([]);
+    expect(
+      (
+        await app.inject({
+          method: "GET",
+          url: "/api/member/recommendations",
+          headers: { cookie: candidateCookie },
+        })
+      ).statusCode,
+    ).toBe(401);
+  });
+
   it("keeps candidate twin quota across sessions and refunds a final failure", async () => {
     const { memberCookie, memberEmail } =
       await createEligiblePair("candidate-twin-quota");

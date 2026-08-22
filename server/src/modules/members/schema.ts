@@ -126,10 +126,9 @@ export const memberDeletionAudits = pgTable(
       .notNull()
       .references(() => members.id),
     targetMemberId: uuid("target_member_id")
-      .notNull()
       .references(() => members.id),
     action: varchar("action", { length: 16 })
-      .$type<"deleted" | "restored" | "purged">()
+      .$type<"viewed" | "deleted" | "restored" | "purged">()
       .notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },

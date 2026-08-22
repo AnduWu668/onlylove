@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Type } from "@earendil-works/pi-ai";
-import { and, asc, count, desc, eq, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Database, DatabaseTransaction } from "../../db.js";
 import {
   AgentEngine,
@@ -626,6 +626,52 @@ export class Portraits {
     private readonly interviewConversations: InterviewConversations,
     private readonly agentJobs: AgentJobs,
   ) {}
+
+  async purgeMemberData(memberId: string, database: DatabaseTransaction) {
+    const versionIds = (
+      await database
+        .select({ id: portraitVersions.id })
+        .from(portraitVersions)
+        .where(eq(portraitVersions.memberId, memberId))
+    ).map(({ id }) => id);
+    const scenarioIds = versionIds.length
+      ? (
+          await database
+            .select({ id: portraitCalibrationScenarios.id })
+            .from(portraitCalibrationScenarios)
+            .where(
+              inArray(
+                portraitCalibrationScenarios.portraitVersionId,
+                versionIds,
+              ),
+            )
+        ).map(({ id }) => id)
+      : [];
+    await database
+      .delete(portraitFixedAnswers)
+      .where(eq(portraitFixedAnswers.memberId, memberId));
+    await database
+      .delete(portraitMemberStates)
+      .where(eq(portraitMemberStates.memberId, memberId));
+    await database
+      .delete(portraitDrafts)
+      .where(eq(portraitDrafts.memberId, memberId));
+    if (scenarioIds.length) {
+      await database
+        .delete(portraitCalibrationAnswers)
+        .where(inArray(portraitCalibrationAnswers.scenarioId, scenarioIds));
+    }
+    if (versionIds.length) {
+      await database
+        .delete(portraitCalibrationScenarios)
+        .where(
+          inArray(portraitCalibrationScenarios.portraitVersionId, versionIds),
+        );
+      await database
+        .delete(portraitVersions)
+        .where(inArray(portraitVersions.id, versionIds));
+    }
+  }
 
   async memberState(memberId: string) {
     const state = (

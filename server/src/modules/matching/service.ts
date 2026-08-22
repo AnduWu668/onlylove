@@ -1059,6 +1059,90 @@ export class Matching {
     );
   }
 
+  async purgeMemberData(memberId: string, database: DatabaseTransaction) {
+    const evaluations = await database
+      .select({ id: pairEvaluations.id, agentJobId: pairEvaluations.agentJobId })
+      .from(pairEvaluations)
+      .where(
+        or(
+          eq(pairEvaluations.memberAId, memberId),
+          eq(pairEvaluations.memberBId, memberId),
+        ),
+      );
+    const evaluationIds = evaluations.map(({ id }) => id);
+    const recommendations = await database
+      .select({ id: candidateRecommendations.id })
+      .from(candidateRecommendations)
+      .where(
+        or(
+          eq(candidateRecommendations.memberId, memberId),
+          eq(candidateRecommendations.candidateMemberId, memberId),
+          evaluationIds.length
+            ? inArray(candidateRecommendations.pairEvaluationId, evaluationIds)
+            : undefined,
+        ),
+      );
+    const recommendationIds = recommendations.map(({ id }) => id);
+    const pairJobs = await database
+      .select({
+        id: recommendationPairJobs.id,
+        agentJobId: recommendationPairJobs.agentJobId,
+      })
+      .from(recommendationPairJobs)
+      .where(
+        or(
+          eq(recommendationPairJobs.memberId, memberId),
+          eq(recommendationPairJobs.candidateMemberId, memberId),
+          evaluationIds.length
+            ? inArray(recommendationPairJobs.pairEvaluationId, evaluationIds)
+            : undefined,
+          recommendationIds.length
+            ? inArray(
+                recommendationPairJobs.recommendationId,
+                recommendationIds,
+              )
+            : undefined,
+        ),
+      );
+    await database
+      .delete(matchingFollowupQuestions)
+      .where(
+        or(
+          eq(matchingFollowupQuestions.memberId, memberId),
+          evaluationIds.length
+            ? inArray(matchingFollowupQuestions.pairEvaluationId, evaluationIds)
+            : undefined,
+        ),
+      );
+    if (pairJobs.length) {
+      await database
+        .delete(recommendationPairJobs)
+        .where(
+          inArray(
+            recommendationPairJobs.id,
+            pairJobs.map(({ id }) => id),
+          ),
+        );
+    }
+    if (recommendationIds.length) {
+      await database
+        .delete(candidateRecommendations)
+        .where(inArray(candidateRecommendations.id, recommendationIds));
+    }
+    if (evaluationIds.length) {
+      await database
+        .delete(pairEvaluations)
+        .where(inArray(pairEvaluations.id, evaluationIds));
+    }
+    await database
+      .delete(recommendationDailyRuns)
+      .where(eq(recommendationDailyRuns.memberId, memberId));
+    return [
+      ...evaluations.map(({ agentJobId }) => agentJobId),
+      ...pairJobs.map(({ agentJobId }) => agentJobId),
+    ].filter((id): id is string => Boolean(id));
+  }
+
   private sameRequestVersions(
     recommendation: typeof candidateRecommendations.$inferSelect,
     member: MatchContext,

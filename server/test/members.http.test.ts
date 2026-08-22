@@ -859,6 +859,7 @@ describe("Members HTTP seam", () => {
       ).statusCode,
     ).toBe(401);
 
+    currentTime = new Date(currentTime.getTime() + 1);
     const listed = await app.inject({
       method: "GET",
       url: "/api/admin/deleted-members",
@@ -914,6 +915,7 @@ describe("Members HTTP seam", () => {
       headers: { cookie: superAdminCookie },
     });
     expect(purged.statusCode).toBe(204);
+    currentTime = new Date(currentTime.getTime() + 1);
     const afterPurge = await app.inject({
       method: "GET",
       url: "/api/admin/deleted-members",
@@ -927,10 +929,14 @@ describe("Members HTTP seam", () => {
       headers: { cookie: superAdminCookie },
     });
     expect(audit.statusCode).toBe(200);
-    expect(audit.json().audits.map(({ action }: { action: string }) => action)).toEqual([
+    expect(
+      audit.json().audits.map(({ action }: { action: string }) => action),
+    ).toEqual([
+      "viewed",
       "purged",
       "deleted",
       "restored",
+      "viewed",
       "deleted",
     ]);
 

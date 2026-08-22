@@ -173,6 +173,11 @@ export interface MembersOptions {
     endedAt: Date,
     transaction: DatabaseTransaction,
   ) => Promise<void>;
+  purgeMemberData: (
+    memberId: string,
+    email: string,
+    transaction: DatabaseTransaction,
+  ) => Promise<void>;
   recheckRecommendations?: (memberId: string) => Promise<void>;
 }
 
@@ -624,6 +629,7 @@ export function registerMembersRoutes(
     otpSecret,
     production,
     endMemberInteractions,
+    purgeMemberData,
     recheckRecommendations,
   }: MembersOptions,
 ) {
@@ -1194,24 +1200,34 @@ export function registerMembersRoutes(
   );
 
   app.get("/api/admin/deleted-members", async (request, reply) => {
-    const actor = await superAdminForRequest(request, db, now());
+    const viewedAt = now();
+    const actor = await superAdminForRequest(request, db, viewedAt);
     if (!actor) return reply.code(403).send({ code: "FORBIDDEN" });
-    const rows = await db
-      .select({
-        id: members.id,
-        email: members.email,
-        nickname: members.nickname,
-        deletedAt: members.deletedAt,
-      })
-      .from(members)
-      .where(
-        and(
-          eq(members.role, "member"),
-          isNotNull(members.deletedAt),
-          isNull(members.purgedAt),
-        ),
-      )
-      .orderBy(desc(members.deletedAt));
+    const rows = await db.transaction(async (transaction) => {
+      await transaction.insert(memberDeletionAudits).values({
+        id: randomUUID(),
+        actorMemberId: actor.id,
+        targetMemberId: null,
+        action: "viewed",
+        createdAt: viewedAt,
+      });
+      return transaction
+        .select({
+          id: members.id,
+          email: members.email,
+          nickname: members.nickname,
+          deletedAt: members.deletedAt,
+        })
+        .from(members)
+        .where(
+          and(
+            eq(members.role, "member"),
+            isNotNull(members.deletedAt),
+            isNull(members.purgedAt),
+          ),
+        )
+        .orderBy(desc(members.deletedAt));
+    });
     return {
       members: rows.map((member) => ({
         ...member,
@@ -1312,6 +1328,10 @@ export function registerMembersRoutes(
             .for("update")
         )[0];
         if (!current) return false;
+        await purgeMemberData(current.id, current.email, transaction);
+        await transaction
+          .delete(matchCriteriaVersions)
+          .where(eq(matchCriteriaVersions.memberId, current.id));
         await transaction.delete(sessions).where(eq(sessions.memberId, current.id));
         await transaction.delete(otpChallenges).where(eq(otpChallenges.email, current.email));
         await transaction.delete(invitations).where(eq(invitations.email, current.email));

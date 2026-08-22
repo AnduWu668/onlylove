@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Database, DatabaseTransaction } from "../../db.js";
 import type { ModerationConnections } from "../connections/moderation.js";
 import type { ModerationConversations } from "../conversations/moderation.js";
@@ -420,6 +420,67 @@ export class Moderation {
           !appealed.has(item.id),
       })),
     };
+  }
+
+  async purgeMemberData(memberId: string, database: DatabaseTransaction) {
+    const caseIds = (
+      await database
+        .select({ id: moderationCases.id })
+        .from(moderationCases)
+        .where(
+          or(
+            eq(moderationCases.reporterMemberId, memberId),
+            eq(moderationCases.reportedMemberId, memberId),
+          ),
+        )
+    ).map(({ id }) => id);
+    await database
+      .delete(moderationNotificationOutbox)
+      .where(
+        or(
+          eq(moderationNotificationOutbox.recipientMemberId, memberId),
+          caseIds.length
+            ? inArray(moderationNotificationOutbox.caseId, caseIds)
+            : undefined,
+        ),
+      );
+    await database
+      .delete(memberRecommendationRestrictions)
+      .where(
+        or(
+          eq(memberRecommendationRestrictions.memberId, memberId),
+          caseIds.length
+            ? inArray(memberRecommendationRestrictions.sourceCaseId, caseIds)
+            : undefined,
+        ),
+      );
+    if (caseIds.length) {
+      await database
+        .delete(moderationCaseAccessAudits)
+        .where(inArray(moderationCaseAccessAudits.caseId, caseIds));
+      await database
+        .delete(moderationDecisions)
+        .where(inArray(moderationDecisions.caseId, caseIds));
+      await database
+        .delete(moderationCases)
+        .where(inArray(moderationCases.id, caseIds));
+    }
+    await database
+      .delete(distortionFeedback)
+      .where(
+        or(
+          eq(distortionFeedback.reporterMemberId, memberId),
+          eq(distortionFeedback.twinOwnerMemberId, memberId),
+        ),
+      );
+    await database
+      .delete(memberBlocks)
+      .where(
+        or(
+          eq(memberBlocks.blockerMemberId, memberId),
+          eq(memberBlocks.blockedMemberId, memberId),
+        ),
+      );
   }
 
   async metrics() {

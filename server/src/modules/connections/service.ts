@@ -905,6 +905,62 @@ export class Connections {
     return this.state(memberId);
   }
 
+  async purgeMemberData(
+    memberId: string,
+    email: string,
+    database: DatabaseTransaction,
+  ) {
+    const requestIds = (
+      await database
+        .select({ id: contactRequests.id })
+        .from(contactRequests)
+        .where(
+          or(
+            eq(contactRequests.requesterMemberId, memberId),
+            eq(contactRequests.recipientMemberId, memberId),
+          ),
+        )
+    ).map(({ id }) => id);
+    const connectionIds = (
+      await database
+        .select({ id: memberConnections.id })
+        .from(memberConnections)
+        .where(
+          or(
+            eq(memberConnections.memberAId, memberId),
+            eq(memberConnections.memberBId, memberId),
+          ),
+        )
+    ).map(({ id }) => id);
+    await database
+      .delete(contactNotificationOutbox)
+      .where(
+        or(
+          eq(contactNotificationOutbox.email, email),
+          requestIds.length
+            ? inArray(contactNotificationOutbox.contactRequestId, requestIds)
+            : undefined,
+          connectionIds.length
+            ? inArray(contactNotificationOutbox.connectionId, connectionIds)
+            : undefined,
+        ),
+      );
+    if (requestIds.length) {
+      await database
+        .delete(contactRequests)
+        .where(inArray(contactRequests.id, requestIds));
+    }
+    await database
+      .delete(connectionFollowupResponses)
+      .where(eq(connectionFollowupResponses.memberId, memberId));
+    await database
+      .delete(connectionRecoveries)
+      .where(eq(connectionRecoveries.memberId, memberId));
+    await database
+      .delete(currentConnectionMembers)
+      .where(eq(currentConnectionMembers.memberId, memberId));
+  }
+
   async relationshipMetrics() {
     const [connections, responses, recoveries] = await Promise.all([
       this.db.select().from(memberConnections),

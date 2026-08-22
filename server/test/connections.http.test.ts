@@ -359,6 +359,48 @@ describe("Contact requests HTTP seam", () => {
     );
   });
 
+  it("cancels a pending request when one member logically deletes the account", async () => {
+    const seeded = await seedCandidateConversation();
+    const request = await app.inject({
+      method: "POST",
+      url: `/api/member/recommendations/${seeded.recommendationId}/contact-request`,
+      headers: { cookie: seeded.requester.cookie },
+    });
+    expect(request.statusCode).toBe(201);
+
+    expect(
+      (
+        await app.inject({
+          method: "DELETE",
+          url: "/api/member",
+          headers: { cookie: seeded.recipient.cookie },
+        })
+      ).statusCode,
+    ).toBe(204);
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: `/api/member/contact-requests/${request.json().id}/accept`,
+          headers: { cookie: seeded.recipient.cookie },
+        })
+      ).statusCode,
+    ).toBe(401);
+
+    const requesterState = await app.inject({
+      method: "GET",
+      url: "/api/member/contact-requests",
+      headers: { cookie: seeded.requester.cookie },
+    });
+    expect(requesterState.json().outgoing[0]).toMatchObject({
+      status: "cancelled",
+      candidate: {
+        nickname: "已注销成员",
+        reason: "该成员已注销，历史请求仅保留状态记录。",
+      },
+    });
+  });
+
   it("retries committed contact notifications without failing the request", async () => {
     class FlakyMailer extends MemoryMailer {
       requestFailures = 1;
@@ -1259,6 +1301,66 @@ describe("Contact requests HTTP seam", () => {
       city: "",
       occupation: "",
       reason: "该成员已注销，历史请求仅保留状态记录。",
+    });
+    await availabilityPool.query(
+      "UPDATE members SET role = 'super_admin' WHERE id = $1",
+      [admin.memberId],
+    );
+    const purged = await app.inject({
+      method: "DELETE",
+      url: `/api/admin/deleted-members/${seeded.recipient.memberId}`,
+      headers: { cookie: admin.cookie },
+    });
+    expect(purged.statusCode).toBe(204);
+    const retainedAfterPurge = await app.inject({
+      method: "GET",
+      url: `/api/member/human-conversations/${conversationId}`,
+      headers: { cookie: seeded.requester.cookie },
+    });
+    expect(retainedAfterPurge.json()).toMatchObject({
+      otherMember: {
+        displayName: "已注销成员（历史消息已保留）",
+        deleted: true,
+      },
+      messages: expect.arrayContaining([
+        expect.objectContaining({ content: "我也可以发送。" }),
+      ]),
+    });
+    const cleared = await availabilityPool.query<{
+      criteria: string;
+      portraits: string;
+      private_conversations: string;
+      human_conversations: string;
+      recommendations: string;
+      evaluations: string;
+      matching_jobs: string;
+      requests: string;
+    }>(
+      `SELECT
+        (SELECT COUNT(*)::text FROM match_criteria_versions WHERE member_id = $1) AS criteria,
+        (SELECT COUNT(*)::text FROM portrait_versions WHERE member_id = $1) AS portraits,
+        (SELECT COUNT(*)::text FROM conversations
+          WHERE type <> 'HUMAN' AND (member_id = $1 OR visitor_member_id = $1)) AS private_conversations,
+        (SELECT COUNT(*)::text FROM conversations
+          WHERE type = 'HUMAN' AND (member_id = $1 OR visitor_member_id = $1)) AS human_conversations,
+        (SELECT COUNT(*)::text FROM candidate_recommendations
+          WHERE member_id = $1 OR candidate_member_id = $1) AS recommendations,
+        (SELECT COUNT(*)::text FROM pair_evaluations
+          WHERE member_a_id = $1 OR member_b_id = $1) AS evaluations,
+        (SELECT COUNT(*)::text FROM agent_jobs WHERE role = 'match_evaluator') AS matching_jobs,
+        (SELECT COUNT(*)::text FROM contact_requests
+          WHERE requester_member_id = $1 OR recipient_member_id = $1) AS requests`,
+      [seeded.recipient.memberId],
+    );
+    expect(cleared.rows[0]).toEqual({
+      criteria: "0",
+      portraits: "0",
+      private_conversations: "0",
+      human_conversations: "1",
+      recommendations: "0",
+      evaluations: "0",
+      matching_jobs: "0",
+      requests: "0",
     });
     await availabilityPool.end();
   });
