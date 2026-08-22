@@ -122,6 +122,8 @@ export async function createApp(options: AppOptions) {
       ),
     humanConversationAccess: (memberId, connectionId, database) =>
       connections.humanConversationAccess(memberId, connectionId, database),
+    completeConnectionReview: (memberId, completedAt) =>
+      connections.completeReview(memberId, completedAt),
     db,
     now,
     portraits,

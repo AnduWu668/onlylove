@@ -68,6 +68,10 @@ export interface ConversationsOptions {
       }
     | undefined
   >;
+  completeConnectionReview: (
+    memberId: string,
+    completedAt: Date,
+  ) => Promise<void>;
   now: () => Date;
   portraits: Portraits;
 }
@@ -405,6 +409,9 @@ async function processConversationAgentJob(
                 agentEngine.extractorDefinition,
               ),
           );
+    if (claimed.task === "continue_interview") {
+      await options.completeConnectionReview(claimed.memberId, now());
+    }
     if (extraction.newlyConfident) {
       stream.write(
         sse("progress", {

@@ -294,10 +294,12 @@ export class Matching {
 
   private async qualifications(memberIds: string[]) {
     const ids = [...new Set(memberIds)];
-    const [members, portraits, currentContacts] = await Promise.all([
+    const [members, portraits, currentContacts, recoveringMembers] =
+      await Promise.all([
       this.matchingMembers.byIds(ids),
       this.matchingPortraits.publishedFor(ids),
       this.matchingConnections.membersWithCurrent(ids),
+      this.matchingConnections.membersRecovering(ids),
     ]);
     const byId = new Map(members.map((member) => [member.id, member]));
     const result = new Map<string, Qualification>();
@@ -352,6 +354,7 @@ export class Matching {
         }
       }
       if (currentContacts.has(memberId)) reasons.push("current_contact");
+      if (recoveringMembers.has(memberId)) reasons.push("relationship_recovery");
       result.set(memberId, {
         eligible: reasons.length === 0,
         reasons,

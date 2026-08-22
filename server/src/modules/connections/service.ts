@@ -22,11 +22,15 @@ import type { ConnectionPortraits } from "../portraits/connections.js";
 import {
   contactNotificationOutbox,
   contactRequests,
+  connectionFollowupResponses,
+  connectionRecoveries,
   currentConnectionMembers,
   memberConnections,
+  type ConnectionFollowupDecision,
 } from "./schema.js";
 
 const REQUEST_LIFETIME_MS = 7 * 24 * 60 * 60_000;
+const FOLLOWUP_DELAY_MS = 7 * 24 * 60 * 60_000;
 
 export class ConnectionsError extends Error {
   constructor(
@@ -106,7 +110,7 @@ export class Connections {
     const otherMember = participantRows.find(({ id }) => id !== memberId)!;
     return {
       canSend:
-        connection.status === "active" &&
+        connection.status !== "ended" &&
         currentMembers.length === 2 &&
         participantRows.length === 2 &&
         participantRows.every(
@@ -174,7 +178,7 @@ export class Connections {
       .from(memberConnections)
       .where(
         and(
-          eq(memberConnections.status, "active"),
+          inArray(memberConnections.status, ["active", "confirmed"]),
           or(
             inArray(memberConnections.memberAId, memberIds),
             inArray(memberConnections.memberBId, memberIds),
@@ -187,7 +191,19 @@ export class Connections {
       .from(currentConnectionMembers)
       .where(inArray(currentConnectionMembers.memberId, memberIds))
       .limit(1);
-    return currentConnection.length || currentMembership.length
+    const unresolvedRecovery = await database
+      .select({ memberId: connectionRecoveries.memberId })
+      .from(connectionRecoveries)
+      .where(
+        and(
+          inArray(connectionRecoveries.memberId, memberIds),
+          isNull(connectionRecoveries.resumedAt),
+        ),
+      )
+      .limit(1);
+    return currentConnection.length ||
+      currentMembership.length ||
+      unresolvedRecovery.length
       ? undefined
       : pair;
   }
@@ -376,9 +392,15 @@ export class Connections {
               notification.email,
               notification.nickname,
             );
-          } else {
+          } else if (notification.type === "contact_accepted") {
             if (!this.mailer.sendContactAccepted) return;
             await this.mailer.sendContactAccepted(
+              notification.email,
+              notification.nickname,
+            );
+          } else {
+            if (!this.mailer.sendConnectionFollowup) return;
+            await this.mailer.sendConnectionFollowup(
               notification.email,
               notification.nickname,
             );
@@ -404,8 +426,59 @@ export class Connections {
     await this.notificationFlush;
   }
 
+  private async queueDueFollowups() {
+    const at = this.now();
+    const connections = await this.db
+      .select()
+      .from(memberConnections)
+      .where(
+        and(
+          inArray(memberConnections.status, ["active", "confirmed"]),
+          lte(
+            memberConnections.createdAt,
+            new Date(at.getTime() - FOLLOWUP_DELAY_MS),
+          ),
+        ),
+      );
+    if (!connections.length) return;
+    const participants = await this.members.byIds(
+      connections.flatMap(({ memberAId, memberBId }) => [memberAId, memberBId]),
+    );
+    const byId = new Map(participants.map((member) => [member.id, member]));
+    const notifications = connections.flatMap((connection) => {
+      const memberA = byId.get(connection.memberAId);
+      const memberB = byId.get(connection.memberBId);
+      if (!memberA || !memberB) return [];
+      return [
+        {
+          id: randomUUID(),
+          connectionId: connection.id,
+          type: "connection_followup" as const,
+          email: memberA.email,
+          nickname: memberB.nickname ?? "对方",
+          createdAt: at,
+        },
+        {
+          id: randomUUID(),
+          connectionId: connection.id,
+          type: "connection_followup" as const,
+          email: memberB.email,
+          nickname: memberA.nickname ?? "对方",
+          createdAt: at,
+        },
+      ];
+    });
+    if (notifications.length) {
+      await this.db
+        .insert(contactNotificationOutbox)
+        .values(notifications)
+        .onConflictDoNothing();
+    }
+  }
+
   async runMaintenance() {
     await this.expirePending();
+    await this.queueDueFollowups();
     await this.flushNotifications();
   }
 
@@ -631,6 +704,270 @@ export class Connections {
     return this.publicRequest(result.request!);
   }
 
+  async submitFollowup(
+    memberId: string,
+    connectionId: string,
+    decision: ConnectionFollowupDecision,
+  ) {
+    await this.queueDueFollowups();
+    const decidedAt = this.now();
+    await this.db.transaction(async (transaction) => {
+      await transaction.execute(
+        sql`select pg_advisory_xact_lock(hashtext(${`connection:${connectionId}`}))`,
+      );
+      const connection = (
+        await transaction
+          .select()
+          .from(memberConnections)
+          .where(eq(memberConnections.id, connectionId))
+          .limit(1)
+      )[0];
+      if (
+        !connection ||
+        ![connection.memberAId, connection.memberBId].includes(memberId)
+      ) {
+        throw new ConnectionsError("CONNECTION_NOT_FOUND", 404);
+      }
+      if (connection.status !== "ended") {
+        const conversation = await this.ensureHumanConversation(
+          connection,
+          transaction,
+        );
+        await transaction.execute(
+          sql`select pg_advisory_xact_lock(hashtext(${conversation.id}))`,
+        );
+      }
+      const existing = (
+        await transaction
+          .select()
+          .from(connectionFollowupResponses)
+          .where(
+            and(
+              eq(connectionFollowupResponses.connectionId, connectionId),
+              eq(connectionFollowupResponses.memberId, memberId),
+            ),
+          )
+          .limit(1)
+      )[0];
+      if (connection.status === "ended") {
+        if (existing?.decision === "end" && decision === "end") return;
+        throw new ConnectionsError("CONNECTION_ENDED");
+      }
+      if (connection.status === "confirmed") {
+        if (existing?.decision === "confirm" && decision === "confirm") return;
+        if (decision !== "end") {
+          throw new ConnectionsError("RELATIONSHIP_ALREADY_CONFIRMED");
+        }
+      }
+      if (
+        decidedAt.getTime() <
+        connection.createdAt.getTime() + FOLLOWUP_DELAY_MS
+      ) {
+        throw new ConnectionsError("FOLLOWUP_NOT_DUE");
+      }
+
+      await transaction
+        .insert(connectionFollowupResponses)
+        .values({
+          connectionId,
+          memberId,
+          decision,
+          createdAt: existing?.createdAt ?? decidedAt,
+          updatedAt: decidedAt,
+        })
+        .onConflictDoUpdate({
+          target: [
+            connectionFollowupResponses.connectionId,
+            connectionFollowupResponses.memberId,
+          ],
+          set: { decision, updatedAt: decidedAt },
+        });
+
+      if (decision === "end") {
+        await transaction
+          .update(memberConnections)
+          .set({ status: "ended", endedAt: decidedAt })
+          .where(eq(memberConnections.id, connectionId));
+        await transaction
+          .delete(currentConnectionMembers)
+          .where(eq(currentConnectionMembers.connectionId, connectionId));
+        await transaction
+          .insert(connectionRecoveries)
+          .values(
+            [connection.memberAId, connection.memberBId].map((participantId) => ({
+              connectionId,
+              memberId: participantId,
+              createdAt: decidedAt,
+            })),
+          )
+          .onConflictDoNothing();
+        return;
+      }
+
+      const responses = await transaction
+        .select()
+        .from(connectionFollowupResponses)
+        .where(eq(connectionFollowupResponses.connectionId, connectionId));
+      if (
+        responses.length === 2 &&
+        responses.every((response) => response.decision === "continue") &&
+        !connection.mutualContinueAt
+      ) {
+        await transaction
+          .update(memberConnections)
+          .set({ mutualContinueAt: decidedAt })
+          .where(eq(memberConnections.id, connectionId));
+      }
+      if (
+        responses.length === 2 &&
+        responses.every((response) => response.decision === "confirm")
+      ) {
+        await transaction
+          .update(memberConnections)
+          .set({ status: "confirmed", confirmedAt: decidedAt })
+          .where(eq(memberConnections.id, connectionId));
+      }
+    });
+    return this.state(memberId);
+  }
+
+  async completeReview(memberId: string, reviewedAt: Date) {
+    const recovery = (
+      await this.db
+        .select({ connectionId: connectionRecoveries.connectionId })
+        .from(connectionRecoveries)
+        .where(
+          and(
+            eq(connectionRecoveries.memberId, memberId),
+            isNull(connectionRecoveries.reviewedAt),
+            isNull(connectionRecoveries.resumedAt),
+          ),
+        )
+        .orderBy(desc(connectionRecoveries.createdAt))
+        .limit(1)
+    )[0];
+    if (!recovery) return;
+    await this.db
+      .update(connectionRecoveries)
+      .set({ reviewedAt })
+      .where(
+        and(
+          eq(connectionRecoveries.connectionId, recovery.connectionId),
+          eq(connectionRecoveries.memberId, memberId),
+          isNull(connectionRecoveries.reviewedAt),
+        ),
+      );
+  }
+
+  async resumeMatching(memberId: string, connectionId: string) {
+    const recovery = (
+      await this.db
+        .select()
+        .from(connectionRecoveries)
+        .where(
+          and(
+            eq(connectionRecoveries.connectionId, connectionId),
+            eq(connectionRecoveries.memberId, memberId),
+          ),
+        )
+        .limit(1)
+    )[0];
+    if (!recovery) throw new ConnectionsError("RECOVERY_NOT_FOUND", 404);
+    if (recovery.resumedAt) return this.state(memberId);
+    if (!recovery.reviewedAt) throw new ConnectionsError("CONTACT_REVIEW_REQUIRED");
+    if (
+      !(await this.portraits.hasPublishedVersionAfter(
+        memberId,
+        recovery.reviewedAt,
+      ))
+    ) {
+      throw new ConnectionsError("PORTRAIT_RECALIBRATION_REQUIRED");
+    }
+    await this.db
+      .update(connectionRecoveries)
+      .set({ resumedAt: this.now() })
+      .where(
+        and(
+          eq(connectionRecoveries.connectionId, connectionId),
+          eq(connectionRecoveries.memberId, memberId),
+          isNull(connectionRecoveries.resumedAt),
+        ),
+      );
+    return this.state(memberId);
+  }
+
+  async relationshipMetrics() {
+    const [connections, responses, recoveries] = await Promise.all([
+      this.db.select().from(memberConnections),
+      this.db.select().from(connectionFollowupResponses),
+      this.db.select().from(connectionRecoveries),
+    ]);
+    const responseCounts = new Map<string, number>();
+    for (const response of responses) {
+      responseCounts.set(
+        response.connectionId,
+        (responseCounts.get(response.connectionId) ?? 0) + 1,
+      );
+    }
+    const due = connections.filter(
+      (connection) =>
+        this.now().getTime() >=
+        connection.createdAt.getTime() + FOLLOWUP_DELAY_MS,
+    );
+    const mutualContinue = connections.filter(
+      (connection) => connection.mutualContinueAt,
+    ).length;
+    return {
+      dueConnections: due.length,
+      mutualContinue,
+      noFeedback: due.filter(
+        (connection) =>
+          connection.status !== "ended" &&
+          !connection.confirmedAt &&
+          !connection.mutualContinueAt &&
+          (responseCounts.get(connection.id) ?? 0) < 2,
+      ).length,
+      ended: connections.filter((connection) => connection.status === "ended")
+        .length,
+      confirmed: connections.filter((connection) => connection.confirmedAt)
+        .length,
+      recoveryPending: recoveries.filter((recovery) => !recovery.resumedAt)
+        .length,
+      resumed: recoveries.filter((recovery) => recovery.resumedAt).length,
+      mutualContinueRate: due.length
+        ? Math.round((mutualContinue / due.length) * 10_000) / 100
+        : 0,
+    };
+  }
+
+  private followupState(
+    connection: typeof memberConnections.$inferSelect,
+    memberId: string,
+    responses: (typeof connectionFollowupResponses.$inferSelect)[],
+  ) {
+    const myDecision =
+      responses.find((response) => response.memberId === memberId)?.decision ??
+      null;
+    const otherDecision =
+      responses.find((response) => response.memberId !== memberId)?.decision ??
+      null;
+    return {
+      due:
+        this.now().getTime() >=
+        connection.createdAt.getTime() + FOLLOWUP_DELAY_MS,
+      myDecision,
+      mutualContinue: connection.mutualContinueAt !== null,
+      confirmation:
+        connection.status === "confirmed"
+          ? ("confirmed" as const)
+          : myDecision === "confirm"
+            ? ("proposed_by_me" as const)
+            : otherDecision === "confirm"
+              ? ("proposed_to_me" as const)
+              : ("none" as const),
+    };
+  }
+
   private async currentConnection(memberId: string) {
     const row = (
       await this.db
@@ -645,18 +982,24 @@ export class Connections {
     )[0];
     if (!row) return null;
     await this.ensureHumanConversation(row.connection);
-    const conversation = await this.conversations.humanState(
-      row.connection.id,
-      memberId,
-    );
     const otherMemberId =
       row.connection.memberAId === memberId
         ? row.connection.memberBId
         : row.connection.memberAId;
-    const candidate = (await this.members.byIds([otherMemberId]))[0];
+    const [conversation, candidateRows, responses] = await Promise.all([
+      this.conversations.humanState(row.connection.id, memberId),
+      this.members.byIds([otherMemberId]),
+      this.db
+        .select()
+        .from(connectionFollowupResponses)
+        .where(eq(connectionFollowupResponses.connectionId, row.connection.id)),
+    ]);
+    const candidate = candidateRows[0];
     return {
       id: row.connection.id,
       createdAt: row.connection.createdAt.toISOString(),
+      relationshipStatus: row.connection.status,
+      followup: this.followupState(row.connection, memberId, responses),
       conversation,
       candidate: candidate
         ? {
@@ -671,9 +1014,40 @@ export class Connections {
     };
   }
 
+  private async recovery(memberId: string) {
+    const recovery = (
+      await this.db
+        .select()
+        .from(connectionRecoveries)
+        .where(eq(connectionRecoveries.memberId, memberId))
+        .orderBy(desc(connectionRecoveries.createdAt))
+        .limit(1)
+    )[0];
+    if (!recovery) return null;
+    const hasUpdatedPortrait = recovery.reviewedAt
+      ? await this.portraits.hasPublishedVersionAfter(
+          memberId,
+          recovery.reviewedAt,
+        )
+      : false;
+    return {
+      connectionId: recovery.connectionId,
+      status: recovery.resumedAt
+        ? ("resumed" as const)
+        : !recovery.reviewedAt
+          ? ("review_required" as const)
+          : !hasUpdatedPortrait
+            ? ("portrait_update_required" as const)
+            : ("ready_to_resume" as const),
+      endedAt: recovery.createdAt.toISOString(),
+      reviewedAt: recovery.reviewedAt?.toISOString() ?? null,
+      resumedAt: recovery.resumedAt?.toISOString() ?? null,
+    };
+  }
+
   async state(memberId: string) {
     await this.runMaintenance();
-    const [requests, currentConnection] = await Promise.all([
+    const [requests, currentConnection, recovery] = await Promise.all([
       this.db
         .select()
         .from(contactRequests)
@@ -685,9 +1059,10 @@ export class Connections {
         )
         .orderBy(desc(contactRequests.createdAt)),
       this.currentConnection(memberId),
+      this.recovery(memberId),
     ]);
     if (!requests.length) {
-      return { incoming: [], outgoing: [], currentConnection };
+      return { incoming: [], outgoing: [], currentConnection, recovery };
     }
     const [recommendations, memberRows, conversationRows] = await Promise.all([
       this.matching.byIds(
@@ -758,6 +1133,7 @@ export class Connections {
         .filter((request) => request.requesterMemberId === memberId)
         .map(publicState),
       currentConnection,
+      recovery,
     };
   }
 }

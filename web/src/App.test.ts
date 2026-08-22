@@ -1916,6 +1916,207 @@ describe("OnlyLove UI seam", () => {
     expect(FakeEventSource.instances).toHaveLength(1);
   });
 
+  it("completes the seven-day decision, private review, and resume flow", async () => {
+    class FakeEventSource {
+      readonly listeners = new Map<string, (event: MessageEvent) => void>();
+
+      constructor(readonly url: string) {}
+
+      addEventListener(type: string, listener: (event: MessageEvent) => void) {
+        this.listeners.set(type, listener);
+      }
+
+      close() {}
+    }
+    vi.stubGlobal("EventSource", FakeEventSource);
+    const connectionId = "a7619c61-2cbd-4f72-8d1a-3d14f6479057";
+    let currentConnection: Record<string, unknown> | null = {
+      id: connectionId,
+      createdAt: "2026-08-15T08:00:00.000Z",
+      relationshipStatus: "active",
+      followup: {
+        due: true,
+        myDecision: null,
+        mutualContinue: false,
+        confirmation: "none",
+      },
+      conversation: { id: "human-conversation", unreadCount: 0 },
+      candidate: {
+        avatarText: "林",
+        nickname: "林夏",
+        age: 34,
+        heightCm: 165,
+        city: "上海",
+        occupation: "设计师",
+      },
+    };
+    let recovery: Record<string, unknown> | null = null;
+    const contactState = () => ({
+      incoming: [],
+      outgoing: [],
+      currentConnection,
+      recovery,
+    });
+    const request = vi.fn(async (url: string, options?: RequestInit) => {
+      if (url === "/api/session") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            member: { email: "member@example.com", role: "member" },
+          }),
+        };
+      }
+      if (url === "/api/member/profile") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ profile: {}, matchCriteria: null }),
+        };
+      }
+      if (url === "/api/member/contact-requests") {
+        return { ok: true, status: 200, json: async () => contactState() };
+      }
+      if (
+        url === `/api/member/connections/${connectionId}/followup` &&
+        options?.method === "POST"
+      ) {
+        const decision = JSON.parse(String(options.body)).decision;
+        if (decision === "continue") {
+          (currentConnection!.followup as Record<string, unknown>).myDecision =
+            "continue";
+        } else if (decision === "confirm") {
+          currentConnection!.relationshipStatus = "confirmed";
+          (currentConnection!.followup as Record<string, unknown>).confirmation =
+            "confirmed";
+        } else {
+          currentConnection = null;
+          recovery = { connectionId, status: "review_required" };
+        }
+        return { ok: true, status: 200, json: async () => contactState() };
+      }
+      if (url === "/api/member/interview") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            messages: [],
+            fixedInterview: {
+              answered: 10,
+              total: 10,
+              completed: true,
+              question: null,
+            },
+            progress: { completed: 8, total: 8 },
+          }),
+        };
+      }
+      if (url === "/api/member/portrait") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            status: "published",
+            submittedVersion: { id: "review-version", version: 2 },
+            publishedVersion: { id: "review-version", version: 2 },
+          }),
+        };
+      }
+      if (url === "/api/member/twin" && !options?.method) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            conversationId: null,
+            profileVersion: { id: "review-version", version: 2 },
+            messages: [],
+          }),
+        };
+      }
+      if (
+        url === "/api/member/interview/messages" &&
+        options?.method === "POST"
+      ) {
+        return {
+          ok: true,
+          status: 202,
+          json: async () => ({
+            eventsUrl: "/api/member/interview/jobs/review-job/events",
+            quotaRemaining: 99,
+          }),
+        };
+      }
+      if (
+        url === `/api/member/connections/${connectionId}/resume` &&
+        options?.method === "POST"
+      ) {
+        recovery = { connectionId, status: "resumed" };
+        return { ok: true, status: 200, json: async () => contactState() };
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", request);
+    const router = createRouter({ history: createMemoryHistory(), routes });
+    const wrapper = mount(App, { global: { plugins: [router] } });
+    await router.push("/app");
+    await router.isReady();
+    await flushPromises();
+    await wrapper
+      .findAll("nav button")
+      .find((button) => button.text().includes("联系"))!
+      .trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("七日回访");
+    await wrapper.get("button.continue-connection").trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("已选择继续了解");
+    await wrapper.get("button.confirm-relationship").trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("双方已确认关系");
+    await wrapper.get("button.end-connection").trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("私有接触复盘");
+
+    await wrapper.get("button.start-connection-review").trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("私有画像访谈员");
+    expect(wrapper.get<HTMLTextAreaElement>("#interview-message").element.value).toContain(
+      "复盘这段接触",
+    );
+    await wrapper.get("form.interview-composer").trigger("submit");
+    await flushPromises();
+    expect(request).toHaveBeenCalledWith(
+      "/api/member/interview/messages",
+      expect.objectContaining({ method: "POST" }),
+    );
+
+    recovery = { connectionId, status: "portrait_update_required" };
+    await wrapper.get('button[data-twin-role="twin"]').trigger("click");
+    await flushPromises();
+    await wrapper
+      .findAll("nav button")
+      .find((button) => button.text().includes("联系"))!
+      .trigger("click");
+    await flushPromises();
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("继续完善和校准"))!
+      .trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("私有画像访谈员");
+
+    recovery = { connectionId, status: "ready_to_resume" };
+    await wrapper
+      .findAll("nav button")
+      .find((button) => button.text().includes("联系"))!
+      .trigger("click");
+    await flushPromises();
+    await wrapper.get("button.resume-matching").trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("已主动恢复推荐");
+  });
+
   it("lets a super administrator update matching and agent quota settings", async () => {
     const request = vi.fn(async (url: string, options?: RequestInit) => {
       if (url === "/api/session") {
@@ -1977,6 +2178,22 @@ describe("OnlyLove UI seam", () => {
           }),
         };
       }
+      if (url === "/api/admin/relationship-metrics") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            dueConnections: 10,
+            mutualContinue: 6,
+            noFeedback: 2,
+            ended: 2,
+            confirmed: 3,
+            recoveryPending: 1,
+            resumed: 4,
+            mutualContinueRate: 60,
+          }),
+        };
+      }
       throw new Error(`Unexpected request: ${url}`);
     });
     vi.stubGlobal("fetch", request);
@@ -2017,5 +2234,10 @@ describe("OnlyLove UI seam", () => {
       }),
     );
     expect(wrapper.text()).toContain("Agent 额度已保存");
+    expect(wrapper.text()).toContain("七日双向继续率");
+    expect(wrapper.text()).toContain("60%");
+    expect(wrapper.text()).toContain("未反馈 2");
+    expect(wrapper.text()).toContain("确认关系 3");
+    expect(wrapper.text()).toContain("已恢复推荐 4");
   });
 });

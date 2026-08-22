@@ -1,6 +1,7 @@
 import {
   index,
   pgTable,
+  primaryKey,
   timestamp,
   uniqueIndex,
   uuid,
@@ -20,12 +21,59 @@ export const memberConnections = pgTable(
       .notNull()
       .references(() => members.id),
     status: varchar("status", { length: 16 })
-      .$type<"active" | "ended">()
+      .$type<"active" | "confirmed" | "ended">()
       .notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    mutualContinueAt: timestamp("mutual_continue_at", { withTimezone: true }),
+    confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
     endedAt: timestamp("ended_at", { withTimezone: true }),
   },
   (table) => [index("member_connections_status_index").on(table.status)],
+);
+
+export type ConnectionFollowupDecision = "continue" | "end" | "confirm";
+
+export const connectionFollowupResponses = pgTable(
+  "connection_followup_responses",
+  {
+    connectionId: uuid("connection_id")
+      .notNull()
+      .references(() => memberConnections.id),
+    memberId: uuid("member_id")
+      .notNull()
+      .references(() => members.id),
+    decision: varchar("decision", { length: 16 })
+      .$type<ConnectionFollowupDecision>()
+      .notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.connectionId, table.memberId] }),
+    index("connection_followup_member_index").on(table.memberId),
+  ],
+);
+
+export const connectionRecoveries = pgTable(
+  "connection_recoveries",
+  {
+    connectionId: uuid("connection_id")
+      .notNull()
+      .references(() => memberConnections.id),
+    memberId: uuid("member_id")
+      .notNull()
+      .references(() => members.id),
+    reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+    resumedAt: timestamp("resumed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.connectionId, table.memberId] }),
+    index("connection_recoveries_member_index").on(
+      table.memberId,
+      table.resumedAt,
+    ),
+  ],
 );
 
 export const currentConnectionMembers = pgTable(
@@ -94,10 +142,12 @@ export const contactNotificationOutbox = pgTable(
   {
     id: uuid("id").primaryKey(),
     contactRequestId: uuid("contact_request_id")
-      .notNull()
       .references(() => contactRequests.id),
+    connectionId: uuid("connection_id").references(() => memberConnections.id),
     type: varchar("type", { length: 24 })
-      .$type<"contact_request" | "contact_accepted">()
+      .$type<
+        "contact_request" | "contact_accepted" | "connection_followup"
+      >()
       .notNull(),
     email: varchar("email", { length: 320 }).notNull(),
     nickname: varchar("nickname", { length: 120 }).notNull(),
@@ -107,6 +157,11 @@ export const contactNotificationOutbox = pgTable(
   (table) => [
     uniqueIndex("contact_notification_outbox_event_unique").on(
       table.contactRequestId,
+      table.type,
+      table.email,
+    ),
+    uniqueIndex("contact_notification_outbox_connection_event_unique").on(
+      table.connectionId,
       table.type,
       table.email,
     ),
