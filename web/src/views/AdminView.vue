@@ -150,12 +150,14 @@ onMounted(async () => {
 
 async function inspectModerationCase(caseId: string) {
   error.value = "";
-  const response = await fetch(`/api/admin/moderation-cases/${caseId}`);
-  if (!response.ok) {
+  selectedModerationCase.value = undefined;
+  try {
+    const response = await fetch(`/api/admin/moderation-cases/${caseId}`);
+    if (!response.ok) throw new Error();
+    selectedModerationCase.value = await response.json();
+  } catch {
     error.value = "无法读取案件关联证据。";
-    return;
   }
-  selectedModerationCase.value = await response.json();
 }
 
 async function decideModerationCase(

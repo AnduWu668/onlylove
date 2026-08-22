@@ -2346,11 +2346,23 @@ describe("OnlyLove UI seam", () => {
             receivedDecisions: [
               {
                 caseId: "case-1",
+                caseType: "report",
+                originalCaseId: null,
                 action: "warning",
                 reason: "消息越过了对方边界。",
                 suspendedUntil: null,
                 createdAt: "2026-08-22T08:00:00.000Z",
                 canAppeal: !appealed,
+              },
+              {
+                caseId: "appeal-resolved",
+                caseType: "appeal",
+                originalCaseId: "case-old",
+                action: "dismissed",
+                reason: "复核理由成立。",
+                suspendedUntil: null,
+                createdAt: "2026-08-22T07:00:00.000Z",
+                canAppeal: false,
               },
             ],
           }),
@@ -2390,6 +2402,8 @@ describe("OnlyLove UI seam", () => {
     await flushPromises();
     expect(wrapper.text()).toContain("普通理解误差用质量反馈");
     expect(wrapper.text()).toContain("我永远不会离开上海");
+    expect(wrapper.text()).toContain("计划描述不准确");
+    expect(wrapper.text()).toContain("撤销原处置");
     expect(wrapper.text()).toContain("为保护对方隐私，这里不披露具体处置");
 
     await wrapper.get(".moderation-list button.quiet-action").trigger("click");
@@ -2406,8 +2420,156 @@ describe("OnlyLove UI seam", () => {
     );
   });
 
+  it("keeps a permanently banned member inside the review-only workspace", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url === "/api/session") {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              member: {
+                email: "restricted@example.com",
+                role: "member",
+                suspendedUntil: "9999-12-31T23:59:59.999Z",
+              },
+              requiresPasswordSetup: false,
+            }),
+          };
+        }
+        if (url === "/api/member/moderation") {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              accessRestricted: true,
+              permanentlyBanned: true,
+              suspendedUntil: "9999-12-31T23:59:59.999Z",
+              receivedFeedback: [
+                {
+                  id: "feedback-1",
+                  details: "计划描述不准确",
+                  createdAt: "2026-08-22T08:00:00.000Z",
+                  message: {
+                    id: "message-1",
+                    content: "我永远不会离开上海。",
+                    createdAt: "2026-08-22T08:00:00.000Z",
+                  },
+                  correctionPrompt: "请通过理解纠正补充真实语境。",
+                },
+              ],
+              submittedReports: [],
+              receivedDecisions: [],
+            }),
+          };
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      }),
+    );
+    const router = createRouter({ history: createMemoryHistory(), routes });
+    await router.push("/app");
+    await router.isReady();
+    const wrapper = mount(App, { global: { plugins: [router] } });
+    await flushPromises();
+
+    expect(wrapper.get(".moderation-restriction h2").text()).toContain("永久封禁");
+    expect(wrapper.find("nav").exists()).toBe(false);
+    expect(
+      wrapper
+        .findAll("button")
+        .some((button) => button.text().includes("去补充真实语境")),
+    ).toBe(false);
+  });
+
+  it("shows a recoverable error when a governance action loses the network", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, options?: RequestInit) => {
+        if (url === "/api/session") {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              member: { email: "member@example.com", role: "member" },
+              requiresPasswordSetup: false,
+            }),
+          };
+        }
+        if (url === "/api/member/profile") {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              profile: {
+                nickname: "林夏",
+                birthDate: "1992-04-12",
+                gender: "female",
+                heightCm: 165,
+                city: "上海",
+                occupation: "设计师",
+              },
+              matchCriteria: null,
+            }),
+          };
+        }
+        if (url === "/api/member/moderation") {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              accessRestricted: false,
+              permanentlyBanned: false,
+              suspendedUntil: null,
+              receivedFeedback: [],
+              submittedReports: [],
+              receivedDecisions: [
+                {
+                  caseId: "case-1",
+                  caseType: "report",
+                  originalCaseId: null,
+                  action: "warning",
+                  reason: "需要复核。",
+                  suspendedUntil: null,
+                  createdAt: "2026-08-22T08:00:00.000Z",
+                  canAppeal: true,
+                },
+              ],
+            }),
+          };
+        }
+        if (
+          url === "/api/member/moderation-cases/case-1/appeal" &&
+          options?.method === "POST"
+        ) {
+          throw new TypeError("network unavailable");
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      }),
+    );
+    vi.stubGlobal(
+      "prompt",
+      vi.fn().mockReturnValueOnce("申请复核").mockReturnValueOnce("补充证据"),
+    );
+    const router = createRouter({ history: createMemoryHistory(), routes });
+    await router.push("/app");
+    await router.isReady();
+    const wrapper = mount(App, { global: { plugins: [router] } });
+    await flushPromises();
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("查看治理记录"))!
+      .trigger("click");
+    await flushPromises();
+    await wrapper.get(".moderation-list button.quiet-action").trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("复核申请没有提交，请稍后重试");
+  });
+
   it("lets an ordinary administrator inspect and decide only a case-linked chat", async () => {
     let decided = false;
+    let detailFails = false;
     const request = vi.fn(async (url: string, options?: RequestInit) => {
       if (url === "/api/session") {
         return {
@@ -2448,6 +2610,7 @@ describe("OnlyLove UI seam", () => {
         };
       }
       if (url === "/api/admin/moderation-cases/case-1" && !options?.method) {
+        if (detailFails) throw new TypeError("network unavailable");
         return {
           ok: true,
           status: 200,
@@ -2509,5 +2672,10 @@ describe("OnlyLove UI seam", () => {
         body: JSON.stringify({ action: "warning", reason: "越过边界" }),
       }),
     );
+    detailFails = true;
+    await wrapper.get(".moderation-case-list button").trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("无法读取案件关联证据");
+    expect(wrapper.text()).not.toContain("这是一条关联消息");
   });
 });

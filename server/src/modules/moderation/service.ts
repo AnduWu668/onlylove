@@ -288,6 +288,7 @@ export class Moderation {
           .where(
             and(
               eq(moderationCases.id, originalCaseId),
+              eq(moderationCases.type, "report"),
               eq(moderationCases.reportedMemberId, memberId),
               eq(moderationCases.status, "resolved"),
             ),
@@ -380,6 +381,8 @@ export class Moderation {
       accessRestricted: Boolean(
         member.suspendedUntil && member.suspendedUntil > this.now(),
       ),
+      permanentlyBanned:
+        member.suspendedUntil?.getTime() === PERMANENT_BAN_UNTIL.getTime(),
       suspendedUntil: member.suspendedUntil?.toISOString() ?? null,
       receivedFeedback: feedback.flatMap((item) => {
         const message = messageById.get(item.messageId);
@@ -408,8 +411,13 @@ export class Moderation {
       })),
       receivedDecisions: received.map(({ case: item, decision }) => ({
         caseId: item.id,
+        caseType: item.type,
+        originalCaseId: item.originalCaseId,
         ...publicDecision(decision),
-        canAppeal: decision.action !== "dismissed" && !appealed.has(item.id),
+        canAppeal:
+          item.type === "report" &&
+          decision.action !== "dismissed" &&
+          !appealed.has(item.id),
       })),
     };
   }
@@ -655,25 +663,33 @@ export class Moderation {
   }
 
   async flushNotifications() {
-    const pending = await this.db
-      .select()
-      .from(moderationNotificationOutbox)
-      .where(isNull(moderationNotificationOutbox.sentAt))
-      .orderBy(asc(moderationNotificationOutbox.createdAt));
-    for (const notification of pending) {
-      try {
-        await this.mailer.sendModerationDecision?.(
-          notification.email,
-          notification.message,
-          notification.disclosure,
-        );
-        await this.db
-          .update(moderationNotificationOutbox)
-          .set({ sentAt: this.now() })
-          .where(eq(moderationNotificationOutbox.id, notification.id));
-      } catch {
-        // The outbox remains pending for the next application start or action.
+    const send = this.mailer.sendModerationDecision?.bind(this.mailer);
+    if (!send) return;
+    await this.db.transaction(async (transaction) => {
+      // ponytail: one DB-wide sender lock fits MVP volume; use leased claims if throughput grows.
+      await transaction.execute(
+        sql`select pg_advisory_xact_lock(hashtext('moderation-notifications'))`,
+      );
+      const pending = await transaction
+        .select()
+        .from(moderationNotificationOutbox)
+        .where(isNull(moderationNotificationOutbox.sentAt))
+        .orderBy(asc(moderationNotificationOutbox.createdAt));
+      for (const notification of pending) {
+        try {
+          await send(
+            notification.email,
+            notification.message,
+            notification.disclosure,
+          );
+          await transaction
+            .update(moderationNotificationOutbox)
+            .set({ sentAt: this.now() })
+            .where(eq(moderationNotificationOutbox.id, notification.id));
+        } catch {
+          // The outbox remains pending for the next application start or action.
+        }
       }
-    }
+    });
   }
 }

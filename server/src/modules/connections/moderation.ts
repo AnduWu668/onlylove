@@ -1,4 +1,4 @@
-import { and, eq, inArray, or } from "drizzle-orm";
+import { and, eq, inArray, or, sql, type SQL } from "drizzle-orm";
 import type { Database, DatabaseTransaction } from "../../db.js";
 import {
   connectionRecoveries,
@@ -9,6 +9,51 @@ import {
 
 export class ModerationConnections {
   constructor(private readonly db: Database) {}
+
+  private async lockCurrentContacts(
+    memberIds: string[],
+    database: DatabaseTransaction,
+  ) {
+    for (const memberId of [...new Set(memberIds)].sort()) {
+      await database.execute(
+        sql`select pg_advisory_xact_lock(hashtext(${`current-contact:${memberId}`}))`,
+      );
+    }
+  }
+
+  private async endConnections(
+    condition: SQL,
+    endedAt: Date,
+    database: DatabaseTransaction,
+  ) {
+    const connectionIds = (
+      await database
+        .select({ id: memberConnections.id })
+        .from(memberConnections)
+        .where(
+          and(
+            inArray(memberConnections.status, ["active", "confirmed"]),
+            condition,
+          ),
+        )
+    ).map(({ id }) => id);
+    for (const connectionId of connectionIds.sort()) {
+      await database.execute(
+        sql`select pg_advisory_xact_lock(hashtext(${`connection:${connectionId}`}))`,
+      );
+    }
+    if (!connectionIds.length) return [];
+    return database
+      .update(memberConnections)
+      .set({ status: "ended", endedAt })
+      .where(
+        and(
+          inArray(memberConnections.id, connectionIds),
+          inArray(memberConnections.status, ["active", "confirmed"]),
+        ),
+      )
+      .returning();
+  }
 
   async target(
     memberId: string,
@@ -64,6 +109,7 @@ export class ModerationConnections {
     endedAt: Date,
     database: DatabaseTransaction,
   ) {
+    await this.lockCurrentContacts([memberAId, memberBId], database);
     const pair = or(
       and(
         eq(memberConnections.memberAId, memberAId),
@@ -73,7 +119,7 @@ export class ModerationConnections {
         eq(memberConnections.memberAId, memberBId),
         eq(memberConnections.memberBId, memberAId),
       ),
-    );
+    )!;
     const requestPair = or(
       and(
         eq(contactRequests.requesterMemberId, memberAId),
@@ -88,13 +134,7 @@ export class ModerationConnections {
       .update(contactRequests)
       .set({ status: "cancelled", resolvedAt: endedAt })
       .where(and(eq(contactRequests.status, "pending"), requestPair));
-    const ended = await database
-      .update(memberConnections)
-      .set({ status: "ended", endedAt })
-      .where(
-        and(inArray(memberConnections.status, ["active", "confirmed"]), pair),
-      )
-      .returning();
+    const ended = await this.endConnections(pair, endedAt, database);
     await this.finishConnections(ended, endedAt, database);
   }
 
@@ -103,6 +143,7 @@ export class ModerationConnections {
     endedAt: Date,
     database: DatabaseTransaction,
   ) {
+    await this.lockCurrentContacts([memberId], database);
     await database
       .update(contactRequests)
       .set({ status: "cancelled", resolvedAt: endedAt })
@@ -115,19 +156,14 @@ export class ModerationConnections {
           ),
         ),
       );
-    const ended = await database
-      .update(memberConnections)
-      .set({ status: "ended", endedAt })
-      .where(
-        and(
-          inArray(memberConnections.status, ["active", "confirmed"]),
-          or(
-            eq(memberConnections.memberAId, memberId),
-            eq(memberConnections.memberBId, memberId),
-          ),
-        ),
-      )
-      .returning();
+    const ended = await this.endConnections(
+      or(
+        eq(memberConnections.memberAId, memberId),
+        eq(memberConnections.memberBId, memberId),
+      )!,
+      endedAt,
+      database,
+    );
     await this.finishConnections(ended, endedAt, database);
   }
 

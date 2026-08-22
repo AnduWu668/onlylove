@@ -212,6 +212,7 @@ type ModerationTargetKind =
 
 interface ModerationState {
   accessRestricted: boolean;
+  permanentlyBanned: boolean;
   suspendedUntil: string | null;
   receivedFeedback: {
     id: string;
@@ -228,6 +229,8 @@ interface ModerationState {
   }[];
   receivedDecisions: {
     caseId: string;
+    caseType: "report" | "appeal";
+    originalCaseId: string | null;
     action: "dismissed" | "warning" | "suspended" | "banned";
     reason: string;
     suspendedUntil: string | null;
@@ -493,6 +496,18 @@ async function loadModeration() {
   }
 }
 
+async function postModeration(path: string, body: object) {
+  try {
+    return await fetch(path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    return undefined;
+  }
+}
+
 async function blockTarget(
   targetKind: "recommendation" | "contact_request" | "connection",
   targetId: string,
@@ -501,12 +516,11 @@ async function blockTarget(
     return;
   }
   moderationError.value = "";
-  const response = await fetch("/api/member/blocks", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ targetKind, targetId }),
+  const response = await postModeration("/api/member/blocks", {
+    targetKind,
+    targetId,
   });
-  if (!response.ok) {
+  if (!response?.ok) {
     moderationError.value = "屏蔽没有生效，请刷新后重试。";
     return;
   }
@@ -524,12 +538,14 @@ async function reportTarget(targetKind: ModerationTargetKind, targetId: string) 
   if (!evidence) return;
   const block = window.confirm("是否同时屏蔽对方？屏蔽与举报是独立动作。" );
   moderationError.value = "";
-  const response = await fetch("/api/member/reports", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ targetKind, targetId, reason, evidence, block }),
+  const response = await postModeration("/api/member/reports", {
+    targetKind,
+    targetId,
+    reason,
+    evidence,
+    block,
   });
-  if (!response.ok) {
+  if (!response?.ok) {
     moderationError.value = "举报没有提交，请刷新后重试。";
     return;
   }
@@ -547,12 +563,11 @@ async function reportTarget(targetKind: ModerationTargetKind, targetId: string) 
 async function submitDistortionFeedback(message: InterviewMessage) {
   const details = window.prompt("哪里不像本人？这会提示分身主人进行理解纠正。")?.trim();
   if (!details) return;
-  const response = await fetch("/api/member/distortion-feedback", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ messageId: message.id, details }),
+  const response = await postModeration("/api/member/distortion-feedback", {
+    messageId: message.id,
+    details,
   });
-  if (!response.ok) {
+  if (!response?.ok) {
     moderationError.value = "反馈没有提交，请稍后重试。";
     return;
   }
@@ -564,12 +579,11 @@ async function appealDecision(caseId: string) {
   if (!reason) return;
   const evidence = window.prompt("请补充新的证据或需要重新检查的上下文。")?.trim();
   if (!evidence) return;
-  const response = await fetch(`/api/member/moderation-cases/${caseId}/appeal`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ reason, evidence }),
-  });
-  if (!response.ok) {
+  const response = await postModeration(
+    `/api/member/moderation-cases/${caseId}/appeal`,
+    { reason, evidence },
+  );
+  if (!response?.ok) {
     moderationError.value = "复核申请没有提交，请稍后重试。";
     return;
   }
@@ -1111,13 +1125,21 @@ function contactStatus(status: ContactRequestStatus) {
   }[status];
 }
 
-function moderationActionText(action: ModerationState["receivedDecisions"][number]["action"]) {
+function moderationActionText(
+  decision: ModerationState["receivedDecisions"][number],
+) {
+  if (decision.caseType === "appeal" && decision.action === "dismissed") {
+    return "撤销原处置";
+  }
+  if (decision.caseType === "appeal" && decision.action === "warning") {
+    return "改为警告";
+  }
   return {
     dismissed: "驳回",
     warning: "警告",
     suspended: "限期停用",
     banned: "永久封禁",
-  }[action];
+  }[decision.action];
 }
 
 function listenForCandidateTwin(eventsUrl: string, answer: InterviewMessage) {
@@ -1775,8 +1797,12 @@ async function withdrawPortrait() {
           v-if="moderationState.accessRestricted"
           class="moderation-restriction contact-request-card"
         >
-          <h2>成员权限当前处于限期停用</h2>
-          <p v-if="moderationState.suspendedUntil">
+          <h2>
+            成员权限当前处于{{ moderationState.permanentlyBanned ? '永久封禁' : '限期停用' }}
+          </h2>
+          <p
+            v-if="moderationState.suspendedUntil && !moderationState.permanentlyBanned"
+          >
             停用至 {{ new Date(moderationState.suspendedUntil).toLocaleString('zh-CN') }}；期限结束不会自动恢复推荐资格。
           </p>
           <p>你仍可查看审核理由并对决定发起复核。</p>
@@ -1789,8 +1815,10 @@ async function withdrawPortrait() {
             class="contact-request-card"
           >
             <p>“{{ feedback.message.content }}”</p>
+            <p>{{ feedback.details }}</p>
             <p>{{ feedback.correctionPrompt }}</p>
             <button
+              v-if="!moderationState.accessRestricted"
               type="button"
               @click="showTab('twin'); showTwinRole('interviewer')"
             >
@@ -1808,7 +1836,7 @@ async function withdrawPortrait() {
             :key="decision.caseId"
             class="contact-request-card"
           >
-            <strong>{{ moderationActionText(decision.action) }}</strong>
+            <strong>{{ moderationActionText(decision) }}</strong>
             <p>{{ decision.reason }}</p>
             <button
               v-if="decision.canAppeal"

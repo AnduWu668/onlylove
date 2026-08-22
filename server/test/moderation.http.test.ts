@@ -382,6 +382,166 @@ describe("Moderation HTTP seam", () => {
     },
   );
 
+  it("leaves no active connection when blocking races with accepting a request", async () => {
+    const seeded = await seedScenario();
+    const pool = new Pool({ connectionString: databaseUrl });
+    await pool.query(
+      "DELETE FROM current_connection_members WHERE connection_id = $1",
+      [seeded.connectionId],
+    );
+    await pool.query(
+      "UPDATE member_connections SET status = 'ended', ended_at = $2 WHERE id = $1",
+      [seeded.connectionId, now],
+    );
+    await pool.query("UPDATE members SET gender = 'male' WHERE id = $1", [
+      seeded.reported.memberId,
+    ]);
+    await pool.query(
+      "UPDATE match_criteria_versions SET desired_gender = 'female' WHERE member_id = $1",
+      [seeded.reported.memberId],
+    );
+    await pool.query(
+      `INSERT INTO portrait_member_states
+        (member_id, submitted_version_id, published_version_id, updated_at)
+       VALUES ($1, $2, $2, $5), ($3, $4, $4, $5)`,
+      [
+        seeded.reporter.memberId,
+        seeded.reporter.portraitVersionId,
+        seeded.reported.memberId,
+        seeded.reported.portraitVersionId,
+        now,
+      ],
+    );
+    await pool.query(`
+      CREATE OR REPLACE FUNCTION test_pause_moderation_connection_insert()
+      RETURNS trigger AS $$
+      BEGIN
+        PERFORM pg_advisory_xact_lock(140014);
+        PERFORM pg_sleep(0.5);
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql
+    `);
+    await pool.query(`
+      CREATE TRIGGER test_pause_moderation_connection_insert
+      BEFORE INSERT ON member_connections
+      FOR EACH ROW
+      WHEN (NEW.member_a_id = '${seeded.reporter.memberId}'::uuid)
+      EXECUTE FUNCTION test_pause_moderation_connection_insert()
+    `);
+    const observer = await pool.connect();
+
+    const accepting = Promise.resolve(
+      app.inject({
+        method: "POST",
+        url: `/api/member/contact-requests/${seeded.contactRequestId}/accept`,
+        headers: { cookie: seeded.reported.cookie },
+      }),
+    );
+    for (;;) {
+      const lock = await observer.query<{ acquired: boolean }>(
+        "SELECT pg_try_advisory_lock(140014) AS acquired",
+      );
+      if (!lock.rows[0]!.acquired) break;
+      await observer.query("SELECT pg_advisory_unlock(140014)");
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    const blocked = await app.inject({
+      method: "POST",
+      url: "/api/member/blocks",
+      headers: { cookie: seeded.reporter.cookie },
+      payload: {
+        targetKind: "contact_request",
+        targetId: seeded.contactRequestId,
+      },
+    });
+    await accepting;
+    observer.release();
+    await pool.query(
+      "DROP TRIGGER test_pause_moderation_connection_insert ON member_connections",
+    );
+    await pool.query("DROP FUNCTION test_pause_moderation_connection_insert() ");
+    await pool.end();
+
+    expect(blocked.statusCode).toBe(201);
+    const state = await app.inject({
+      method: "GET",
+      url: "/api/member/contact-requests",
+      headers: { cookie: seeded.reporter.cookie },
+    });
+    expect(state.json().currentConnection).toBeNull();
+  });
+
+  it("keeps a blocked connection ended when follow-up confirmation races", async () => {
+    const seeded = await seedScenario();
+    now = new Date(now.getTime() + 8 * 86_400_000);
+    const firstConfirmation = await app.inject({
+      method: "POST",
+      url: `/api/member/connections/${seeded.connectionId}/followup`,
+      headers: { cookie: seeded.reporter.cookie },
+      payload: { decision: "confirm" },
+    });
+    expect(firstConfirmation.statusCode).toBe(200);
+
+    const pool = new Pool({ connectionString: databaseUrl });
+    await pool.query(`
+      CREATE OR REPLACE FUNCTION test_pause_moderation_followup_insert()
+      RETURNS trigger AS $$
+      BEGIN
+        PERFORM pg_advisory_xact_lock(140015);
+        PERFORM pg_sleep(0.5);
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql
+    `);
+    await pool.query(`
+      CREATE TRIGGER test_pause_moderation_followup_insert
+      BEFORE INSERT ON connection_followup_responses
+      FOR EACH ROW
+      WHEN (NEW.member_id = '${seeded.reported.memberId}'::uuid)
+      EXECUTE FUNCTION test_pause_moderation_followup_insert()
+    `);
+    const observer = await pool.connect();
+
+    const confirming = Promise.resolve(
+      app.inject({
+        method: "POST",
+        url: `/api/member/connections/${seeded.connectionId}/followup`,
+        headers: { cookie: seeded.reported.cookie },
+        payload: { decision: "confirm" },
+      }),
+    );
+    for (;;) {
+      const lock = await observer.query<{ acquired: boolean }>(
+        "SELECT pg_try_advisory_lock(140015) AS acquired",
+      );
+      if (!lock.rows[0]!.acquired) break;
+      await observer.query("SELECT pg_advisory_unlock(140015)");
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    const blocked = await app.inject({
+      method: "POST",
+      url: "/api/member/blocks",
+      headers: { cookie: seeded.reporter.cookie },
+      payload: { targetKind: "connection", targetId: seeded.connectionId },
+    });
+    await confirming;
+    observer.release();
+    await pool.query(
+      "DROP TRIGGER test_pause_moderation_followup_insert ON connection_followup_responses",
+    );
+    await pool.query("DROP FUNCTION test_pause_moderation_followup_insert() ");
+    await pool.end();
+
+    expect(blocked.statusCode).toBe(201);
+    const metrics = await app.inject({
+      method: "GET",
+      url: "/api/admin/relationship-metrics",
+      headers: { cookie: seeded.superAdmin.cookie },
+    });
+    expect(metrics.json()).toMatchObject({ ended: 1 });
+  });
+
   it.each([
     ["recommendation", "recommendationId"],
     ["twin_message", "twinAnswerId"],
@@ -554,6 +714,112 @@ describe("Moderation HTTP seam", () => {
         }),
       ]),
     );
+
+    const appealId = appeal.json().case.id as string;
+    await app.inject({
+      method: "POST",
+      url: `/api/admin/moderation-cases/${appealId}/decision`,
+      headers: { cookie: seeded.admin.cookie },
+      payload: { action: "warning", reason: "复核后改为警告。" },
+    });
+    const repeatedAppeal = await app.inject({
+      method: "POST",
+      url: `/api/member/moderation-cases/${appealId}/appeal`,
+      headers: { cookie: seeded.reported.cookie },
+      payload: { reason: "再次申请复核。", evidence: "没有新的层级。" },
+    });
+    expect(repeatedAppeal.statusCode).toBe(404);
+    expect(repeatedAppeal.json()).toEqual({ code: "CASE_NOT_APPEALABLE" });
+    const stateAfterAppeal = await app.inject({
+      method: "GET",
+      url: "/api/member/moderation",
+      headers: { cookie: seeded.reported.cookie },
+    });
+    expect(stateAfterAppeal.json().receivedDecisions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          caseId: appealId,
+          caseType: "appeal",
+          originalCaseId: caseId,
+          action: "warning",
+          canAppeal: false,
+        }),
+      ]),
+    );
+  });
+
+  it("sends each moderation notification once when decisions finish together", async () => {
+    class PausingMailer extends MemoryMailer {
+      override async sendModerationDecision(
+        email: string,
+        message: string,
+        disclosure: "reporter" | "reported",
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        await super.sendModerationDecision(email, message, disclosure);
+      }
+    }
+    await app.close();
+    mailer = new PausingMailer();
+    app = await createApp({
+      databaseUrl,
+      mailer,
+      otpSecret: "test-only-secret",
+      superAdminEmail: "admin@onlylove.test",
+      now: () => now,
+    });
+    const seeded = await seedScenario();
+    const firstCaseId = (await reportHumanMessage(seeded)).json().case.id as string;
+    const secondCaseId = (await reportHumanMessage(seeded)).json().case.id as string;
+
+    const decisions = await Promise.all([
+      app.inject({
+        method: "POST",
+        url: `/api/admin/moderation-cases/${firstCaseId}/decision`,
+        headers: { cookie: seeded.admin.cookie },
+        payload: { action: "warning", reason: "第一起案件处置。" },
+      }),
+      app.inject({
+        method: "POST",
+        url: `/api/admin/moderation-cases/${secondCaseId}/decision`,
+        headers: { cookie: seeded.admin.cookie },
+        payload: { action: "warning", reason: "第二起案件处置。" },
+      }),
+    ]);
+
+    expect(decisions.map(({ statusCode }) => statusCode)).toEqual([200, 200]);
+    expect(mailer.notifications).toHaveLength(4);
+  });
+
+  it("retries moderation notifications when the mailer capability returns", async () => {
+    await app.close();
+    app = await createApp({
+      databaseUrl,
+      mailer: { sendOtp: async () => undefined },
+      otpSecret: "test-only-secret",
+      superAdminEmail: "admin@onlylove.test",
+      now: () => now,
+    });
+    const seeded = await seedScenario();
+    const caseId = (await reportHumanMessage(seeded)).json().case.id as string;
+    const decision = await app.inject({
+      method: "POST",
+      url: `/api/admin/moderation-cases/${caseId}/decision`,
+      headers: { cookie: seeded.admin.cookie },
+      payload: { action: "warning", reason: "需要发送审核通知。" },
+    });
+    expect(decision.statusCode).toBe(200);
+
+    await app.close();
+    mailer = new MemoryMailer();
+    app = await createApp({
+      databaseUrl,
+      mailer,
+      otpSecret: "test-only-secret",
+      superAdminEmail: "admin@onlylove.test",
+      now: () => now,
+    });
+    expect(mailer.notifications).toHaveLength(2);
   });
 
   it("enforces a dated suspension immediately but keeps recommendation eligibility blocked after it expires", async () => {
@@ -676,6 +942,7 @@ describe("Moderation HTTP seam", () => {
     });
     expect(moderation.json()).toMatchObject({
       accessRestricted: true,
+      permanentlyBanned: true,
       suspendedUntil: "9999-12-31T23:59:59.999Z",
     });
   });
