@@ -116,23 +116,6 @@ export function registerConnectionsRoutes(
   );
 
   app.post<{ Params: { id: string } }>(
-    "/api/member/connections/:id/review",
-    { schema: { params: uuidParams } },
-    async (request, reply) => {
-      const member = await memberForRequest(request, db, now());
-      if (!member) return reply.code(401).send({ code: "UNAUTHENTICATED" });
-      try {
-        return await connections.markReview(member.id, request.params.id);
-      } catch (error) {
-        if (error instanceof ConnectionsError) {
-          return reply.code(error.statusCode).send({ code: error.code });
-        }
-        throw error;
-      }
-    },
-  );
-
-  app.post<{ Params: { id: string } }>(
     "/api/member/connections/:id/resume",
     { schema: { params: uuidParams } },
     async (request, reply) => {

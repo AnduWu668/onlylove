@@ -191,7 +191,19 @@ export class Connections {
       .from(currentConnectionMembers)
       .where(inArray(currentConnectionMembers.memberId, memberIds))
       .limit(1);
-    return currentConnection.length || currentMembership.length
+    const unresolvedRecovery = await database
+      .select({ memberId: connectionRecoveries.memberId })
+      .from(connectionRecoveries)
+      .where(
+        and(
+          inArray(connectionRecoveries.memberId, memberIds),
+          isNull(connectionRecoveries.resumedAt),
+        ),
+      )
+      .limit(1);
+    return currentConnection.length ||
+      currentMembership.length ||
+      unresolvedRecovery.length
       ? undefined
       : pair;
   }
@@ -715,6 +727,15 @@ export class Connections {
       ) {
         throw new ConnectionsError("CONNECTION_NOT_FOUND", 404);
       }
+      if (connection.status !== "ended") {
+        const conversation = await this.ensureHumanConversation(
+          connection,
+          transaction,
+        );
+        await transaction.execute(
+          sql`select pg_advisory_xact_lock(hashtext(${conversation.id}))`,
+        );
+      }
       const existing = (
         await transaction
           .select()
@@ -806,33 +827,32 @@ export class Connections {
     return this.state(memberId);
   }
 
-  async markReview(memberId: string, connectionId: string) {
-    const reviewedAt = this.now();
-    const updated = await this.db
-      .update(connectionRecoveries)
-      .set({ reviewedAt })
-      .where(
-        and(
-          eq(connectionRecoveries.connectionId, connectionId),
-          eq(connectionRecoveries.memberId, memberId),
-          isNull(connectionRecoveries.reviewedAt),
-        ),
-      )
-      .returning({ connectionId: connectionRecoveries.connectionId });
-    if (!updated.length) {
-      const existing = await this.db
+  async completeReview(memberId: string, reviewedAt: Date) {
+    const recovery = (
+      await this.db
         .select({ connectionId: connectionRecoveries.connectionId })
         .from(connectionRecoveries)
         .where(
           and(
-            eq(connectionRecoveries.connectionId, connectionId),
             eq(connectionRecoveries.memberId, memberId),
+            isNull(connectionRecoveries.reviewedAt),
+            isNull(connectionRecoveries.resumedAt),
           ),
         )
-        .limit(1);
-      if (!existing.length) throw new ConnectionsError("RECOVERY_NOT_FOUND", 404);
-    }
-    return this.state(memberId);
+        .orderBy(desc(connectionRecoveries.createdAt))
+        .limit(1)
+    )[0];
+    if (!recovery) return;
+    await this.db
+      .update(connectionRecoveries)
+      .set({ reviewedAt })
+      .where(
+        and(
+          eq(connectionRecoveries.connectionId, recovery.connectionId),
+          eq(connectionRecoveries.memberId, memberId),
+          isNull(connectionRecoveries.reviewedAt),
+        ),
+      );
   }
 
   async resumeMatching(memberId: string, connectionId: string) {
@@ -897,7 +917,11 @@ export class Connections {
       dueConnections: due.length,
       mutualContinue,
       noFeedback: due.filter(
-        (connection) => (responseCounts.get(connection.id) ?? 0) < 2,
+        (connection) =>
+          connection.status !== "ended" &&
+          !connection.confirmedAt &&
+          !connection.mutualContinueAt &&
+          (responseCounts.get(connection.id) ?? 0) < 2,
       ).length,
       ended: connections.filter((connection) => connection.status === "ended")
         .length,

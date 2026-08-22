@@ -1285,6 +1285,20 @@ describe("Contact requests HTTP seam", () => {
 
   it("ends immediately, keeps each review private, and requires a new published version before individual resume", async () => {
     const seeded = await seedCandidateConversation();
+    const alternatePool = new Pool({ connectionString: databaseUrl });
+    const alternateRecipient = await seedMember(alternatePool, {
+      email: "alternate-recipient@onlylove.test",
+      nickname: "远山",
+      birthDate: "1991-06-08",
+      gender: "male",
+    });
+    const alternate = await seedCandidateRelationship(
+      alternatePool,
+      seeded.requester,
+      alternateRecipient,
+      "ANON00000009",
+    );
+    await alternatePool.end();
     const request = await app.inject({
       method: "POST",
       url: `/api/member/recommendations/${seeded.recommendationId}/contact-request`,
@@ -1329,13 +1343,24 @@ describe("Contact requests HTTP seam", () => {
     });
     expect(history.json().canSend).toBe(false);
 
-    const review = await app.inject({
+    const recoveryCannotBeBypassed = await app.inject({
       method: "POST",
-      url: `/api/member/connections/${connectionId}/review`,
+      url: `/api/member/recommendations/${alternate.recommendationId}/contact-request`,
       headers: { cookie: seeded.requester.cookie },
     });
-    expect(review.statusCode).toBe(200);
-    expect(review.json().recovery.status).toBe("portrait_update_required");
+    expect(recoveryCannotBeBypassed.statusCode).toBe(409);
+    expect(recoveryCannotBeBypassed.json().code).toBe(
+      "CONTACT_REQUEST_NOT_AVAILABLE",
+    );
+
+    const reviewPool = new Pool({ connectionString: databaseUrl });
+    await reviewPool.query(
+      `UPDATE connection_recoveries
+          SET reviewed_at = $3
+        WHERE connection_id = $1 AND member_id = $2`,
+      [connectionId, seeded.requester.memberId, now],
+    );
+    await reviewPool.end();
 
     const prematureResume = await app.inject({
       method: "POST",
@@ -1399,12 +1424,72 @@ describe("Contact requests HTTP seam", () => {
     expect(metrics.json()).toMatchObject({
       dueConnections: 1,
       mutualContinue: 0,
-      noFeedback: 1,
+      noFeedback: 0,
       ended: 1,
       confirmed: 0,
       recoveryPending: 1,
       resumed: 1,
       mutualContinueRate: 0,
     });
+  });
+
+  it("serializes ending a contact ahead of concurrently queued human messages", async () => {
+    const seeded = await seedCandidateConversation();
+    const request = await app.inject({
+      method: "POST",
+      url: `/api/member/recommendations/${seeded.recommendationId}/contact-request`,
+      headers: { cookie: seeded.requester.cookie },
+    });
+    const accepted = await app.inject({
+      method: "POST",
+      url: `/api/member/contact-requests/${request.json().id}/accept`,
+      headers: { cookie: seeded.recipient.cookie },
+    });
+    const state = await app.inject({
+      method: "GET",
+      url: "/api/member/contact-requests",
+      headers: { cookie: seeded.requester.cookie },
+    });
+    const conversationId = state.json().currentConnection.conversation.id;
+    now = new Date(now.getTime() + 7 * 86_400_000);
+
+    const pool = new Pool({ connectionString: databaseUrl });
+    const lock = await pool.connect();
+    await lock.query("BEGIN");
+    await lock.query("SELECT pg_advisory_xact_lock(hashtext($1))", [
+      conversationId,
+    ]);
+    const ending = app.inject({
+      method: "POST",
+      url: `/api/member/connections/${accepted.json().connection.id}/followup`,
+      headers: { cookie: seeded.requester.cookie },
+      payload: { decision: "end" },
+    });
+    await vi.waitFor(async () => {
+      const waiting = await pool.query<{ count: string }>(
+        "SELECT COUNT(*)::text AS count FROM pg_stat_activity WHERE wait_event = 'advisory'",
+      );
+      expect(Number(waiting.rows[0]!.count)).toBeGreaterThanOrEqual(1);
+    });
+    const sending = app.inject({
+      method: "POST",
+      url: `/api/member/human-conversations/${conversationId}/messages`,
+      headers: { cookie: seeded.recipient.cookie },
+      payload: { clientMessageId: randomUUID(), content: "不应越过结束状态" },
+    });
+    await vi.waitFor(async () => {
+      const waiting = await pool.query<{ count: string }>(
+        "SELECT COUNT(*)::text AS count FROM pg_stat_activity WHERE wait_event = 'advisory'",
+      );
+      expect(Number(waiting.rows[0]!.count)).toBeGreaterThanOrEqual(2);
+    });
+    await lock.query("COMMIT");
+    lock.release();
+
+    expect((await ending).statusCode).toBe(200);
+    const message = await sending;
+    expect(message.statusCode).toBe(409);
+    expect(message.json().code).toBe("HUMAN_CONVERSATION_READ_ONLY");
+    await pool.end();
   });
 });

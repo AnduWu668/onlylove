@@ -262,7 +262,6 @@ const connectionsLoading = ref(false);
 const connectionsPending = ref(false);
 const connectionsError = ref("");
 const relationshipActionPending = ref(false);
-let connectionReviewId: string | undefined;
 const humanConversation = ref<HumanConversationState>();
 const humanConversationLoading = ref(false);
 const humanConversationSending = ref(false);
@@ -924,8 +923,7 @@ async function submitConnectionDecision(
   }
 }
 
-function startConnectionReview(connectionId: string) {
-  connectionReviewId = connectionId;
+function startConnectionReview() {
   twinRole.value = "interviewer";
   interviewInput.value = "我想复盘这段接触：哪些地方适合我，哪些地方需要重新理解自己？";
   showTab("twin");
@@ -1396,22 +1394,6 @@ async function sendOwnAgent(role: OwnAgentRole) {
     }
     quotaRemaining.value = data.quotaRemaining;
     listenForOwnAgent(role, data.eventsUrl, answer);
-    if (role === "interviewer" && connectionReviewId) {
-      try {
-        const reviewed = await fetch(
-          `/api/member/connections/${connectionReviewId}/review`,
-          { method: "POST" },
-        );
-        const state = reviewed.ok
-          ? await jsonOrUndefined<ConnectionsState>(reviewed)
-          : undefined;
-        if (state) connections.value = state;
-      } catch {
-        connectionsError.value = "复盘已提交，但恢复状态暂时未更新。";
-      } finally {
-        connectionReviewId = undefined;
-      }
-    }
   } catch {
     chat.error.value = "网络中断，消息已恢复，请再次发送。";
     ownAgentRetries[role] = { clientMessageId, content };
@@ -2562,7 +2544,7 @@ async function withdrawPortrait() {
               <button
                 class="start-connection-review"
                 type="button"
-                @click="startConnectionReview(connections.recovery.connectionId)"
+                @click="startConnectionReview"
               >
                 进入私有接触复盘
               </button>

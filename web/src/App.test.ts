@@ -2036,13 +2036,6 @@ describe("OnlyLove UI seam", () => {
         };
       }
       if (
-        url === `/api/member/connections/${connectionId}/review` &&
-        options?.method === "POST"
-      ) {
-        recovery = { connectionId, status: "portrait_update_required" };
-        return { ok: true, status: 200, json: async () => contactState() };
-      }
-      if (
         url === `/api/member/connections/${connectionId}/resume` &&
         options?.method === "POST"
       ) {
@@ -2083,8 +2076,8 @@ describe("OnlyLove UI seam", () => {
     await wrapper.get("form.interview-composer").trigger("submit");
     await flushPromises();
     expect(request).toHaveBeenCalledWith(
-      `/api/member/connections/${connectionId}/review`,
-      { method: "POST" },
+      "/api/member/interview/messages",
+      expect.objectContaining({ method: "POST" }),
     );
 
     recovery = { connectionId, status: "ready_to_resume" };

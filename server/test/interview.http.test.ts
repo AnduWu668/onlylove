@@ -240,6 +240,68 @@ describe("first portrait interview HTTP and Agent Engine seam", () => {
     );
   });
 
+  it("marks an ended contact reviewed only after the private draft extraction completes", async () => {
+    const email = "private-review@onlylove.test";
+    const { memberCookie: cookie } = await inviteAndSignInMember(email);
+    await completeFixedInterview(cookie);
+    const pool = new Pool({ connectionString: databaseUrl });
+    const member = await pool.query<{ id: string }>(
+      "SELECT id FROM members WHERE email = $1",
+      [email],
+    );
+    const memberId = member.rows[0]!.id;
+    const otherMemberId = "30000000-0000-4000-8000-000000000001";
+    const connectionId = "30000000-0000-4000-8000-000000000002";
+    const endedAt = new Date("2026-08-20T08:00:00.000Z");
+    await pool.query(
+      `INSERT INTO members (id, email, role, birth_date, created_at)
+       VALUES ($1, 'review-partner@onlylove.test', 'member', '1990-01-01', $2)`,
+      [otherMemberId, endedAt],
+    );
+    await pool.query(
+      `INSERT INTO member_connections
+        (id, member_a_id, member_b_id, status, created_at, ended_at)
+       VALUES ($1, $2, $3, 'ended', $4, $4)`,
+      [connectionId, memberId, otherMemberId, endedAt],
+    );
+    await pool.query(
+      `INSERT INTO connection_recoveries (connection_id, member_id, created_at)
+       VALUES ($1, $2, $3)`,
+      [connectionId, memberId, endedAt],
+    );
+
+    const submitted = await app.inject({
+      method: "POST",
+      url: "/api/member/interview/messages",
+      headers: { cookie },
+      payload: {
+        clientMessageId: "30000000-0000-4000-8000-000000000003",
+        content: "复盘这段接触后，我发现自己需要更早表达沟通边界。",
+      },
+    });
+    expect(submitted.statusCode).toBe(202);
+    const queued = await pool.query<{ reviewed_at: Date | null }>(
+      `SELECT reviewed_at FROM connection_recoveries
+        WHERE connection_id = $1 AND member_id = $2`,
+      [connectionId, memberId],
+    );
+    expect(queued.rows[0]!.reviewed_at).toBeNull();
+
+    const events = await app.inject({
+      method: "GET",
+      url: submitted.json().eventsUrl,
+      headers: { cookie },
+    });
+    expect(events.body).toContain("event: done");
+    const completed = await pool.query<{ reviewed_at: Date | null }>(
+      `SELECT reviewed_at FROM connection_recoveries
+        WHERE connection_id = $1 AND member_id = $2`,
+      [connectionId, memberId],
+    );
+    expect(completed.rows[0]!.reviewed_at).not.toBeNull();
+    await pool.end();
+  });
+
   it("shows only general progress when new evidence reaches medium confidence", async () => {
     await app.close();
     mailer = new MemoryMailer();
