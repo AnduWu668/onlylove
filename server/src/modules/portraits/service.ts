@@ -35,6 +35,8 @@ const PERSONA_CONTEXT_SCHEMA_VERSION = "persona-context-v1";
 const CALIBRATION_SCHEMA_VERSION = "portrait-calibration-v1";
 const CALIBRATION_JOB_LEASE_MS = 2 * 60 * 1_000;
 const CALIBRATION_JOB_HEARTBEAT_MS = 30 * 1_000;
+const INLINE_MESSAGE_ID =
+  /\s*[（(]?\s*\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b\s*[）)]?/giu;
 
 const DIMENSION_LABELS: Record<PortraitDimension, string> = {
   long_term_planning: "长期规划",
@@ -229,6 +231,36 @@ export function emptyPortraitDraft() {
   ) as PortraitDraftContent;
 }
 
+function cleanPortraitText(value: string | null) {
+  if (value === null) return null;
+  return (
+    value
+      .replace(INLINE_MESSAGE_ID, "")
+      .replace(/\s*[,，、;；]+\s*([。！？!?]|$)/gu, "$1")
+      .trim() || null
+  );
+}
+
+function sanitizePortraitDraft(content: PortraitDraftContent) {
+  return Object.fromEntries(
+    PORTRAIT_DIMENSIONS.map((dimension) => {
+      const value = content[dimension];
+      return [
+        dimension,
+        {
+          ...value,
+          selfTendency: cleanPortraitText(value.selfTendency),
+          partnerExpectation: cleanPortraitText(value.partnerExpectation),
+          hardBoundary: cleanPortraitText(value.hardBoundary),
+          contradictions: value.contradictions
+            .map((item) => cleanPortraitText(item))
+            .filter((item): item is string => item !== null),
+        },
+      ];
+    }),
+  ) as PortraitDraftContent;
+}
+
 export class PortraitInputError extends Error {
   constructor(readonly code: string) {
     super(code);
@@ -322,7 +354,7 @@ export function portraitExtractionPrompt(
 ) {
   return JSON.stringify({
     instruction:
-      "只依据 evidenceMessages 更新完整八维画像草稿。没有证据时保持原值或低置信度；矛盾写入 contradictions；每个结论只引用实际支持它的消息 id。",
+      "只依据 evidenceMessages 更新完整八维画像草稿。没有证据时保持原值或低置信度；矛盾写入 contradictions；每个结论只引用实际支持它的消息 id。消息 id 只能写入 evidenceMessageIds，禁止写进任何自然语言字段。",
     schemaVersion: PORTRAIT_SCHEMA_VERSION,
     currentDraft,
     evidenceMessages,
@@ -1173,7 +1205,8 @@ export class Portraits {
       const version = (current?.version ?? 0) + 1;
       const id = randomUUID();
       const createdAt = this.now();
-      const context = personaContext(draft.content);
+      const content = sanitizePortraitDraft(draft.content);
+      const context = personaContext(content);
       const previousScenarios = await transaction
         .select({ prompt: portraitCalibrationScenarios.prompt })
         .from(portraitCalibrationScenarios)
@@ -1193,7 +1226,7 @@ export class Portraits {
         sourceDraftSchemaVersion: draft.schemaVersion,
         matchProfile: {
           schemaVersion: MATCH_PROFILE_SCHEMA_VERSION,
-          dimensions: draft.content,
+          dimensions: content,
         },
         personaContextSchemaVersion: PERSONA_CONTEXT_SCHEMA_VERSION,
         personaContext: context,
@@ -1440,23 +1473,28 @@ export class Portraits {
           };
         }
 
+        const previousContent = sanitizePortraitDraft(
+          current?.content ?? emptyPortraitDraft(),
+        );
         const extracted = await agentEngine.extractPortrait(
           portraitExtractionPrompt(
-            current?.content ?? emptyPortraitDraft(),
+            previousContent,
             newEvidence,
           ),
           portraitDraftSchema,
           async () => undefined,
         );
         attempts = extracted.attempts;
-        const content = extracted.value as PortraitDraftContent;
+        const content = sanitizePortraitDraft(
+          extracted.value as PortraitDraftContent,
+        );
         const validEvidence = new Set(messages.map((message) => message.id));
         const newEvidenceIds = new Set(
           newEvidence.map((message) => message.id),
         );
         const assessment = assessPortraitDraft(
           content,
-          current?.content ?? emptyPortraitDraft(),
+          previousContent,
           validEvidence,
           newEvidenceIds,
         );

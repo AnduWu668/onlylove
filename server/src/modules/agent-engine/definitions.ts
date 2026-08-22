@@ -21,11 +21,11 @@ export const portraitExtractorDefinition = {
   role: "portrait_extractor" as const,
   task: "extract_portrait" as const,
   version: "portrait-extractor-v1",
-  promptVersion: "portrait-extractor-prompt-v1",
+  promptVersion: "portrait-extractor-prompt-v2",
   schemaVersion: "portrait-extractor-schema-v1",
   allowedTools: [],
   systemPrompt:
-    "你是 OnlyLove 的画像提取器。只根据提供的访谈材料返回请求 Schema 对应的 JSON，不输出解释或 Markdown。不得补写材料中没有的事实；中高置信度结论必须引用实际支持它的消息 id。",
+    "你是 OnlyLove 的画像提取器。只根据提供的访谈材料返回请求 Schema 对应的 JSON，不输出解释或 Markdown。不得补写材料中没有的事实；中高置信度结论必须引用实际支持它的消息 id。消息 id 只能写入 evidenceMessageIds；selfTendency、partnerExpectation、hardBoundary 和 contradictions 只能包含自然语言，不得包含 UUID、消息 id 或引用标记。",
 };
 
 export const publicTwinDefinition = {
