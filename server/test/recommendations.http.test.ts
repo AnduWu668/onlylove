@@ -1,9 +1,18 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { Pool } from "pg";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { createApp } from "../src/app.js";
 import { loadRootEnv } from "../src/env.js";
+import { Matching } from "../src/modules/matching/service.js";
 import { MemoryMailer } from "../src/modules/members/mailer.js";
 import { PORTRAIT_DIMENSIONS } from "../src/modules/portraits/questions.js";
 import { createPortraitWorker } from "../src/portrait-worker.js";
@@ -231,6 +240,25 @@ describe("Candidate recommendations HTTP seam", () => {
     return { adminCookie, memberCookie, memberEmail };
   }
 
+  async function addCriteriaVersion(pool: Pool, memberEmail: string) {
+    await pool.query(
+      `INSERT INTO match_criteria_versions
+        (id, member_id, version, desired_gender, age_minimum, age_maximum,
+         age_mode, height_minimum_cm, height_maximum_cm, height_mode,
+         acceptable_cities, occupation_requirement, occupation_mode, created_at)
+       SELECT $1, c.member_id, c.version + 1, c.desired_gender,
+              c.age_minimum, c.age_maximum, c.age_mode, c.height_minimum_cm,
+              c.height_maximum_cm, c.height_mode, c.acceptable_cities,
+              c.occupation_requirement, c.occupation_mode, $2
+         FROM match_criteria_versions c
+         JOIN members m ON m.id = c.member_id
+        WHERE m.email = $3
+        ORDER BY c.version DESC
+        LIMIT 1`,
+      [randomUUID(), currentTime, memberEmail],
+    );
+  }
+
   beforeAll(async () => {
     const migrationApp = await createApp({
       databaseUrl,
@@ -448,6 +476,7 @@ describe("Candidate recommendations HTTP seam", () => {
     });
     expect(whileRechecking.json().candidates).toEqual([]);
     expect(whileRechecking.json().remainingCapacity).toBe(4);
+    expect(whileRechecking.json().generating).toBe(true);
     await worker.drain();
 
     const duplicate = await app.inject({
@@ -735,28 +764,23 @@ describe("Candidate recommendations HTTP seam", () => {
     });
   });
 
+  it("rejects a malformed recommendation id at the HTTP boundary", async () => {
+    const { memberCookie } = await createEligiblePair("invalid-id");
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/member/recommendations/not-a-uuid/skip",
+      headers: { cookie: memberCookie },
+    });
+    expect(response.statusCode).toBe(400);
+  });
+
   it("serializes concurrent rechecks for one recommendation", async () => {
     const { memberCookie, memberEmail } = await createEligiblePair("race");
     const generated = await generate(memberCookie);
     const recommendationId = generated.json().candidates[0].id;
 
     const pool = new Pool({ connectionString: databaseUrl });
-    await pool.query(
-      `INSERT INTO match_criteria_versions
-        (id, member_id, version, desired_gender, age_minimum, age_maximum,
-         age_mode, height_minimum_cm, height_maximum_cm, height_mode,
-         acceptable_cities, occupation_requirement, occupation_mode, created_at)
-       SELECT $1, c.member_id, c.version + 1, c.desired_gender,
-              c.age_minimum, c.age_maximum, c.age_mode, c.height_minimum_cm,
-              c.height_maximum_cm, c.height_mode, c.acceptable_cities,
-              c.occupation_requirement, c.occupation_mode, $2
-         FROM match_criteria_versions c
-         JOIN members m ON m.id = c.member_id
-        WHERE m.email = $3
-        ORDER BY c.version DESC
-        LIMIT 1`,
-      [randomUUID(), currentTime, memberEmail],
-    );
+    await addCriteriaVersion(pool, memberEmail);
 
     const responses = await Promise.all(
       Array.from({ length: 20 }, () =>
@@ -774,8 +798,110 @@ describe("Candidate recommendations HTTP seam", () => {
         WHERE recommendation_id = $1 AND status = 'pending'`,
       [recommendationId],
     );
-    await pool.end();
     expect(active.rows[0]!.count).toBe("1");
+
+    await addCriteriaVersion(pool, memberEmail);
+    const latestRecheck = await app.inject({
+      method: "GET",
+      url: "/api/member/recommendations",
+      headers: { cookie: memberCookie },
+    });
+    expect(latestRecheck.statusCode).toBe(200);
+    const versioned = await pool.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count
+         FROM recommendation_pair_jobs
+        WHERE recommendation_id = $1 AND status = 'pending'`,
+      [recommendationId],
+    );
+    expect(versioned.rows[0]!.count).toBe("2");
+    await pool.query(
+      `UPDATE agent_jobs j
+          SET created_at = CASE
+            WHEN c.version = 3 THEN $2::timestamptz - interval '1 minute'
+            ELSE $2::timestamptz
+          END
+         FROM recommendation_pair_jobs r
+         JOIN match_criteria_versions c ON c.id = r.member_criteria_version_id
+        WHERE j.id = r.agent_job_id AND r.recommendation_id = $1`,
+      [recommendationId, currentTime],
+    );
+    await pool.end();
+    await worker.drain();
+    const current = await app.inject({
+      method: "GET",
+      url: "/api/member/recommendations",
+      headers: { cookie: memberCookie },
+    });
+    expect(current.json().candidates).toHaveLength(1);
+    expect(current.json().generating).toBe(false);
+  });
+
+  it("marks an exhausted recommendation batch as failed so the member can retry", async () => {
+    const { memberCookie } = await createEligiblePair("failure");
+    await worker.close();
+    worker = await createPortraitWorker({
+      databaseUrl,
+      now: () => currentTime,
+      agentModel: {
+        provider: "deterministic-fake",
+        model: "matching-v0",
+        error: "matching unavailable",
+      },
+    });
+
+    const accepted = await app.inject({
+      method: "POST",
+      url: "/api/member/recommendations",
+      headers: { cookie: memberCookie },
+    });
+    expect(accepted.statusCode).toBe(202);
+    await worker.drain();
+    const state = await app.inject({
+      method: "GET",
+      url: "/api/member/recommendations",
+      headers: { cookie: memberCookie },
+    });
+    expect(state.json()).toMatchObject({
+      generationFailed: true,
+      dailyFetchAvailable: true,
+      candidates: [],
+    });
+  });
+
+  it("returns saved matching settings when a post-commit recheck fails", async () => {
+    const { adminCookie, memberCookie } = await createEligiblePair("settings");
+    await generate(memberCookie);
+    const recheck = vi
+      .spyOn(Matching.prototype, "recheckForMember")
+      .mockRejectedValueOnce(new Error("test recheck failure"));
+    const logged = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+
+    try {
+      const response = await app.inject({
+        method: "PUT",
+        url: "/api/admin/matching-settings",
+        headers: { cookie: adminCookie },
+        payload: { candidateCapacity: 3, minimumReciprocalScore: 70 },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        candidateCapacity: 3,
+        minimumReciprocalScore: 70,
+      });
+      expect(logged).toHaveBeenCalledOnce();
+
+      const audit = await app.inject({
+        method: "GET",
+        url: "/api/admin/matching-settings/audit",
+        headers: { cookie: adminCookie },
+      });
+      expect(audit.json().audits).toHaveLength(1);
+    } finally {
+      recheck.mockRestore();
+      logged.mockRestore();
+    }
   });
 
   it("lets only the super administrator configure and audit matching limits", async () => {

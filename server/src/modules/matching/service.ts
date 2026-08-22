@@ -273,7 +273,14 @@ export class Matching {
         ),
       );
     for (const { memberId } of affected) {
-      await this.recheckForMember(memberId);
+      try {
+        await this.recheckForMember(memberId);
+      } catch (error) {
+        console.error("Recommendation recheck after settings save failed", {
+          memberId,
+          error,
+        });
+      }
     }
     return updated;
   }
@@ -479,6 +486,22 @@ export class Matching {
                   options.recommendationId,
                 ),
                 eq(recommendationPairJobs.status, "pending"),
+                eq(
+                  recommendationPairJobs.memberPortraitVersionId,
+                  memberA.portrait.id,
+                ),
+                eq(
+                  recommendationPairJobs.candidatePortraitVersionId,
+                  memberB.portrait.id,
+                ),
+                eq(
+                  recommendationPairJobs.memberCriteriaVersionId,
+                  memberA.criteria.id,
+                ),
+                eq(
+                  recommendationPairJobs.candidateCriteriaVersionId,
+                  memberB.criteria.id,
+                ),
               ),
             )
             .limit(1)
@@ -691,6 +714,13 @@ export class Matching {
         ),
       );
     if (requests.some(({ status }) => status === "pending")) return false;
+    if (
+      requests.length &&
+      requests.every(({ status }) => status === "failed")
+    ) {
+      await this.markDailyRun(memberId, runDate, "failed");
+      return true;
+    }
     const settings = await this.settings();
     const existing = await this.db
       .select({ id: candidateRecommendations.id })
@@ -900,7 +930,7 @@ export class Matching {
         this.settings(),
         this.cards(memberId),
         this.db
-          .select({ id: candidateRecommendations.id })
+          .select({ status: candidateRecommendations.status })
           .from(candidateRecommendations)
           .where(
             and(
@@ -942,7 +972,9 @@ export class Matching {
         qualificationResult.eligible &&
         runStatus !== "running" &&
         runStatus !== "completed",
-      generating: runStatus === "running",
+      generating:
+        runStatus === "running" ||
+        occupying.some(({ status }) => status === "rechecking"),
       generationFailed: runStatus === "failed",
       candidates,
       followupQuestions: questions,
@@ -995,17 +1027,17 @@ export class Matching {
       await this.removeRecommendation(request.recommendationId);
       return;
     }
+    const stillCurrent =
+      this.contextMatchesRequest(member.context!, request, "member") &&
+      this.contextMatchesRequest(candidate.context!, request, "candidate");
+    if (!stillCurrent) return;
     await this.addFollowupQuestions(
       evaluation,
       request.input,
       request.memberId,
       request.candidateMemberId,
     );
-    const stillCurrent =
-      this.contextMatchesRequest(member.context!, request, "member") &&
-      this.contextMatchesRequest(candidate.context!, request, "candidate");
     const keep =
-      stillCurrent &&
       Boolean(await this.screenPair(member.context!, candidate.context!)) &&
       evaluation.result.eligibility === "eligible" &&
       evaluation.result.reciprocalScore >= settings.minimumReciprocalScore;

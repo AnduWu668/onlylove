@@ -35,6 +35,16 @@ export function registerMatchingRoutes(
 
   app.post<{ Params: { id: string } }>(
     "/api/member/recommendations/:id/skip",
+    {
+      schema: {
+        params: {
+          type: "object",
+          additionalProperties: false,
+          required: ["id"],
+          properties: { id: { type: "string", format: "uuid" } },
+        },
+      },
+    },
     async (request, reply) => {
       const member = await memberForRequest(request, db, now());
       if (!member) return reply.code(401).send({ code: "UNAUTHENTICATED" });
