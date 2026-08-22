@@ -100,3 +100,33 @@ export const candidateTwinDailyQuotas = pgTable(
   },
   (table) => [primaryKey({ columns: [table.memberId, table.quotaDate] })],
 );
+
+export const agentQuotaSettings = pgTable("agent_quota_settings", {
+  id: integer("id").primaryKey(),
+  ownAgentDailyLimit: integer("own_agent_daily_limit").notNull(),
+  candidateTwinDailyLimit: integer("candidate_twin_daily_limit").notNull(),
+  updatedBy: uuid("updated_by").references(() => members.id),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+});
+
+export const agentQuotaSettingsAudits = pgTable(
+  "agent_quota_settings_audits",
+  {
+    id: uuid("id").primaryKey(),
+    actorId: uuid("actor_id")
+      .notNull()
+      .references(() => members.id),
+    previousOwnAgentDailyLimit: integer(
+      "previous_own_agent_daily_limit",
+    ).notNull(),
+    previousCandidateTwinDailyLimit: integer(
+      "previous_candidate_twin_daily_limit",
+    ).notNull(),
+    ownAgentDailyLimit: integer("own_agent_daily_limit").notNull(),
+    candidateTwinDailyLimit: integer("candidate_twin_daily_limit").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    index("agent_quota_settings_audits_created_index").on(table.createdAt),
+  ],
+);

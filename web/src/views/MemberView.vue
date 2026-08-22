@@ -125,6 +125,7 @@ interface CandidateTwinConversationState {
   };
   messages: InterviewMessage[];
   canReply: boolean;
+  autoFollowup?: { jobId: string; eventsUrl: string };
 }
 
 const router = useRouter();
@@ -556,6 +557,16 @@ async function openCandidateTwin() {
     if (!data?.canReply) throw new Error();
     candidateTwinConversation.value = data;
     candidateTwinCandidate.value = undefined;
+    if (data.autoFollowup) {
+      const answer = reactive<InterviewMessage>({
+        id: `pending-${data.autoFollowup.jobId}`,
+        role: "agent",
+        content: "",
+      });
+      data.messages.push(answer);
+      candidateTwinSending.value = true;
+      listenForCandidateTwin(data.autoFollowup.eventsUrl, answer);
+    }
   } catch {
     candidateTwinError.value = "暂时无法进入这位候选的恋爱分身，请稍后重试。";
   } finally {
@@ -589,6 +600,22 @@ function listenForCandidateTwin(eventsUrl: string, answer: InterviewMessage) {
   });
 }
 
+function candidateTwinPostFailure(code?: string) {
+  if (code === "CANDIDATE_TWIN_QUOTA_USED") {
+    return "今日候选分身消息额度已用完，明天再继续。";
+  }
+  if (code === "CANDIDATE_TWIN_IN_PROGRESS") {
+    return "上一条候选分身回答仍在生成中。";
+  }
+  if (
+    code === "CANDIDATE_TWIN_UNAVAILABLE" ||
+    code === "CONVERSATION_NOT_FOUND"
+  ) {
+    return "这位候选目前无法继续分身会话。";
+  }
+  return "这条消息暂时无法发送，原文已恢复。";
+}
+
 async function sendCandidateTwinMessage() {
   const conversation = candidateTwinConversation.value;
   const content = candidateTwinInput.value.trim();
@@ -614,6 +641,13 @@ async function sendCandidateTwinMessage() {
     content: "",
   });
   conversation.messages.push(message, answer);
+  const rollback = () => {
+    conversation.messages = conversation.messages.filter(
+      (item) => item.id !== message.id && item.id !== answer.id,
+    );
+    candidateTwinInput.value = content;
+    candidateTwinSending.value = false;
+  };
   try {
     const response = await fetch(
       `/api/member/candidate-twin-conversations/${conversation.conversationId}/messages`,
@@ -626,8 +660,13 @@ async function sendCandidateTwinMessage() {
     const data = await jsonOrUndefined<{
       eventsUrl?: string;
       quotaRemaining?: number;
+      code?: string;
     }>(response);
-    if (!response.ok || !data?.eventsUrl) throw new Error();
+    if (!response.ok || !data?.eventsUrl) {
+      candidateTwinError.value = candidateTwinPostFailure(data?.code);
+      rollback();
+      return;
+    }
     candidateTwinQuotaRemaining.value = data.quotaRemaining;
     listenForCandidateTwin(data.eventsUrl, answer);
   } catch {
@@ -636,12 +675,8 @@ async function sendCandidateTwinMessage() {
       clientMessageId,
       content,
     };
-    conversation.messages = conversation.messages.filter(
-      (item) => item.id !== message.id && item.id !== answer.id,
-    );
-    candidateTwinInput.value = content;
     candidateTwinError.value = "这条消息暂时无法发送，原文已恢复。";
-    candidateTwinSending.value = false;
+    rollback();
   }
 }
 

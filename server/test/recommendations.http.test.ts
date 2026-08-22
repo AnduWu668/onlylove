@@ -527,6 +527,8 @@ describe("Candidate recommendations HTTP seam", () => {
             reply: "我是 AI 恋爱分身，这件事我需要坦承不确定。",
             systemPromptIncludes: ["测试分身上下文", "测试候选", "明确标注为 AI"],
             systemPromptExcludes: [
+              "1990-03-02",
+              '"gender":"male"',
               "NEW_CONTEXT_MARKER",
               "HIDDEN_MATCH_MARKER",
               "RAW_INTERVIEW_MARKER",
@@ -561,6 +563,18 @@ describe("Candidate recommendations HTTP seam", () => {
 
     expect(await worker.runOnce()).toBe(false);
 
+    const recovered = await app.inject({
+      method: "POST",
+      url: `/api/member/recommendations/${recommendation.id}/twin-conversation`,
+      headers: { cookie: memberCookie },
+      payload: { consentToOwnerVisibility: true },
+    });
+    expect(recovered.statusCode).toBe(200);
+    expect(recovered.json().autoFollowup).toEqual({
+      jobId: accepted.json().jobId,
+      eventsUrl: accepted.json().eventsUrl,
+    });
+
     const wrongStream = await app.inject({
       method: "GET",
       url: `/api/member/twin/jobs/${accepted.json().jobId}/events`,
@@ -570,7 +584,7 @@ describe("Candidate recommendations HTTP seam", () => {
 
     const streamed = await app.inject({
       method: "GET",
-      url: accepted.json().eventsUrl,
+      url: recovered.json().autoFollowup.eventsUrl,
       headers: { cookie: memberCookie },
     });
     expect(streamed.statusCode).toBe(200);
@@ -676,7 +690,7 @@ describe("Candidate recommendations HTTP seam", () => {
     });
     expect(afterCriteriaChange.statusCode).toBe(409);
     expect(afterCriteriaChange.json().code).toBe("CANDIDATE_TWIN_UNAVAILABLE");
-  });
+  }, 10_000);
 
   it("keeps candidate twin quota across sessions and refunds a final failure", async () => {
     const { memberCookie, memberEmail } =
@@ -767,6 +781,90 @@ describe("Candidate recommendations HTTP seam", () => {
     await pool.end();
     expect(quota.rows[0]!.used).toBe(0);
     expect(job.rows[0]!.quota_refunded).toBe(true);
+  });
+
+  it("lets only the super administrator configure and audit both agent quota pools", async () => {
+    const { adminCookie, memberCookie, memberEmail } =
+      await createEligiblePair("agent-quota-settings");
+    const recommendation = (await generate(memberCookie)).json().candidates[0];
+    const opened = await app.inject({
+      method: "POST",
+      url: `/api/member/recommendations/${recommendation.id}/twin-conversation`,
+      headers: { cookie: memberCookie },
+      payload: { consentToOwnerVisibility: true },
+    });
+    expect(opened.statusCode).toBe(201);
+
+    const forbidden = await app.inject({
+      method: "PUT",
+      url: "/api/admin/agent-quota-settings",
+      headers: { cookie: memberCookie },
+      payload: { ownAgentDailyLimit: 1, candidateTwinDailyLimit: 1 },
+    });
+    expect(forbidden.statusCode).toBe(403);
+
+    const updated = await app.inject({
+      method: "PUT",
+      url: "/api/admin/agent-quota-settings",
+      headers: { cookie: adminCookie },
+      payload: { ownAgentDailyLimit: 1, candidateTwinDailyLimit: 1 },
+    });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json()).toMatchObject({
+      ownAgentDailyLimit: 1,
+      candidateTwinDailyLimit: 1,
+    });
+
+    const audit = await app.inject({
+      method: "GET",
+      url: "/api/admin/agent-quota-settings/audit",
+      headers: { cookie: adminCookie },
+    });
+    expect(audit.statusCode).toBe(200);
+    expect(audit.json().audits).toEqual([
+      expect.objectContaining({
+        previousOwnAgentDailyLimit: 100,
+        previousCandidateTwinDailyLimit: 50,
+        ownAgentDailyLimit: 1,
+        candidateTwinDailyLimit: 1,
+      }),
+    ]);
+
+    const pool = new Pool({ connectionString: databaseUrl });
+    const member = await pool.query<{ id: string }>(
+      "SELECT id FROM members WHERE email = $1",
+      [memberEmail],
+    );
+    const memberId = member.rows[0]!.id;
+    await pool.query(
+      `INSERT INTO own_agent_daily_quotas
+        (member_id, quota_date, used, updated_at)
+       VALUES ($1, '2026-08-22', 1, $2)`,
+      [memberId, currentTime],
+    );
+    await pool.query(
+      `INSERT INTO candidate_twin_daily_quotas
+        (member_id, quota_date, used, updated_at)
+       VALUES ($1, '2026-08-22', 1, $2)`,
+      [memberId, currentTime],
+    );
+    await pool.end();
+
+    const ownAgentExhausted = await app.inject({
+      method: "POST",
+      url: "/api/member/twin/messages",
+      headers: { cookie: memberCookie },
+      payload: { clientMessageId: randomUUID(), content: "自己的额度也可配置。" },
+    });
+    expect(ownAgentExhausted.statusCode).toBe(429);
+
+    const candidateTwinExhausted = await app.inject({
+      method: "POST",
+      url: `/api/member/candidate-twin-conversations/${opened.json().conversationId}/messages`,
+      headers: { cookie: memberCookie },
+      payload: { clientMessageId: randomUUID(), content: "候选额度也可配置。" },
+    });
+    expect(candidateTwinExhausted.statusCode).toBe(429);
   });
 
   it("enforces eligibility, one daily fetch, condition rechecks and versioned skips", async () => {

@@ -1332,6 +1332,11 @@ describe("OnlyLove UI seam", () => {
       occupation: "工程师",
       reason: "你们可以进一步了解。",
     };
+    let candidateMessageFailure:
+      | "CANDIDATE_TWIN_QUOTA_USED"
+      | "CANDIDATE_TWIN_IN_PROGRESS"
+      | "CANDIDATE_TWIN_UNAVAILABLE"
+      | undefined;
     const request = vi.fn(async (url: string, options?: RequestInit) => {
       if (url === "/api/session") {
         return {
@@ -1380,8 +1385,18 @@ describe("OnlyLove UI seam", () => {
               city: "上海",
               occupation: "工程师",
             },
-            messages: [],
+            messages: [
+              {
+                id: "recovered-message",
+                role: "member",
+                content: "页面关闭前已发送的消息",
+              },
+            ],
             canReply: true,
+            autoFollowup: {
+              jobId: "recovered-job",
+              eventsUrl: "/api/member/candidate-twin-jobs/recovered-job/events",
+            },
           }),
         };
       }
@@ -1390,6 +1405,13 @@ describe("OnlyLove UI seam", () => {
           "/api/member/candidate-twin-conversations/ab93bbda-45a4-4479-bdc7-b21f629953d8/messages" &&
         options?.method === "POST"
       ) {
+        if (candidateMessageFailure) {
+          return {
+            ok: false,
+            status: candidateMessageFailure === "CANDIDATE_TWIN_QUOTA_USED" ? 429 : 409,
+            json: async () => ({ code: candidateMessageFailure }),
+          };
+        }
         return {
           ok: true,
           status: 202,
@@ -1479,6 +1501,13 @@ describe("OnlyLove UI seam", () => {
       }),
     );
     expect(wrapper.text()).toContain("北川的恋爱分身 · AI");
+    expect(FakeEventSource.current.url).toBe(
+      "/api/member/candidate-twin-jobs/recovered-job/events",
+    );
+    FakeEventSource.current.emit("delta", { text: "恢复后的 AI 回答。" });
+    FakeEventSource.current.emit("done", {});
+    await flushPromises();
+    expect(wrapper.text()).toContain("恢复后的 AI 回答。");
 
     await wrapper.get(".candidate-twin-composer textarea").setValue("你怎么看冲突修复？");
     await wrapper.get("form.candidate-twin-composer").trigger("submit");
@@ -1491,6 +1520,24 @@ describe("OnlyLove UI seam", () => {
     await flushPromises();
     expect(wrapper.text()).toContain("我是 AI，通常会先暂停再沟通。");
     expect(wrapper.text()).toContain("今日还可发送 49 条");
+
+    candidateMessageFailure = "CANDIDATE_TWIN_QUOTA_USED";
+    await wrapper.get(".candidate-twin-composer textarea").setValue("额度测试");
+    await wrapper.get("form.candidate-twin-composer").trigger("submit");
+    await flushPromises();
+    expect(wrapper.text()).toContain("今日候选分身消息额度已用完，明天再继续。");
+
+    candidateMessageFailure = "CANDIDATE_TWIN_IN_PROGRESS";
+    await wrapper.get(".candidate-twin-composer textarea").setValue("生成中测试");
+    await wrapper.get("form.candidate-twin-composer").trigger("submit");
+    await flushPromises();
+    expect(wrapper.text()).toContain("上一条候选分身回答仍在生成中。");
+
+    candidateMessageFailure = "CANDIDATE_TWIN_UNAVAILABLE";
+    await wrapper.get(".candidate-twin-composer textarea").setValue("不可用测试");
+    await wrapper.get("form.candidate-twin-composer").trigger("submit");
+    await flushPromises();
+    expect(wrapper.text()).toContain("这位候选目前无法继续分身会话。");
 
     await wrapper.get("button.close-candidate-twin").trigger("click");
     await wrapper
@@ -1508,7 +1555,7 @@ describe("OnlyLove UI seam", () => {
     expect(wrapper.find(".owned-candidate-conversations textarea").exists()).toBe(false);
   });
 
-  it("lets a super administrator update matching capacity and threshold", async () => {
+  it("lets a super administrator update matching and agent quota settings", async () => {
     const request = vi.fn(async (url: string, options?: RequestInit) => {
       if (url === "/api/session") {
         return {
@@ -1546,6 +1593,29 @@ describe("OnlyLove UI seam", () => {
           }),
         };
       }
+      if (
+        url === "/api/admin/agent-quota-settings" &&
+        options?.method === "PUT"
+      ) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            ownAgentDailyLimit: 120,
+            candidateTwinDailyLimit: 60,
+          }),
+        };
+      }
+      if (url === "/api/admin/agent-quota-settings") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            ownAgentDailyLimit: 100,
+            candidateTwinDailyLimit: 50,
+          }),
+        };
+      }
       throw new Error(`Unexpected request: ${url}`);
     });
     vi.stubGlobal("fetch", request);
@@ -1570,5 +1640,21 @@ describe("OnlyLove UI seam", () => {
       }),
     );
     expect(wrapper.text()).toContain("推荐配置已保存");
+
+    await wrapper.get("#own-agent-daily-limit").setValue(120);
+    await wrapper.get("#candidate-twin-daily-limit").setValue(60);
+    await wrapper.get("form.agent-quota-settings-form").trigger("submit");
+    await flushPromises();
+    expect(request).toHaveBeenCalledWith(
+      "/api/admin/agent-quota-settings",
+      expect.objectContaining({
+        method: "PUT",
+        body: JSON.stringify({
+          ownAgentDailyLimit: 120,
+          candidateTwinDailyLimit: 60,
+        }),
+      }),
+    );
+    expect(wrapper.text()).toContain("Agent 额度已保存");
   });
 });

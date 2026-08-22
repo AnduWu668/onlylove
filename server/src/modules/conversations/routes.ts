@@ -18,13 +18,15 @@ import { type AgentJob, AgentJobs } from "../agent-engine/jobs.js";
 import {
   activeAdminById,
   adminForRequest,
+  candidatePublicProfileById,
   interviewContextForMember,
   memberForRequest,
   publicProfile,
-  publicProfileById,
   superAdminForRequest,
 } from "../members/routes.js";
 import {
+  agentQuotaSettings,
+  agentQuotaSettingsAudits,
   candidateTwinDailyQuotas,
   conversationMessages,
   conversations,
@@ -32,8 +34,8 @@ import {
 } from "./schema.js";
 import type { Portraits } from "../portraits/service.js";
 
-const OWN_AGENT_DAILY_LIMIT = 100;
-const CANDIDATE_TWIN_DAILY_LIMIT = 50;
+const DEFAULT_OWN_AGENT_DAILY_LIMIT = 100;
+const DEFAULT_CANDIDATE_TWIN_DAILY_LIMIT = 50;
 const JOB_LEASE_MS = 2 * 60 * 1_000;
 const JOB_HEARTBEAT_MS = 30 * 1_000;
 
@@ -71,6 +73,28 @@ function publicMessage(message: typeof conversationMessages.$inferSelect) {
     content: message.content,
     createdAt: message.createdAt.toISOString(),
   };
+}
+
+async function loadAgentQuotaSettings(
+  database: Database | DatabaseTransaction,
+  at: Date,
+) {
+  await database
+    .insert(agentQuotaSettings)
+    .values({
+      id: 1,
+      ownAgentDailyLimit: DEFAULT_OWN_AGENT_DAILY_LIMIT,
+      candidateTwinDailyLimit: DEFAULT_CANDIDATE_TWIN_DAILY_LIMIT,
+      updatedAt: at,
+    })
+    .onConflictDoNothing();
+  return (
+    await database
+      .select()
+      .from(agentQuotaSettings)
+      .where(eq(agentQuotaSettings.id, 1))
+      .limit(1)
+  )[0]!;
 }
 
 async function processConversationAgentJob(
@@ -375,6 +399,7 @@ async function reserveOwnAgentMessage(
     await transaction.execute(
       sql`select pg_advisory_xact_lock(hashtext(${input.memberId}))`,
     );
+    const settings = await loadAgentQuotaSettings(transaction, input.submittedAt);
     const published =
       input.type === "TWIN"
         ? await options.portraits.twinContext(
@@ -445,7 +470,7 @@ async function reserveOwnAgentMessage(
       return {
         conversation,
         job: duplicateJob,
-        quotaRemaining: OWN_AGENT_DAILY_LIMIT - (quota?.used ?? 0),
+        quotaRemaining: settings.ownAgentDailyLimit - (quota?.used ?? 0),
       };
     }
     if (
@@ -453,7 +478,7 @@ async function reserveOwnAgentMessage(
     ) {
       return { inProgress: true as const };
     }
-    if ((quota?.used ?? 0) >= OWN_AGENT_DAILY_LIMIT) return undefined;
+    if ((quota?.used ?? 0) >= settings.ownAgentDailyLimit) return undefined;
     if (quota) {
       await transaction
         .update(ownAgentDailyQuotas)
@@ -516,7 +541,7 @@ async function reserveOwnAgentMessage(
     return {
       conversation,
       job,
-      quotaRemaining: OWN_AGENT_DAILY_LIMIT - (quota?.used ?? 0) - 1,
+      quotaRemaining: settings.ownAgentDailyLimit - (quota?.used ?? 0) - 1,
     };
   });
 }
@@ -527,7 +552,7 @@ async function candidateConversationState(
   viewer: "visitor" | "owner",
 ) {
   if (!conversation.profileVersionId) return undefined;
-  const [pinned, messages, candidate] = await Promise.all([
+  const [pinned, messages, candidate, activeJob] = await Promise.all([
     options.portraits.twinContext(
       conversation.memberId,
       conversation.profileVersionId,
@@ -538,7 +563,10 @@ async function candidateConversationState(
       .where(eq(conversationMessages.conversationId, conversation.id))
       .orderBy(asc(conversationMessages.sequence)),
     viewer === "visitor"
-      ? publicProfileById(conversation.memberId, options.db)
+      ? candidatePublicProfileById(conversation.memberId, options.db)
+      : undefined,
+    viewer === "visitor"
+      ? options.agentJobs.findActiveForConversationId(conversation.id)
       : undefined,
   ]);
   if (!pinned || (viewer === "visitor" && !candidate)) return undefined;
@@ -549,6 +577,14 @@ async function candidateConversationState(
     profileVersion: pinned.profileVersion,
     messages: messages.map(publicMessage),
     canReply: viewer === "visitor",
+    ...(activeJob
+      ? {
+          autoFollowup: {
+            jobId: activeJob.id,
+            eventsUrl: `/api/member/candidate-twin-jobs/${activeJob.id}/events`,
+          },
+        }
+      : {}),
     ...(candidate
       ? {
           candidate: {
@@ -594,6 +630,7 @@ async function reserveCandidateTwinMessage(
     await transaction.execute(
       sql`select pg_advisory_xact_lock(hashtext(${input.conversationId}))`,
     );
+    const settings = await loadAgentQuotaSettings(transaction, input.submittedAt);
     const current = (
       await transaction
         .select()
@@ -662,7 +699,7 @@ async function reserveCandidateTwinMessage(
       return {
         conversation: current,
         job: duplicateJob,
-        quotaRemaining: CANDIDATE_TWIN_DAILY_LIMIT - (quota?.used ?? 0),
+        quotaRemaining: settings.candidateTwinDailyLimit - (quota?.used ?? 0),
       };
     }
     if (
@@ -670,7 +707,7 @@ async function reserveCandidateTwinMessage(
     ) {
       return { inProgress: true as const };
     }
-    if ((quota?.used ?? 0) >= CANDIDATE_TWIN_DAILY_LIMIT) return undefined;
+    if ((quota?.used ?? 0) >= settings.candidateTwinDailyLimit) return undefined;
     if (quota) {
       await transaction
         .update(candidateTwinDailyQuotas)
@@ -730,7 +767,8 @@ async function reserveCandidateTwinMessage(
     return {
       conversation: current,
       job,
-      quotaRemaining: CANDIDATE_TWIN_DAILY_LIMIT - (quota?.used ?? 0) - 1,
+      quotaRemaining:
+        settings.candidateTwinDailyLimit - (quota?.used ?? 0) - 1,
     };
   });
 }
@@ -740,6 +778,81 @@ export function registerConversationsRoutes(
   options: ConversationsOptions,
 ) {
   const { agentJobs, db, now } = options;
+
+  app.get("/api/admin/agent-quota-settings", async (request, reply) => {
+    const actor = await superAdminForRequest(request, db, now());
+    if (!actor) return reply.code(403).send({ code: "FORBIDDEN" });
+    const settings = await loadAgentQuotaSettings(db, now());
+    return {
+      ownAgentDailyLimit: settings.ownAgentDailyLimit,
+      candidateTwinDailyLimit: settings.candidateTwinDailyLimit,
+    };
+  });
+
+  app.put<{
+    Body: { ownAgentDailyLimit: number; candidateTwinDailyLimit: number };
+  }>(
+    "/api/admin/agent-quota-settings",
+    {
+      schema: {
+        body: {
+          type: "object",
+          additionalProperties: false,
+          required: ["ownAgentDailyLimit", "candidateTwinDailyLimit"],
+          properties: {
+            ownAgentDailyLimit: { type: "integer", minimum: 1, maximum: 10_000 },
+            candidateTwinDailyLimit: {
+              type: "integer",
+              minimum: 1,
+              maximum: 10_000,
+            },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const actor = await superAdminForRequest(request, db, now());
+      if (!actor) return reply.code(403).send({ code: "FORBIDDEN" });
+      const updatedAt = now();
+      const settings = await db.transaction(async (transaction) => {
+        await transaction.execute(
+          sql`select pg_advisory_xact_lock(hashtext('agent-quota-settings'))`,
+        );
+        const current = await loadAgentQuotaSettings(transaction, updatedAt);
+        const updated = (
+          await transaction
+            .update(agentQuotaSettings)
+            .set({ ...request.body, updatedBy: actor.id, updatedAt })
+            .where(eq(agentQuotaSettings.id, 1))
+            .returning()
+        )[0]!;
+        await transaction.insert(agentQuotaSettingsAudits).values({
+          id: randomUUID(),
+          actorId: actor.id,
+          previousOwnAgentDailyLimit: current.ownAgentDailyLimit,
+          previousCandidateTwinDailyLimit: current.candidateTwinDailyLimit,
+          ...request.body,
+          createdAt: updatedAt,
+        });
+        return updated;
+      });
+      return {
+        ownAgentDailyLimit: settings.ownAgentDailyLimit,
+        candidateTwinDailyLimit: settings.candidateTwinDailyLimit,
+      };
+    },
+  );
+
+  app.get("/api/admin/agent-quota-settings/audit", async (request, reply) => {
+    const actor = await superAdminForRequest(request, db, now());
+    if (!actor) return reply.code(403).send({ code: "FORBIDDEN" });
+    return {
+      audits: await db
+        .select()
+        .from(agentQuotaSettingsAudits)
+        .orderBy(desc(agentQuotaSettingsAudits.createdAt)),
+    };
+  });
 
   app.post<{
     Params: { id: string };
@@ -1010,7 +1123,10 @@ export function registerConversationsRoutes(
       if (!conversation) {
         return reply.code(404).send({ code: "AGENT_JOB_NOT_FOUND" });
       }
-      const candidate = await publicProfileById(conversation.memberId, db);
+      const candidate = await candidatePublicProfileById(
+        conversation.memberId,
+        db,
+      );
       if (!candidate) {
         return reply.code(404).send({ code: "AGENT_JOB_NOT_FOUND" });
       }
@@ -1024,7 +1140,10 @@ export function registerConversationsRoutes(
       void processConversationAgentJob(
         stream,
         job,
-        { memberProfile: candidate, matchCriteria: null },
+        {
+          memberProfile: { ...candidate, birthDate: "", gender: "" },
+          matchCriteria: null,
+        },
         options,
       );
       return reply.send(stream);

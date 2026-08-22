@@ -262,13 +262,14 @@ export function publicProfile(member: Member) {
   };
 }
 
-export async function publicProfileById(memberId: string, db: Database) {
+export async function candidatePublicProfileById(
+  memberId: string,
+  db: Database,
+) {
   const member = (
     await db
       .select({
         nickname: members.nickname,
-        birthDate: members.birthDate,
-        gender: members.gender,
         heightCm: members.heightCm,
         city: members.city,
         occupation: members.occupation,
@@ -286,8 +287,6 @@ export async function publicProfileById(memberId: string, db: Database) {
   return member
     ? {
         nickname: member.nickname ?? "",
-        birthDate: member.birthDate ?? "",
-        gender: member.gender ?? "",
         heightCm: member.heightCm,
         city: member.city ?? "",
         occupation: member.occupation ?? "",

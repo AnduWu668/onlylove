@@ -44,6 +44,7 @@ export interface DeterministicAttempt {
   promptExcludes?: string[];
   historyMessageCount?: number;
   systemPromptIncludes?: string[];
+  systemPromptExcludes?: string[];
 }
 
 export interface DeterministicAgentModelOptions {
@@ -235,6 +236,13 @@ function deterministicRuntime(
         )
       ) {
         throw new Error("Deterministic attempt did not receive expected context");
+      }
+      if (
+        response.systemPromptExcludes?.some((part) =>
+          systemPrompt.includes(part),
+        )
+      ) {
+        throw new Error("Deterministic attempt received forbidden context");
       }
       if ((response.reply === undefined) === (response.error === undefined)) {
         throw new Error(

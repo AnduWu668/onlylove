@@ -17,6 +17,9 @@ const error = ref("");
 const candidateCapacity = ref<number | null>(null);
 const minimumReciprocalScore = ref<number | null>(null);
 const settingsSuccess = ref("");
+const ownAgentDailyLimit = ref<number | null>(null);
+const candidateTwinDailyLimit = ref<number | null>(null);
+const quotaSettingsSuccess = ref("");
 
 const statusText: Record<Invitation["status"], string> = {
   active: "有效",
@@ -39,6 +42,14 @@ async function loadMatchingSettings() {
   minimumReciprocalScore.value = settings.minimumReciprocalScore;
 }
 
+async function loadAgentQuotaSettings() {
+  const response = await fetch("/api/admin/agent-quota-settings");
+  if (!response.ok) throw new Error("无法读取 Agent 额度配置");
+  const settings = await response.json();
+  ownAgentDailyLimit.value = settings.ownAgentDailyLimit;
+  candidateTwinDailyLimit.value = settings.candidateTwinDailyLimit;
+}
+
 onMounted(async () => {
   const session = await fetch("/api/session");
   if (!session.ok) {
@@ -58,7 +69,11 @@ onMounted(async () => {
     return;
   }
   try {
-    await Promise.all([loadInvitations(), loadMatchingSettings()]);
+    await Promise.all([
+      loadInvitations(),
+      loadMatchingSettings(),
+      loadAgentQuotaSettings(),
+    ]);
   } catch (caught) {
     error.value = caught instanceof Error ? caught.message : "暂时无法读取邀请。";
   }
@@ -84,6 +99,31 @@ async function saveMatchingSettings() {
     settingsSuccess.value = "推荐配置已保存，修改记录已写入审计。";
   } catch (caught) {
     error.value = caught instanceof Error ? caught.message : "推荐配置保存失败。";
+  } finally {
+    busy.value = false;
+  }
+}
+
+async function saveAgentQuotaSettings() {
+  busy.value = true;
+  error.value = "";
+  quotaSettingsSuccess.value = "";
+  try {
+    const response = await fetch("/api/admin/agent-quota-settings", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        ownAgentDailyLimit: ownAgentDailyLimit.value,
+        candidateTwinDailyLimit: candidateTwinDailyLimit.value,
+      }),
+    });
+    if (!response.ok) throw new Error("Agent 额度保存失败，请检查填写内容。");
+    const settings = await response.json();
+    ownAgentDailyLimit.value = settings.ownAgentDailyLimit;
+    candidateTwinDailyLimit.value = settings.candidateTwinDailyLimit;
+    quotaSettingsSuccess.value = "Agent 额度已保存，修改记录已写入审计。";
+  } catch (caught) {
+    error.value = caught instanceof Error ? caught.message : "Agent 额度保存失败。";
   } finally {
     busy.value = false;
   }
@@ -184,6 +224,53 @@ function formatDate(value: string) {
         <button type="submit" :disabled="busy || candidateCapacity === null || minimumReciprocalScore === null">保存推荐配置</button>
       </form>
       <p v-if="settingsSuccess" class="save-success" role="status">{{ settingsSuccess }}</p>
+    </section>
+
+    <section class="admin-panel matching-settings-panel">
+      <div class="list-heading">
+        <div>
+          <h2>Agent 每日额度</h2>
+          <p>候选分身按访客跨候选共享；自己的画像访谈员和恋爱分身共享另一个额度池。</p>
+        </div>
+      </div>
+      <form
+        class="matching-settings-form agent-quota-settings-form"
+        @submit.prevent="saveAgentQuotaSettings"
+      >
+        <div>
+          <label for="own-agent-daily-limit">自己 Agent 每日额度</label>
+          <input
+            id="own-agent-daily-limit"
+            v-model.number="ownAgentDailyLimit"
+            type="number"
+            min="1"
+            max="10000"
+            required
+          />
+        </div>
+        <div>
+          <label for="candidate-twin-daily-limit">候选分身每日共享额度</label>
+          <input
+            id="candidate-twin-daily-limit"
+            v-model.number="candidateTwinDailyLimit"
+            type="number"
+            min="1"
+            max="10000"
+            required
+          />
+        </div>
+        <button
+          type="submit"
+          :disabled="
+            busy || ownAgentDailyLimit === null || candidateTwinDailyLimit === null
+          "
+        >
+          保存 Agent 额度
+        </button>
+      </form>
+      <p v-if="quotaSettingsSuccess" class="save-success" role="status">
+        {{ quotaSettingsSuccess }}
+      </p>
     </section>
 
     <section class="invitation-list" aria-labelledby="invitation-list-title">
