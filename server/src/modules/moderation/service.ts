@@ -456,14 +456,18 @@ export class Moderation {
       );
     if (caseIds.length) {
       await database
-        .delete(moderationCaseAccessAudits)
-        .where(inArray(moderationCaseAccessAudits.caseId, caseIds));
-      await database
-        .delete(moderationDecisions)
-        .where(inArray(moderationDecisions.caseId, caseIds));
-      await database
-        .delete(moderationCases)
+        .update(moderationCases)
+        .set({
+          messageId: null,
+          conversationId: null,
+          reason: "成员资料已永久清除",
+          evidence: "",
+        })
         .where(inArray(moderationCases.id, caseIds));
+      await database
+        .update(moderationDecisions)
+        .set({ reason: "成员资料已永久清除", suspendedUntil: null })
+        .where(inArray(moderationDecisions.caseId, caseIds));
     }
     await database
       .delete(distortionFeedback)

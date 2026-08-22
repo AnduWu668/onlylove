@@ -1306,6 +1306,33 @@ describe("Contact requests HTTP seam", () => {
       "UPDATE members SET role = 'super_admin' WHERE id = $1",
       [admin.memberId],
     );
+    const moderationCaseId = randomUUID();
+    await availabilityPool.query(
+      `INSERT INTO moderation_cases
+        (id, type, reporter_member_id, reported_member_id, target_kind, target_id,
+         reason, evidence, status, created_at, resolved_at)
+       VALUES ($1, 'report', $2, $3, 'connection', $4,
+               '私密举报理由', '私密举报证据', 'resolved', $5, $5)`,
+      [
+        moderationCaseId,
+        seeded.requester.memberId,
+        seeded.recipient.memberId,
+        accepted.json().connection.id,
+        now,
+      ],
+    );
+    await availabilityPool.query(
+      `INSERT INTO moderation_decisions
+        (case_id, decided_by_member_id, action, reason, created_at)
+       VALUES ($1, $2, 'warning', '私密处置理由', $3)`,
+      [moderationCaseId, admin.memberId, now],
+    );
+    await availabilityPool.query(
+      `INSERT INTO moderation_case_access_audits
+        (id, case_id, actor_member_id, created_at)
+       VALUES ($1, $2, $3, $4)`,
+      [randomUUID(), moderationCaseId, admin.memberId, now],
+    );
     const purged = await app.inject({
       method: "DELETE",
       url: `/api/admin/deleted-members/${seeded.recipient.memberId}`,
@@ -1361,6 +1388,27 @@ describe("Contact requests HTTP seam", () => {
       evaluations: "0",
       matching_jobs: "0",
       requests: "0",
+    });
+    const retainedAudit = await availabilityPool.query<{
+      access_audits: string;
+      decision_reason: string;
+      evidence: string;
+      reason: string;
+    }>(
+      `SELECT moderation_cases.reason, moderation_cases.evidence,
+              moderation_decisions.reason AS decision_reason,
+              (SELECT COUNT(*)::text FROM moderation_case_access_audits
+                WHERE case_id = moderation_cases.id) AS access_audits
+         FROM moderation_cases
+         JOIN moderation_decisions ON moderation_decisions.case_id = moderation_cases.id
+        WHERE moderation_cases.id = $1`,
+      [moderationCaseId],
+    );
+    expect(retainedAudit.rows[0]).toEqual({
+      access_audits: "1",
+      decision_reason: "成员资料已永久清除",
+      evidence: "",
+      reason: "成员资料已永久清除",
     });
     await availabilityPool.end();
   });
