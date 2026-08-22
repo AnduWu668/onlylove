@@ -6,15 +6,22 @@ import {
   asc,
   desc,
   eq,
+  gt,
+  inArray,
   isNotNull,
   isNull,
   lt,
   max,
+  or,
   sql,
 } from "drizzle-orm";
 import type { Database, DatabaseTransaction } from "../../db.js";
 import { AgentEngine, AgentRunError } from "../agent-engine/engine.js";
 import { type AgentJob, AgentJobs } from "../agent-engine/jobs.js";
+import {
+  currentConnectionMembers,
+  memberConnections,
+} from "../connections/schema.js";
 import {
   activeAdminById,
   adminForRequest,
@@ -24,6 +31,8 @@ import {
   publicProfile,
   superAdminForRequest,
 } from "../members/routes.js";
+import { members } from "../members/schema.js";
+import { memberBlocks } from "../moderation/schema.js";
 import {
   agentQuotaSettings,
   agentQuotaSettingsAudits,
@@ -79,6 +88,233 @@ function publicMessage(message: typeof conversationMessages.$inferSelect) {
     content: message.content,
     createdAt: message.createdAt.toISOString(),
   };
+}
+
+function publicHumanMessage(
+  message: typeof conversationMessages.$inferSelect,
+  viewerMemberId: string,
+) {
+  return {
+    id: message.id,
+    sender: message.senderMemberId === viewerMemberId ? "self" : "other",
+    content: message.content,
+    sequence: message.sequence,
+    createdAt: message.createdAt.toISOString(),
+  };
+}
+
+async function humanConversationForMember(
+  database: Database | DatabaseTransaction,
+  conversationId: string,
+  memberId: string,
+) {
+  return (
+    await database
+      .select({ conversation: conversations, connection: memberConnections })
+      .from(conversations)
+      .innerJoin(
+        memberConnections,
+        eq(conversations.connectionId, memberConnections.id),
+      )
+      .where(
+        and(
+          eq(conversations.id, conversationId),
+          eq(conversations.type, "HUMAN"),
+          or(
+            eq(conversations.memberId, memberId),
+            eq(conversations.visitorMemberId, memberId),
+          ),
+        ),
+      )
+      .limit(1)
+  )[0];
+}
+
+async function humanConversationCanSend(
+  database: Database | DatabaseTransaction,
+  state: NonNullable<Awaited<ReturnType<typeof humanConversationForMember>>>,
+  at: Date,
+) {
+  if (state.connection.status !== "active") return false;
+  const memberIds = [
+    state.connection.memberAId,
+    state.connection.memberBId,
+  ];
+  const currentMembers = await database
+    .select({ memberId: currentConnectionMembers.memberId })
+    .from(currentConnectionMembers)
+    .where(
+      and(
+        eq(currentConnectionMembers.connectionId, state.connection.id),
+        inArray(currentConnectionMembers.memberId, memberIds),
+      ),
+    );
+  const participantRows = await database
+    .select({
+      id: members.id,
+      role: members.role,
+      deletedAt: members.deletedAt,
+      suspendedUntil: members.suspendedUntil,
+    })
+    .from(members)
+    .where(inArray(members.id, memberIds));
+  const blocked = await database
+    .select({ blockerMemberId: memberBlocks.blockerMemberId })
+    .from(memberBlocks)
+    .where(
+      or(
+        and(
+          eq(memberBlocks.blockerMemberId, memberIds[0]!),
+          eq(memberBlocks.blockedMemberId, memberIds[1]!),
+        ),
+        and(
+          eq(memberBlocks.blockerMemberId, memberIds[1]!),
+          eq(memberBlocks.blockedMemberId, memberIds[0]!),
+        ),
+      ),
+    )
+    .limit(1);
+  return (
+    currentMembers.length === 2 &&
+    participantRows.length === 2 &&
+    participantRows.every(
+      (member) =>
+        member.role === "member" &&
+        !member.deletedAt &&
+        (!member.suspendedUntil || member.suspendedUntil <= at),
+    ) &&
+    !blocked.length
+  );
+}
+
+async function humanConversationState(
+  options: ConversationsOptions,
+  conversationId: string,
+  viewerMemberId: string,
+) {
+  const state = await humanConversationForMember(
+    options.db,
+    conversationId,
+    viewerMemberId,
+  );
+  if (!state) return undefined;
+  const messagesInConversation = await options.db
+    .select()
+    .from(conversationMessages)
+    .where(eq(conversationMessages.conversationId, conversationId))
+    .orderBy(asc(conversationMessages.sequence));
+  const lastSequence = messagesInConversation.at(-1)?.sequence ?? 0;
+  const viewerIsMember = state.conversation.memberId === viewerMemberId;
+  const lastReadSequence = viewerIsMember
+    ? state.conversation.memberLastReadSequence
+    : state.conversation.visitorLastReadSequence;
+  if (lastSequence > lastReadSequence) {
+    await options.db
+      .update(conversations)
+      .set(
+        viewerIsMember
+          ? { memberLastReadSequence: lastSequence }
+          : { visitorLastReadSequence: lastSequence },
+      )
+      .where(eq(conversations.id, conversationId));
+  }
+  const otherMemberId = viewerIsMember
+    ? state.conversation.visitorMemberId!
+    : state.conversation.memberId;
+  const otherMember = (
+    await options.db
+      .select({ nickname: members.nickname, deletedAt: members.deletedAt })
+      .from(members)
+      .where(eq(members.id, otherMemberId))
+      .limit(1)
+  )[0]!;
+  return {
+    conversationId,
+    createdAt: state.conversation.createdAt.toISOString(),
+    canSend: await humanConversationCanSend(options.db, state, options.now()),
+    otherMember: otherMember.deletedAt
+      ? {
+          displayName: "已注销成员（历史消息已保留）",
+          deleted: true,
+        }
+      : {
+          displayName: otherMember.nickname ?? "联系成员",
+          deleted: false,
+        },
+    messages: messagesInConversation.map((message) =>
+      publicHumanMessage(message, viewerMemberId),
+    ),
+    unreadCount: 0,
+    eventsUrl: `/api/member/human-conversations/${conversationId}/events?after=${lastSequence}`,
+  };
+}
+
+async function reserveHumanMessage(
+  options: ConversationsOptions,
+  input: {
+    conversationId: string;
+    memberId: string;
+    clientMessageId: string;
+    content: string;
+    submittedAt: Date;
+  },
+) {
+  return options.db.transaction(async (transaction) => {
+    await transaction.execute(
+      sql`select pg_advisory_xact_lock(hashtext(${input.conversationId}))`,
+    );
+    const state = await humanConversationForMember(
+      transaction,
+      input.conversationId,
+      input.memberId,
+    );
+    if (!state) return { notFound: true as const };
+    const duplicate = (
+      await transaction
+        .select()
+        .from(conversationMessages)
+        .where(
+          and(
+            eq(conversationMessages.conversationId, input.conversationId),
+            eq(
+              conversationMessages.clientMessageId,
+              input.clientMessageId,
+            ),
+          ),
+        )
+        .limit(1)
+    )[0];
+    if (duplicate) {
+      return { created: false as const, message: duplicate };
+    }
+    if (!(await humanConversationCanSend(transaction, state, input.submittedAt))) {
+      return { readOnly: true as const };
+    }
+    const lastSequence = (
+      await transaction
+        .select({ value: max(conversationMessages.sequence) })
+        .from(conversationMessages)
+        .where(
+          eq(conversationMessages.conversationId, input.conversationId),
+        )
+    )[0]?.value;
+    const message = (
+      await transaction
+        .insert(conversationMessages)
+        .values({
+          id: randomUUID(),
+          conversationId: input.conversationId,
+          role: "member",
+          content: input.content,
+          sequence: (lastSequence ?? 0) + 1,
+          clientMessageId: input.clientMessageId,
+          senderMemberId: input.memberId,
+          createdAt: input.submittedAt,
+        })
+        .returning()
+    )[0]!;
+    return { created: true as const, message };
+  });
 }
 
 async function loadAgentQuotaSettings(
@@ -801,6 +1037,251 @@ export function registerConversationsRoutes(
   options: ConversationsOptions,
 ) {
   const { agentJobs, db, now } = options;
+  const humanStreams = new Map<
+    string,
+    Set<{ memberId: string; stream: PassThrough }>
+  >();
+
+  app.addHook("onClose", async () => {
+    for (const listeners of humanStreams.values()) {
+      for (const { stream } of listeners) stream.end();
+    }
+    humanStreams.clear();
+  });
+
+  app.get<{ Params: { conversationId: string } }>(
+    "/api/member/human-conversations/:conversationId",
+    {
+      schema: {
+        params: {
+          type: "object",
+          additionalProperties: false,
+          required: ["conversationId"],
+          properties: { conversationId: { type: "string", format: "uuid" } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const member = await memberForRequest(request, db, now());
+      if (!member || member.role !== "member") {
+        return reply.code(404).send({ code: "CONVERSATION_NOT_FOUND" });
+      }
+      const state = await humanConversationState(
+        options,
+        request.params.conversationId,
+        member.id,
+      );
+      if (!state) {
+        return reply.code(404).send({ code: "CONVERSATION_NOT_FOUND" });
+      }
+      return state;
+    },
+  );
+
+  app.post<{
+    Params: { conversationId: string };
+    Body: { clientMessageId: string; content: string };
+  }>(
+    "/api/member/human-conversations/:conversationId/messages",
+    {
+      schema: {
+        params: {
+          type: "object",
+          additionalProperties: false,
+          required: ["conversationId"],
+          properties: { conversationId: { type: "string", format: "uuid" } },
+        },
+        body: {
+          type: "object",
+          additionalProperties: false,
+          required: ["clientMessageId", "content"],
+          properties: {
+            clientMessageId: { type: "string", format: "uuid" },
+            content: { type: "string", minLength: 1, maxLength: 4_000 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const submittedAt = now();
+      const member = await memberForRequest(request, db, submittedAt);
+      if (!member || member.role !== "member") {
+        return reply.code(404).send({ code: "CONVERSATION_NOT_FOUND" });
+      }
+      const content = request.body.content.trim();
+      if (!content) return reply.code(400).send({ code: "EMPTY_MESSAGE" });
+      const result = await reserveHumanMessage(options, {
+        conversationId: request.params.conversationId,
+        memberId: member.id,
+        clientMessageId: request.body.clientMessageId,
+        content,
+        submittedAt,
+      });
+      if ("notFound" in result) {
+        return reply.code(404).send({ code: "CONVERSATION_NOT_FOUND" });
+      }
+      if ("readOnly" in result) {
+        return reply
+          .code(409)
+          .send({ code: "HUMAN_CONVERSATION_READ_ONLY" });
+      }
+      const message = publicHumanMessage(result.message, member.id);
+      if (result.created) {
+        for (const listener of humanStreams.get(
+          request.params.conversationId,
+        ) ?? []) {
+          listener.stream.write(
+            `id: ${result.message.sequence}\n${sse(
+              "message",
+              publicHumanMessage(result.message, listener.memberId),
+            )}`,
+          );
+        }
+      }
+      return reply.code(result.created ? 201 : 200).send({ message });
+    },
+  );
+
+  app.post<{
+    Params: { conversationId: string };
+    Body: { lastReadSequence: number };
+  }>(
+    "/api/member/human-conversations/:conversationId/read",
+    {
+      schema: {
+        params: {
+          type: "object",
+          additionalProperties: false,
+          required: ["conversationId"],
+          properties: { conversationId: { type: "string", format: "uuid" } },
+        },
+        body: {
+          type: "object",
+          additionalProperties: false,
+          required: ["lastReadSequence"],
+          properties: { lastReadSequence: { type: "integer", minimum: 0 } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const member = await memberForRequest(request, db, now());
+      if (!member || member.role !== "member") {
+        return reply.code(404).send({ code: "CONVERSATION_NOT_FOUND" });
+      }
+      const state = await humanConversationForMember(
+        db,
+        request.params.conversationId,
+        member.id,
+      );
+      if (!state) {
+        return reply.code(404).send({ code: "CONVERSATION_NOT_FOUND" });
+      }
+      const lastSequence =
+        (
+          await db
+            .select({ value: max(conversationMessages.sequence) })
+            .from(conversationMessages)
+            .where(
+              eq(
+                conversationMessages.conversationId,
+                request.params.conversationId,
+              ),
+            )
+        )[0]?.value ?? 0;
+      const readThrough = Math.min(request.body.lastReadSequence, lastSequence);
+      const viewerIsMember = state.conversation.memberId === member.id;
+      await db
+        .update(conversations)
+        .set(
+          viewerIsMember
+            ? {
+                memberLastReadSequence: sql`greatest(${conversations.memberLastReadSequence}, ${readThrough})`,
+              }
+            : {
+                visitorLastReadSequence: sql`greatest(${conversations.visitorLastReadSequence}, ${readThrough})`,
+              },
+        )
+        .where(eq(conversations.id, request.params.conversationId));
+      return reply.code(204).send();
+    },
+  );
+
+  app.get<{
+    Params: { conversationId: string };
+    Querystring: { after: number };
+  }>(
+    "/api/member/human-conversations/:conversationId/events",
+    {
+      schema: {
+        params: {
+          type: "object",
+          additionalProperties: false,
+          required: ["conversationId"],
+          properties: { conversationId: { type: "string", format: "uuid" } },
+        },
+        querystring: {
+          type: "object",
+          additionalProperties: false,
+          required: ["after"],
+          properties: { after: { type: "integer", minimum: 0 } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const member = await memberForRequest(request, db, now());
+      if (
+        !member ||
+        member.role !== "member" ||
+        !(await humanConversationForMember(
+          db,
+          request.params.conversationId,
+          member.id,
+        ))
+      ) {
+        return reply.code(404).send({ code: "CONVERSATION_NOT_FOUND" });
+      }
+      const stream = new PassThrough();
+      const listener = { memberId: member.id, stream };
+      const listeners = humanStreams.get(request.params.conversationId) ?? new Set();
+      listeners.add(listener);
+      humanStreams.set(request.params.conversationId, listeners);
+      const cleanup = () => {
+        listeners.delete(listener);
+        if (!listeners.size) humanStreams.delete(request.params.conversationId);
+      };
+      reply.raw.once("close", cleanup);
+      stream.once("close", cleanup);
+      reply.headers({
+        "content-type": "text/event-stream; charset=utf-8",
+        "cache-control": "no-cache, no-transform",
+        connection: "keep-alive",
+        "x-accel-buffering": "no",
+      });
+      stream.write("retry: 1000\n\n");
+      const waiting = await db
+        .select()
+        .from(conversationMessages)
+        .where(
+          and(
+            eq(
+              conversationMessages.conversationId,
+              request.params.conversationId,
+            ),
+            gt(conversationMessages.sequence, request.query.after),
+          ),
+        )
+        .orderBy(asc(conversationMessages.sequence));
+      for (const message of waiting) {
+        stream.write(
+          `id: ${message.sequence}\n${sse(
+            "message",
+            publicHumanMessage(message, member.id),
+          )}`,
+        );
+      }
+      return reply.send(stream);
+    },
+  );
 
   app.get("/api/admin/agent-quota-settings", async (request, reply) => {
     const actor = await superAdminForRequest(request, db, now());

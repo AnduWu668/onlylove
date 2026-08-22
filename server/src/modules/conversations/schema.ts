@@ -11,6 +11,7 @@ import {
   varchar,
   text,
 } from "drizzle-orm/pg-core";
+import { memberConnections } from "../connections/schema.js";
 import { members } from "../members/schema.js";
 
 export const conversations = pgTable(
@@ -26,11 +27,18 @@ export const conversations = pgTable(
     visitorMemberId: uuid("visitor_member_id").references(() => members.id),
     recommendationId: uuid("recommendation_id"),
     contactRequestId: uuid("contact_request_id"),
+    connectionId: uuid("connection_id").references(() => memberConnections.id),
     anonymousCode: varchar("anonymous_code", { length: 16 }),
     visibilityConsentAt: timestamp("visibility_consent_at", {
       withTimezone: true,
     }),
     profileVersionId: uuid("profile_version_id"),
+    memberLastReadSequence: integer("member_last_read_sequence")
+      .default(0)
+      .notNull(),
+    visitorLastReadSequence: integer("visitor_last_read_sequence")
+      .default(0)
+      .notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
   (table) => [
@@ -43,6 +51,9 @@ export const conversations = pgTable(
     uniqueIndex("conversations_visitor_contact_request_unique")
       .on(table.visitorMemberId, table.contactRequestId)
       .where(sql`${table.contactRequestId} is not null`),
+    uniqueIndex("conversations_connection_unique")
+      .on(table.connectionId)
+      .where(sql`${table.connectionId} is not null`),
     uniqueIndex("conversations_anonymous_code_unique").on(table.anonymousCode),
     index("conversations_owner_visitor_index").on(
       table.memberId,
@@ -64,6 +75,7 @@ export const conversationMessages = pgTable(
     content: text("content").notNull(),
     sequence: integer("sequence").notNull(),
     clientMessageId: uuid("client_message_id"),
+    senderMemberId: uuid("sender_member_id").references(() => members.id),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
   (table) => [

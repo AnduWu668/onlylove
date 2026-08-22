@@ -375,6 +375,15 @@ export class Connections {
             .where(eq(memberConnections.id, current.connectionId))
             .limit(1)
         )[0]!;
+        await this.conversations.ensureHuman(
+          {
+            connectionId: connection.id,
+            memberAId: connection.memberAId,
+            memberBId: connection.memberBId,
+            createdAt: connection.createdAt,
+          },
+          transaction,
+        );
         return { accepted: false as const, connection };
       }
       if (current.status !== "pending") {
@@ -421,6 +430,15 @@ export class Connections {
           })
           .returning()
       )[0]!;
+      await this.conversations.ensureHuman(
+        {
+          connectionId: connection.id,
+          memberAId: connection.memberAId,
+          memberBId: connection.memberBId,
+          createdAt: connection.createdAt,
+        },
+        transaction,
+      );
       await transaction.insert(currentConnectionMembers).values([
         {
           memberId: current.requesterMemberId,
@@ -565,6 +583,16 @@ export class Connections {
         .limit(1)
     )[0];
     if (!row) return null;
+    await this.conversations.ensureHuman({
+      connectionId: row.connection.id,
+      memberAId: row.connection.memberAId,
+      memberBId: row.connection.memberBId,
+      createdAt: row.connection.createdAt,
+    });
+    const conversation = await this.conversations.humanState(
+      row.connection.id,
+      memberId,
+    );
     const otherMemberId =
       row.connection.memberAId === memberId
         ? row.connection.memberBId
@@ -573,6 +601,7 @@ export class Connections {
     return {
       id: row.connection.id,
       createdAt: row.connection.createdAt.toISOString(),
+      conversation,
       candidate: candidate
         ? {
             avatarText: candidate.nickname?.trim().slice(0, 1) || "爱",

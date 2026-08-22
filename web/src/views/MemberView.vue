@@ -161,8 +161,27 @@ interface ConnectionsState {
   currentConnection: {
     id: string;
     createdAt: string;
+    conversation: { id: string; unreadCount: number };
     candidate: Omit<ContactCandidate, "reason"> | null;
   } | null;
+}
+
+interface HumanMessage {
+  id: string;
+  sender: "self" | "other";
+  content: string;
+  sequence: number;
+  createdAt: string;
+}
+
+interface HumanConversationState {
+  conversationId: string;
+  createdAt: string;
+  canSend: boolean;
+  otherMember: { displayName: string; deleted: boolean };
+  messages: HumanMessage[];
+  unreadCount: number;
+  eventsUrl: string;
 }
 
 const router = useRouter();
@@ -223,10 +242,19 @@ const connections = ref<ConnectionsState>();
 const connectionsLoading = ref(false);
 const connectionsPending = ref(false);
 const connectionsError = ref("");
+const humanConversation = ref<HumanConversationState>();
+const humanConversationLoading = ref(false);
+const humanConversationSending = ref(false);
+const humanConversationInput = ref("");
+const humanConversationError = ref("");
 const ownedCandidateConversations = ref<CandidateTwinConversationState[]>([]);
 const ownedCandidateConversationsLoading = ref(false);
 const ownedCandidateConversationsLoaded = ref(false);
 let candidateTwinEvents: EventSource | undefined;
+let humanConversationEvents: EventSource | undefined;
+let humanConversationRetry:
+  | { conversationId: string; clientMessageId: string; content: string }
+  | undefined;
 let candidateTwinRetry:
   | { conversationId: string; clientMessageId: string; content: string }
   | undefined;
@@ -371,6 +399,7 @@ onMounted(loadProfile);
 onUnmounted(() => {
   Object.values(ownAgentEvents).forEach((events) => events.close());
   candidateTwinEvents?.close();
+  humanConversationEvents?.close();
   if (portraitPoll !== undefined) window.clearTimeout(portraitPoll);
   if (recommendationPoll !== undefined) window.clearTimeout(recommendationPoll);
 });
@@ -670,6 +699,131 @@ async function loadConnections() {
     connectionsError.value = "暂时无法读取联系状态，请稍后重试。";
   } finally {
     connectionsLoading.value = false;
+  }
+}
+
+function closeHumanConversation() {
+  humanConversationEvents?.close();
+  humanConversationEvents = undefined;
+  humanConversation.value = undefined;
+  humanConversationError.value = "";
+}
+
+async function markHumanConversationRead(lastReadSequence: number) {
+  const conversation = humanConversation.value;
+  if (!conversation) return;
+  try {
+    await fetch(
+      `/api/member/human-conversations/${conversation.conversationId}/read`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ lastReadSequence }),
+      },
+    );
+  } catch {
+    // The next history load marks the same messages as read.
+  }
+}
+
+function listenForHumanMessages(eventsUrl: string) {
+  humanConversationEvents?.close();
+  const events = new EventSource(eventsUrl);
+  humanConversationEvents = events;
+  events.addEventListener("message", (event) => {
+    const message = JSON.parse((event as MessageEvent).data) as HumanMessage;
+    const conversation = humanConversation.value;
+    if (
+      !conversation ||
+      conversation.messages.some(({ id }) => id === message.id)
+    ) {
+      return;
+    }
+    conversation.messages.push(message);
+    void markHumanConversationRead(message.sequence);
+  });
+}
+
+async function openHumanConversation(conversationId: string) {
+  if (humanConversationLoading.value) return;
+  humanConversationLoading.value = true;
+  humanConversationError.value = "";
+  try {
+    const response = await fetch(
+      `/api/member/human-conversations/${conversationId}`,
+    );
+    const data = response.ok
+      ? await jsonOrUndefined<HumanConversationState>(response)
+      : undefined;
+    if (!data) throw new Error();
+    humanConversation.value = data;
+    if (connections.value?.currentConnection?.conversation.id === conversationId) {
+      connections.value.currentConnection.conversation.unreadCount = 0;
+    }
+    listenForHumanMessages(data.eventsUrl);
+  } catch {
+    humanConversationError.value = "暂时无法打开真人会话，请稍后重试。";
+  } finally {
+    humanConversationLoading.value = false;
+  }
+}
+
+async function sendHumanMessage() {
+  const conversation = humanConversation.value;
+  const content = humanConversationInput.value.trim();
+  if (!conversation?.canSend || !content || humanConversationSending.value) {
+    return;
+  }
+  humanConversationSending.value = true;
+  humanConversationError.value = "";
+  humanConversationInput.value = "";
+  const retry = humanConversationRetry;
+  const clientMessageId =
+    retry?.conversationId === conversation.conversationId &&
+    retry.content === content
+      ? retry.clientMessageId
+      : crypto.randomUUID();
+  humanConversationRetry = undefined;
+  try {
+    const response = await fetch(
+      `/api/member/human-conversations/${conversation.conversationId}/messages`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ clientMessageId, content }),
+      },
+    );
+    const data = await jsonOrUndefined<{ message?: HumanMessage; code?: string }>(
+      response,
+    );
+    if (!response.ok || !data?.message) {
+      if (data?.code === "HUMAN_CONVERSATION_READ_ONLY") {
+        conversation.canSend = false;
+        humanConversationError.value = "当前联系状态已变化，只能查看历史消息。";
+      } else {
+        humanConversationRetry = {
+          conversationId: conversation.conversationId,
+          clientMessageId,
+          content,
+        };
+        humanConversationError.value = "消息暂时没有发送，原文已恢复。";
+      }
+      humanConversationInput.value = content;
+      return;
+    }
+    if (!conversation.messages.some(({ id }) => id === data.message!.id)) {
+      conversation.messages.push(data.message);
+    }
+  } catch {
+    humanConversationRetry = {
+      conversationId: conversation.conversationId,
+      clientMessageId,
+      content,
+    };
+    humanConversationInput.value = content;
+    humanConversationError.value = "消息暂时没有发送，原文已恢复。";
+  } finally {
+    humanConversationSending.value = false;
   }
 }
 
@@ -1025,6 +1179,7 @@ async function submitFixedAnswer() {
 function showTab(
   tab: "twin" | "recommendations" | "connections" | "profile",
 ) {
+  if (tab !== "connections") closeHumanConversation();
   activeTab.value = tab;
   if (tab === "twin") void loadInterview();
   if (tab === "recommendations") void loadRecommendations();
@@ -2147,6 +2302,69 @@ async function withdrawPortrait() {
                 </p>
               </div>
             </div>
+            <button
+              class="open-human-conversation"
+              type="button"
+              :disabled="humanConversationLoading"
+              @click="openHumanConversation(connections.currentConnection.conversation.id)"
+            >
+              {{ humanConversationLoading ? "正在打开…" : "打开真人会话" }}
+              <span v-if="connections.currentConnection.conversation.unreadCount">
+                {{ connections.currentConnection.conversation.unreadCount }} 条未读
+              </span>
+            </button>
+            <div
+              v-if="humanConversation"
+              class="human-conversation"
+              aria-label="站内真人会话"
+            >
+              <div class="human-conversation-heading">
+                <h3>与{{ humanConversation.otherMember.displayName }}的会话</h3>
+                <button type="button" class="quiet-action" @click="closeHumanConversation">
+                  收起
+                </button>
+              </div>
+              <div class="message-list" aria-live="polite">
+                <article
+                  v-for="message in humanConversation.messages"
+                  :key="message.id"
+                  class="chat-message"
+                  :data-role="message.sender === 'self' ? 'member' : 'agent'"
+                >
+                  <span>
+                    {{ message.sender === "self" ? "我" : humanConversation.otherMember.displayName }}
+                  </span>
+                  <p>{{ message.content }}</p>
+                </article>
+                <p v-if="!humanConversation.messages.length" class="empty-state">
+                  还没有消息，打个招呼吧。
+                </p>
+              </div>
+              <form
+                v-if="humanConversation.canSend"
+                class="human-conversation-composer interview-composer"
+                @submit.prevent="sendHumanMessage"
+              >
+                <label class="sr-only" for="human-conversation-message">真人消息</label>
+                <textarea
+                  id="human-conversation-message"
+                  v-model="humanConversationInput"
+                  maxlength="4000"
+                  placeholder="输入消息"
+                  :disabled="humanConversationSending"
+                ></textarea>
+                <button
+                  type="submit"
+                  :disabled="humanConversationSending || !humanConversationInput.trim()"
+                >
+                  {{ humanConversationSending ? "发送中…" : "发送" }}
+                </button>
+              </form>
+              <p v-else class="contact-resolution">当前只能查看历史消息。</p>
+            </div>
+            <p v-if="humanConversationError" class="form-error" role="alert">
+              {{ humanConversationError }}
+            </p>
           </section>
 
           <section class="contact-request-list" aria-label="收到的联系请求">

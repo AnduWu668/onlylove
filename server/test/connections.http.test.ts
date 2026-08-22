@@ -941,4 +941,196 @@ describe("Contact requests HTTP seam", () => {
     expect(accepted.statusCode).toBe(409);
     expect(accepted.json().code).toBe("CONTACT_REQUEST_CANCELLED");
   });
+
+  it("keeps one private human conversation live, idempotent, unread, and read-only after contact becomes unavailable", async () => {
+    const seeded = await seedCandidateConversation();
+    const outsiderPool = new Pool({ connectionString: databaseUrl });
+    const outsider = await seedMember(outsiderPool, {
+      email: "outsider@onlylove.test",
+      nickname: "旁观者",
+      birthDate: "1991-02-03",
+      gender: "female",
+    });
+    const admin = await seedMember(outsiderPool, {
+      email: "ordinary-admin@onlylove.test",
+      nickname: "普通管理员",
+      birthDate: "1988-01-02",
+      gender: "male",
+    });
+    await outsiderPool.query("UPDATE members SET role = 'admin' WHERE id = $1", [
+      admin.memberId,
+    ]);
+    await outsiderPool.end();
+
+    const request = await app.inject({
+      method: "POST",
+      url: `/api/member/recommendations/${seeded.recommendationId}/contact-request`,
+      headers: { cookie: seeded.requester.cookie },
+    });
+    const accepted = await app.inject({
+      method: "POST",
+      url: `/api/member/contact-requests/${request.json().id}/accept`,
+      headers: { cookie: seeded.recipient.cookie },
+    });
+    expect(accepted.statusCode).toBe(200);
+
+    const initialState = await app.inject({
+      method: "GET",
+      url: "/api/member/contact-requests",
+      headers: { cookie: seeded.requester.cookie },
+    });
+    const conversationId = initialState.json().currentConnection.conversation.id;
+    expect(initialState.json().currentConnection.conversation.unreadCount).toBe(0);
+
+    for (const cookie of [outsider.cookie, admin.cookie]) {
+      const hidden = await app.inject({
+        method: "GET",
+        url: `/api/member/human-conversations/${conversationId}`,
+        headers: { cookie },
+      });
+      expect(hidden.statusCode).toBe(404);
+    }
+
+    const clientMessageId = randomUUID();
+    const notificationsBefore = mailer.notifications.length;
+    const first = await app.inject({
+      method: "POST",
+      url: `/api/member/human-conversations/${conversationId}/messages`,
+      headers: { cookie: seeded.requester.cookie },
+      payload: {
+        clientMessageId,
+        content: "可以加我微信 onlylove_2026，电话 13800138000。",
+      },
+    });
+    const retried = await app.inject({
+      method: "POST",
+      url: `/api/member/human-conversations/${conversationId}/messages`,
+      headers: { cookie: seeded.requester.cookie },
+      payload: {
+        clientMessageId,
+        content: "可以加我微信 onlylove_2026，电话 13800138000。",
+      },
+    });
+    expect([first.statusCode, retried.statusCode]).toEqual([201, 200]);
+    expect(retried.json().message.id).toBe(first.json().message.id);
+    expect(mailer.notifications).toHaveLength(notificationsBefore);
+
+    const unreadState = await app.inject({
+      method: "GET",
+      url: "/api/member/contact-requests",
+      headers: { cookie: seeded.recipient.cookie },
+    });
+    expect(unreadState.json().currentConnection.conversation.unreadCount).toBe(1);
+
+    const history = await app.inject({
+      method: "GET",
+      url: `/api/member/human-conversations/${conversationId}`,
+      headers: { cookie: seeded.recipient.cookie },
+    });
+    expect(history.statusCode).toBe(200);
+    expect(history.json()).toMatchObject({
+      conversationId,
+      canSend: true,
+      otherMember: { displayName: "林夏", deleted: false },
+      unreadCount: 0,
+      messages: [
+        {
+          id: first.json().message.id,
+          sender: "other",
+          content: "可以加我微信 onlylove_2026，电话 13800138000。",
+          sequence: 1,
+        },
+      ],
+    });
+
+    const duplicateCountPool = new Pool({ connectionString: databaseUrl });
+    const duplicateCount = await duplicateCountPool.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count
+         FROM conversation_messages
+        WHERE conversation_id = $1 AND client_message_id = $2`,
+      [conversationId, clientMessageId],
+    );
+    await duplicateCountPool.end();
+    expect(duplicateCount.rows[0]!.count).toBe("1");
+
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    if (!address || typeof address === "string") throw new Error("test server missing");
+    const abort = new AbortController();
+    const events = await fetch(
+      `http://127.0.0.1:${address.port}/api/member/human-conversations/${conversationId}/events?after=1`,
+      {
+        headers: { cookie: seeded.recipient.cookie },
+        signal: abort.signal,
+      },
+    );
+    expect(events.headers.get("content-type")).toContain("text/event-stream");
+    const reader = events.body!.getReader();
+    const liveClientMessageId = randomUUID();
+    const liveMessage = await app.inject({
+      method: "POST",
+      url: `/api/member/human-conversations/${conversationId}/messages`,
+      headers: { cookie: seeded.requester.cookie },
+      payload: { clientMessageId: liveClientMessageId, content: "今晚见面聊聊？" },
+    });
+    expect(liveMessage.statusCode).toBe(201);
+    let streamed = "";
+    while (!streamed.includes(liveMessage.json().message.id)) {
+      const chunk = await Promise.race([
+        reader.read(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("SSE message timeout")), 2_000),
+        ),
+      ]);
+      if (chunk.done) break;
+      streamed += new TextDecoder().decode(chunk.value);
+    }
+    expect(streamed).toContain("event: message");
+    expect(streamed).toContain("今晚见面聊聊？");
+    abort.abort();
+
+    const availabilityPool = new Pool({ connectionString: databaseUrl });
+    const unavailable = async () =>
+      app.inject({
+        method: "POST",
+        url: `/api/member/human-conversations/${conversationId}/messages`,
+        headers: { cookie: seeded.requester.cookie },
+        payload: { clientMessageId: randomUUID(), content: "还能发送吗？" },
+      });
+    await availabilityPool.query(
+      `INSERT INTO member_blocks (blocker_member_id, blocked_member_id, created_at)
+       VALUES ($1, $2, $3)`,
+      [seeded.recipient.memberId, seeded.requester.memberId, now],
+    );
+    expect((await unavailable()).json().code).toBe("HUMAN_CONVERSATION_READ_ONLY");
+    await availabilityPool.query("DELETE FROM member_blocks");
+    await availabilityPool.query("UPDATE members SET suspended_until = $2 WHERE id = $1", [
+      seeded.recipient.memberId,
+      new Date(now.getTime() + 86_400_000),
+    ]);
+    expect((await unavailable()).json().code).toBe("HUMAN_CONVERSATION_READ_ONLY");
+    await availabilityPool.query("UPDATE members SET suspended_until = NULL, deleted_at = $2 WHERE id = $1", [
+      seeded.recipient.memberId,
+      now,
+    ]);
+    expect((await unavailable()).json().code).toBe("HUMAN_CONVERSATION_READ_ONLY");
+    const retained = await app.inject({
+      method: "GET",
+      url: `/api/member/human-conversations/${conversationId}`,
+      headers: { cookie: seeded.requester.cookie },
+    });
+    expect(retained.json().otherMember).toEqual({
+      displayName: "已注销成员（历史消息已保留）",
+      deleted: true,
+    });
+    await availabilityPool.query("UPDATE members SET deleted_at = NULL WHERE id = $1", [
+      seeded.recipient.memberId,
+    ]);
+    await availabilityPool.query(
+      "UPDATE member_connections SET status = 'ended', ended_at = $2 WHERE id = $1",
+      [accepted.json().connection.id, now],
+    );
+    expect((await unavailable()).json().code).toBe("HUMAN_CONVERSATION_READ_ONLY");
+    await availabilityPool.end();
+  });
 });
