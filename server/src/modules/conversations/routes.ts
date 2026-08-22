@@ -1195,6 +1195,10 @@ export function registerConversationsRoutes(
         "x-accel-buffering": "no",
       });
       stream.write("retry: 1000\n\n");
+      const lastEventId = Number(request.headers["last-event-id"]);
+      const after = Number.isSafeInteger(lastEventId)
+        ? Math.max(request.query.after, lastEventId)
+        : request.query.after;
       const waiting = await db
         .select()
         .from(conversationMessages)
@@ -1204,7 +1208,7 @@ export function registerConversationsRoutes(
               conversationMessages.conversationId,
               request.params.conversationId,
             ),
-            gt(conversationMessages.sequence, request.query.after),
+            gt(conversationMessages.sequence, after),
           ),
         )
         .orderBy(asc(conversationMessages.sequence));

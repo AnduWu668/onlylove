@@ -252,6 +252,7 @@ const ownedCandidateConversationsLoading = ref(false);
 const ownedCandidateConversationsLoaded = ref(false);
 let candidateTwinEvents: EventSource | undefined;
 let humanConversationEvents: EventSource | undefined;
+let humanConversationOpenRequest = 0;
 let humanConversationRetry:
   | { conversationId: string; clientMessageId: string; content: string }
   | undefined;
@@ -399,7 +400,7 @@ onMounted(loadProfile);
 onUnmounted(() => {
   Object.values(ownAgentEvents).forEach((events) => events.close());
   candidateTwinEvents?.close();
-  humanConversationEvents?.close();
+  closeHumanConversation();
   if (portraitPoll !== undefined) window.clearTimeout(portraitPoll);
   if (recommendationPoll !== undefined) window.clearTimeout(recommendationPoll);
 });
@@ -703,9 +704,11 @@ async function loadConnections() {
 }
 
 function closeHumanConversation() {
+  humanConversationOpenRequest += 1;
   humanConversationEvents?.close();
   humanConversationEvents = undefined;
   humanConversation.value = undefined;
+  humanConversationLoading.value = false;
   humanConversationError.value = "";
 }
 
@@ -746,6 +749,7 @@ function listenForHumanMessages(eventsUrl: string) {
 
 async function openHumanConversation(conversationId: string) {
   if (humanConversationLoading.value) return;
+  const requestId = ++humanConversationOpenRequest;
   humanConversationLoading.value = true;
   humanConversationError.value = "";
   try {
@@ -756,15 +760,20 @@ async function openHumanConversation(conversationId: string) {
       ? await jsonOrUndefined<HumanConversationState>(response)
       : undefined;
     if (!data) throw new Error();
+    if (requestId !== humanConversationOpenRequest) return;
     humanConversation.value = data;
     if (connections.value?.currentConnection?.conversation.id === conversationId) {
       connections.value.currentConnection.conversation.unreadCount = 0;
     }
     listenForHumanMessages(data.eventsUrl);
   } catch {
-    humanConversationError.value = "暂时无法打开真人会话，请稍后重试。";
+    if (requestId === humanConversationOpenRequest) {
+      humanConversationError.value = "暂时无法打开真人会话，请稍后重试。";
+    }
   } finally {
-    humanConversationLoading.value = false;
+    if (requestId === humanConversationOpenRequest) {
+      humanConversationLoading.value = false;
+    }
   }
 }
 

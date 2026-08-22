@@ -1581,10 +1581,12 @@ describe("OnlyLove UI seam", () => {
   it("sends and handles contact requests from the member UI", async () => {
     class FakeEventSource {
       static current: FakeEventSource;
+      static instances: FakeEventSource[] = [];
       readonly listeners = new Map<string, (event: MessageEvent) => void>();
 
       constructor(readonly url: string) {
         FakeEventSource.current = this;
+        FakeEventSource.instances.push(this);
       }
 
       addEventListener(type: string, listener: (event: MessageEvent) => void) {
@@ -1609,6 +1611,8 @@ describe("OnlyLove UI seam", () => {
       reason: "你们可以进一步了解。",
     };
     let connected = false;
+    let delayHumanConversation = false;
+    let resolveHumanConversation: (() => void) | undefined;
     const contactState = () => ({
       incoming: [
         {
@@ -1718,6 +1722,11 @@ describe("OnlyLove UI seam", () => {
         url === "/api/member/human-conversations/human-conversation" &&
         !options?.method
       ) {
+        if (delayHumanConversation) {
+          await new Promise<void>((resolve) => {
+            resolveHumanConversation = resolve;
+          });
+        }
         return {
           ok: true,
           status: 200,
@@ -1886,6 +1895,25 @@ describe("OnlyLove UI seam", () => {
         body: JSON.stringify({ lastReadSequence: 3 }),
       }),
     );
+
+    await wrapper.get(".human-conversation-heading button").trigger("click");
+    delayHumanConversation = true;
+    await wrapper.get("button.open-human-conversation").trigger("click");
+    await flushPromises();
+    expect(resolveHumanConversation).toBeTypeOf("function");
+    await wrapper
+      .findAll("nav button")
+      .find((button) => button.text().includes("我的"))!
+      .trigger("click");
+    resolveHumanConversation!();
+    await flushPromises();
+    await wrapper
+      .findAll("nav button")
+      .find((button) => button.text().includes("联系"))!
+      .trigger("click");
+    await flushPromises();
+    expect(wrapper.find(".human-conversation").exists()).toBe(false);
+    expect(FakeEventSource.instances).toHaveLength(1);
   });
 
   it("lets a super administrator update matching and agent quota settings", async () => {

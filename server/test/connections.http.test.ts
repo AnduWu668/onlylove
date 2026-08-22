@@ -1107,6 +1107,34 @@ describe("Contact requests HTTP seam", () => {
       content: "我也可以发送。",
     });
 
+    const reconnectAbort = new AbortController();
+    const reconnectedEvents = await fetch(
+      `http://127.0.0.1:${address.port}/api/member/human-conversations/${conversationId}/events?after=0`,
+      {
+        headers: {
+          cookie: seeded.recipient.cookie,
+          "Last-Event-ID": String(liveMessage.json().message.sequence),
+        },
+        signal: reconnectAbort.signal,
+      },
+    );
+    const reconnectReader = reconnectedEvents.body!.getReader();
+    let reconnected = "";
+    while (!reconnected.includes(recipientMessage.json().message.id)) {
+      const chunk = await Promise.race([
+        reconnectReader.read(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("SSE reconnect timeout")), 2_000),
+        ),
+      ]);
+      if (chunk.done) break;
+      reconnected += new TextDecoder().decode(chunk.value);
+    }
+    reconnectAbort.abort();
+    expect(reconnected).not.toContain(first.json().message.id);
+    expect(reconnected).not.toContain(liveMessage.json().message.id);
+    expect(reconnected).toContain(recipientMessage.json().message.id);
+
     const availabilityPool = new Pool({ connectionString: databaseUrl });
     const unavailable = async () =>
       app.inject({
