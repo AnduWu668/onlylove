@@ -1,6 +1,6 @@
-import { and, eq, inArray, or } from "drizzle-orm";
+import { and, inArray, isNull, or } from "drizzle-orm";
 import type { Database } from "../../db.js";
-import { memberConnections } from "./schema.js";
+import { connectionRecoveries, memberConnections } from "./schema.js";
 
 export class MatchingConnections {
   constructor(private readonly db: Database) {}
@@ -16,7 +16,7 @@ export class MatchingConnections {
       .from(memberConnections)
       .where(
         and(
-          eq(memberConnections.status, "active"),
+          inArray(memberConnections.status, ["active", "confirmed"]),
           or(
             inArray(memberConnections.memberAId, memberIds),
             inArray(memberConnections.memberBId, memberIds),
@@ -29,5 +29,19 @@ export class MatchingConnections {
       if (requested.has(row.memberBId)) result.add(row.memberBId);
     }
     return result;
+  }
+
+  async membersRecovering(memberIds: string[]) {
+    if (!memberIds.length) return new Set<string>();
+    const rows = await this.db
+      .select({ memberId: connectionRecoveries.memberId })
+      .from(connectionRecoveries)
+      .where(
+        and(
+          inArray(connectionRecoveries.memberId, memberIds),
+          isNull(connectionRecoveries.resumedAt),
+        ),
+      );
+    return new Set(rows.map(({ memberId }) => memberId));
   }
 }

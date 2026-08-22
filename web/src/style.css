@@ -1307,6 +1307,33 @@ button:disabled {
   background: #e9dfd4;
 }
 
+.relationship-followup {
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid rgb(91 52 57 / 12%);
+}
+
+.relationship-followup > p:not(.step-label),
+.connection-recovery > p:not(.step-label) {
+  color: #796b69;
+  line-height: 1.6;
+}
+
+.relationship-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.relationship-actions button {
+  flex: 1 1 130px;
+}
+
+.connection-recovery {
+  margin-top: 18px;
+}
+
 .open-human-conversation {
   margin-top: 16px;
 }
@@ -1397,6 +1424,42 @@ button:disabled {
 
 .matching-settings-panel .save-success {
   margin-top: 12px;
+}
+
+.relationship-metrics {
+  margin-top: 16px;
+}
+
+.relationship-metrics .list-heading p {
+  margin: 5px 0 0;
+  color: #8b7978;
+  font-size: 12px;
+}
+
+.relationship-rate {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 18px 0;
+}
+
+.relationship-rate strong {
+  color: #6f1831;
+  font-size: 34px;
+}
+
+.relationship-metric-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.relationship-metric-list span {
+  padding: 7px 10px;
+  border-radius: 999px;
+  color: #6d5c60;
+  background: #e2d4ca;
+  font-size: 12px;
 }
 
 @media (max-width: 600px) {

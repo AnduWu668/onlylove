@@ -4,13 +4,14 @@ export interface Mailer {
   sendOtp(email: string, code: string): Promise<void>;
   sendContactRequest?(email: string, requesterNickname: string): Promise<void>;
   sendContactAccepted?(email: string, nickname: string): Promise<void>;
+  sendConnectionFollowup?(email: string, nickname: string): Promise<void>;
 }
 
 export class MemoryMailer implements Mailer {
   readonly messages: Array<{ to: string; code: string }> = [];
   readonly notifications: Array<{
     to: string;
-    type: "contact_request" | "contact_accepted";
+    type: "contact_request" | "contact_accepted" | "connection_followup";
     nickname: string;
   }> = [];
 
@@ -37,6 +38,14 @@ export class MemoryMailer implements Mailer {
       nickname,
     });
   }
+
+  async sendConnectionFollowup(email: string, nickname: string) {
+    this.notifications.push({
+      to: email,
+      type: "connection_followup",
+      nickname,
+    });
+  }
 }
 
 export class ConsoleMailer implements Mailer {
@@ -50,6 +59,10 @@ export class ConsoleMailer implements Mailer {
 
   async sendContactAccepted(email: string, nickname: string) {
     console.info(`[OnlyLove] ${email} 已与 ${nickname} 建立联系`);
+  }
+
+  async sendConnectionFollowup(email: string, nickname: string) {
+    console.info(`[OnlyLove] ${email} 与 ${nickname} 的七日回访已开放`);
   }
 }
 
@@ -97,6 +110,15 @@ export class SmtpMailer implements Mailer {
       to: email,
       subject: "OnlyLove 已建立联系",
       text: `你已与 ${nickname} 建立联系，可以在 OnlyLove 开始真人交流。`,
+    });
+  }
+
+  async sendConnectionFollowup(email: string, nickname: string) {
+    await this.transport.sendMail({
+      from: this.from,
+      to: email,
+      subject: "OnlyLove 七日回访",
+      text: `你与 ${nickname} 建立联系已满七天。登录 OnlyLove 分别选择继续了解、结束接触或提出确认关系。`,
     });
   }
 }

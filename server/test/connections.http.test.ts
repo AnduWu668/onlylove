@@ -1179,4 +1179,232 @@ describe("Contact requests HTTP seam", () => {
     expect((await unavailable()).json().code).toBe("HUMAN_CONVERSATION_READ_ONLY");
     await availabilityPool.end();
   });
+
+  it("collects seven-day decisions without ending silent contacts and confirms only mutual proposals", async () => {
+    const seeded = await seedCandidateConversation();
+    const request = await app.inject({
+      method: "POST",
+      url: `/api/member/recommendations/${seeded.recommendationId}/contact-request`,
+      headers: { cookie: seeded.requester.cookie },
+    });
+    const accepted = await app.inject({
+      method: "POST",
+      url: `/api/member/contact-requests/${request.json().id}/accept`,
+      headers: { cookie: seeded.recipient.cookie },
+    });
+    const connectionId = accepted.json().connection.id;
+
+    const early = await app.inject({
+      method: "POST",
+      url: `/api/member/connections/${connectionId}/followup`,
+      headers: { cookie: seeded.requester.cookie },
+      payload: { decision: "continue" },
+    });
+    expect(early.statusCode).toBe(409);
+    expect(early.json().code).toBe("FOLLOWUP_NOT_DUE");
+
+    now = new Date(now.getTime() + 8 * 86_400_000);
+    const silent = await app.inject({
+      method: "GET",
+      url: "/api/member/contact-requests",
+      headers: { cookie: seeded.requester.cookie },
+    });
+    expect(silent.json().currentConnection).toMatchObject({
+      id: connectionId,
+      relationshipStatus: "active",
+      followup: {
+        due: true,
+        myDecision: null,
+        mutualContinue: false,
+        confirmation: "none",
+      },
+    });
+    expect(
+      mailer.notifications.filter(({ type }) => type === "connection_followup"),
+    ).toHaveLength(2);
+
+    const requesterContinues = await app.inject({
+      method: "POST",
+      url: `/api/member/connections/${connectionId}/followup`,
+      headers: { cookie: seeded.requester.cookie },
+      payload: { decision: "continue" },
+    });
+    expect(requesterContinues.statusCode).toBe(200);
+    expect(requesterContinues.json().currentConnection.followup).toMatchObject({
+      myDecision: "continue",
+      mutualContinue: false,
+    });
+
+    const recipientContinues = await app.inject({
+      method: "POST",
+      url: `/api/member/connections/${connectionId}/followup`,
+      headers: { cookie: seeded.recipient.cookie },
+      payload: { decision: "continue" },
+    });
+    expect(
+      recipientContinues.json().currentConnection.followup.mutualContinue,
+    ).toBe(true);
+
+    const proposal = await app.inject({
+      method: "POST",
+      url: `/api/member/connections/${connectionId}/followup`,
+      headers: { cookie: seeded.requester.cookie },
+      payload: { decision: "confirm" },
+    });
+    expect(proposal.json().currentConnection).toMatchObject({
+      relationshipStatus: "active",
+      followup: { confirmation: "proposed_by_me" },
+    });
+
+    const recipientBeforeAccepting = await app.inject({
+      method: "GET",
+      url: "/api/member/contact-requests",
+      headers: { cookie: seeded.recipient.cookie },
+    });
+    expect(
+      recipientBeforeAccepting.json().currentConnection.followup.confirmation,
+    ).toBe("proposed_to_me");
+
+    const confirmed = await app.inject({
+      method: "POST",
+      url: `/api/member/connections/${connectionId}/followup`,
+      headers: { cookie: seeded.recipient.cookie },
+      payload: { decision: "confirm" },
+    });
+    expect(confirmed.json().currentConnection).toMatchObject({
+      relationshipStatus: "confirmed",
+      followup: { confirmation: "confirmed", mutualContinue: true },
+    });
+    const confirmedConversation = await app.inject({
+      method: "GET",
+      url: `/api/member/human-conversations/${confirmed.json().currentConnection.conversation.id}`,
+      headers: { cookie: seeded.requester.cookie },
+    });
+    expect(confirmedConversation.json().canSend).toBe(true);
+  });
+
+  it("ends immediately, keeps each review private, and requires a new published version before individual resume", async () => {
+    const seeded = await seedCandidateConversation();
+    const request = await app.inject({
+      method: "POST",
+      url: `/api/member/recommendations/${seeded.recommendationId}/contact-request`,
+      headers: { cookie: seeded.requester.cookie },
+    });
+    const accepted = await app.inject({
+      method: "POST",
+      url: `/api/member/contact-requests/${request.json().id}/accept`,
+      headers: { cookie: seeded.recipient.cookie },
+    });
+    const connectionId = accepted.json().connection.id;
+    const state = await app.inject({
+      method: "GET",
+      url: "/api/member/contact-requests",
+      headers: { cookie: seeded.requester.cookie },
+    });
+    const conversationId = state.json().currentConnection.conversation.id;
+    now = new Date(now.getTime() + 7 * 86_400_000);
+
+    const ended = await app.inject({
+      method: "POST",
+      url: `/api/member/connections/${connectionId}/followup`,
+      headers: { cookie: seeded.requester.cookie },
+      payload: { decision: "end" },
+    });
+    expect(ended.statusCode).toBe(200);
+    expect(ended.json()).toMatchObject({
+      currentConnection: null,
+      recovery: { connectionId, status: "review_required" },
+    });
+    const recipientState = await app.inject({
+      method: "GET",
+      url: "/api/member/contact-requests",
+      headers: { cookie: seeded.recipient.cookie },
+    });
+    expect(recipientState.json().recovery.status).toBe("review_required");
+
+    const history = await app.inject({
+      method: "GET",
+      url: `/api/member/human-conversations/${conversationId}`,
+      headers: { cookie: seeded.recipient.cookie },
+    });
+    expect(history.json().canSend).toBe(false);
+
+    const review = await app.inject({
+      method: "POST",
+      url: `/api/member/connections/${connectionId}/review`,
+      headers: { cookie: seeded.requester.cookie },
+    });
+    expect(review.statusCode).toBe(200);
+    expect(review.json().recovery.status).toBe("portrait_update_required");
+
+    const prematureResume = await app.inject({
+      method: "POST",
+      url: `/api/member/connections/${connectionId}/resume`,
+      headers: { cookie: seeded.requester.cookie },
+    });
+    expect(prematureResume.statusCode).toBe(409);
+    expect(prematureResume.json().code).toBe("PORTRAIT_RECALIBRATION_REQUIRED");
+
+    const pool = new Pool({ connectionString: databaseUrl });
+    const nextVersionId = randomUUID();
+    await pool.query(
+      `INSERT INTO portrait_versions
+        (id, member_id, version, client_request_id, source_draft_schema_version,
+         match_profile, persona_context_schema_version, persona_context,
+         calibration_schema_version, created_at)
+       VALUES ($1, $2, 2, $3, 'portrait-draft-v1', '{}',
+               'persona-context-v1', '复盘后的分身上下文',
+               'portrait-calibration-v1', $4)`,
+      [
+        nextVersionId,
+        seeded.requester.memberId,
+        randomUUID(),
+        new Date(now.getTime() + 1),
+      ],
+    );
+    await pool.query(
+      `UPDATE portrait_member_states
+          SET submitted_version_id = $2, published_version_id = $2, updated_at = $3
+        WHERE member_id = $1`,
+      [seeded.requester.memberId, nextVersionId, new Date(now.getTime() + 1)],
+    );
+    await pool.end();
+
+    const resumed = await app.inject({
+      method: "POST",
+      url: `/api/member/connections/${connectionId}/resume`,
+      headers: { cookie: seeded.requester.cookie },
+    });
+    expect(resumed.statusCode).toBe(200);
+    expect(resumed.json().recovery.status).toBe("resumed");
+    expect(recipientState.json().recovery.status).toBe("review_required");
+
+    const adminPool = new Pool({ connectionString: databaseUrl });
+    const admin = await seedMember(adminPool, {
+      email: "metrics-admin@onlylove.test",
+      nickname: "指标管理员",
+      birthDate: "1988-01-02",
+      gender: "male",
+    });
+    await adminPool.query("UPDATE members SET role = 'super_admin' WHERE id = $1", [
+      admin.memberId,
+    ]);
+    await adminPool.end();
+    const metrics = await app.inject({
+      method: "GET",
+      url: "/api/admin/relationship-metrics",
+      headers: { cookie: admin.cookie },
+    });
+    expect(metrics.statusCode).toBe(200);
+    expect(metrics.json()).toMatchObject({
+      dueConnections: 1,
+      mutualContinue: 0,
+      noFeedback: 1,
+      ended: 1,
+      confirmed: 0,
+      recoveryPending: 1,
+      resumed: 1,
+      mutualContinueRate: 0,
+    });
+  });
 });

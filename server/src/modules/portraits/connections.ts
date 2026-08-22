@@ -1,6 +1,6 @@
-import { inArray } from "drizzle-orm";
+import { and, eq, gt, inArray } from "drizzle-orm";
 import type { Database, DatabaseTransaction } from "../../db.js";
-import { portraitMemberStates } from "./schema.js";
+import { portraitMemberStates, portraitVersions } from "./schema.js";
 
 export class ConnectionPortraits {
   constructor(private readonly db: Database) {}
@@ -24,5 +24,27 @@ export class ConnectionPortraits {
         (state) => expected.get(state.memberId) === state.publishedVersionId,
       )
     );
+  }
+
+  async hasPublishedVersionAfter(memberId: string, after: Date) {
+    const row = await this.db
+      .select({ id: portraitVersions.id })
+      .from(portraitMemberStates)
+      .innerJoin(
+        portraitVersions,
+        eq(portraitMemberStates.publishedVersionId, portraitVersions.id),
+      )
+      .where(
+        and(
+          eq(portraitMemberStates.memberId, memberId),
+          eq(
+            portraitMemberStates.submittedVersionId,
+            portraitMemberStates.publishedVersionId,
+          ),
+          gt(portraitVersions.createdAt, after),
+        ),
+      )
+      .limit(1);
+    return row.length === 1;
   }
 }

@@ -161,8 +161,27 @@ interface ConnectionsState {
   currentConnection: {
     id: string;
     createdAt: string;
+    relationshipStatus?: "active" | "confirmed";
+    followup?: {
+      due: boolean;
+      myDecision: "continue" | "end" | "confirm" | null;
+      mutualContinue: boolean;
+      confirmation:
+        | "none"
+        | "proposed_by_me"
+        | "proposed_to_me"
+        | "confirmed";
+    };
     conversation: { id: string; unreadCount: number };
     candidate: Omit<ContactCandidate, "reason"> | null;
+  } | null;
+  recovery?: {
+    connectionId: string;
+    status:
+      | "review_required"
+      | "portrait_update_required"
+      | "ready_to_resume"
+      | "resumed";
   } | null;
 }
 
@@ -242,6 +261,8 @@ const connections = ref<ConnectionsState>();
 const connectionsLoading = ref(false);
 const connectionsPending = ref(false);
 const connectionsError = ref("");
+const relationshipActionPending = ref(false);
+let connectionReviewId: string | undefined;
 const humanConversation = ref<HumanConversationState>();
 const humanConversationLoading = ref(false);
 const humanConversationSending = ref(false);
@@ -874,6 +895,63 @@ async function resolveContactRequest(
   }
 }
 
+async function submitConnectionDecision(
+  decision: "continue" | "end" | "confirm",
+) {
+  const connection = connections.value?.currentConnection;
+  if (!connection || relationshipActionPending.value) return;
+  relationshipActionPending.value = true;
+  connectionsError.value = "";
+  try {
+    const response = await fetch(
+      `/api/member/connections/${connection.id}/followup`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ decision }),
+      },
+    );
+    const state = response.ok
+      ? await jsonOrUndefined<ConnectionsState>(response)
+      : undefined;
+    if (!state) throw new Error();
+    connections.value = state;
+    if (decision === "end") closeHumanConversation();
+  } catch {
+    connectionsError.value = "关系状态暂时没有更新，请稍后重试。";
+  } finally {
+    relationshipActionPending.value = false;
+  }
+}
+
+function startConnectionReview(connectionId: string) {
+  connectionReviewId = connectionId;
+  twinRole.value = "interviewer";
+  interviewInput.value = "我想复盘这段接触：哪些地方适合我，哪些地方需要重新理解自己？";
+  showTab("twin");
+}
+
+async function resumeMatching(connectionId: string) {
+  if (relationshipActionPending.value) return;
+  relationshipActionPending.value = true;
+  connectionsError.value = "";
+  try {
+    const response = await fetch(
+      `/api/member/connections/${connectionId}/resume`,
+      { method: "POST" },
+    );
+    const state = response.ok
+      ? await jsonOrUndefined<ConnectionsState>(response)
+      : undefined;
+    if (!state) throw new Error();
+    connections.value = state;
+  } catch {
+    connectionsError.value = "还不能恢复推荐，请先完成复盘、提交新版本并通过校准。";
+  } finally {
+    relationshipActionPending.value = false;
+  }
+}
+
 function contactStatus(status: ContactRequestStatus) {
   return {
     pending: "待处理",
@@ -1318,6 +1396,22 @@ async function sendOwnAgent(role: OwnAgentRole) {
     }
     quotaRemaining.value = data.quotaRemaining;
     listenForOwnAgent(role, data.eventsUrl, answer);
+    if (role === "interviewer" && connectionReviewId) {
+      try {
+        const reviewed = await fetch(
+          `/api/member/connections/${connectionReviewId}/review`,
+          { method: "POST" },
+        );
+        const state = reviewed.ok
+          ? await jsonOrUndefined<ConnectionsState>(reviewed)
+          : undefined;
+        if (state) connections.value = state;
+      } catch {
+        connectionsError.value = "复盘已提交，但恢复状态暂时未更新。";
+      } finally {
+        connectionReviewId = undefined;
+      }
+    }
   } catch {
     chat.error.value = "网络中断，消息已恢复，请再次发送。";
     ownAgentRetries[role] = { clientMessageId, content };
@@ -2311,6 +2405,87 @@ async function withdrawPortrait() {
                 </p>
               </div>
             </div>
+            <section
+              v-if="connections.currentConnection.followup?.due"
+              class="relationship-followup"
+              aria-label="七日回访"
+            >
+              <p class="step-label">七日回访</p>
+              <template
+                v-if="connections.currentConnection.relationshipStatus === 'confirmed'"
+              >
+                <h3>双方已确认关系</h3>
+                <p>候选推荐已暂停；你们仍可继续使用站内真人会话。</p>
+                <button
+                  class="end-connection quiet-action"
+                  type="button"
+                  :disabled="relationshipActionPending"
+                  @click="submitConnectionDecision('end')"
+                >
+                  结束关系
+                </button>
+              </template>
+              <template v-else>
+                <h3>分别告诉我们，你希望怎样继续</h3>
+                <p
+                  v-if="connections.currentConnection.followup.mutualContinue"
+                  class="contact-resolution"
+                >
+                  双方都选择继续了解，当前联系继续。
+                </p>
+                <p
+                  v-else-if="connections.currentConnection.followup.myDecision === 'continue'"
+                  class="contact-resolution"
+                >
+                  已选择继续了解，等待对方反馈。
+                </p>
+                <p
+                  v-if="connections.currentConnection.followup.confirmation === 'proposed_by_me'"
+                  class="contact-resolution"
+                >
+                  已提出确认关系，等待对方接受；当前联系保持不变。
+                </p>
+                <p
+                  v-else-if="connections.currentConnection.followup.confirmation === 'proposed_to_me'"
+                  class="contact-resolution"
+                >
+                  对方提出确认关系，只有你接受后双方才会确认。
+                </p>
+                <div class="relationship-actions">
+                  <button
+                    v-if="connections.currentConnection.followup.myDecision !== 'continue'"
+                    class="continue-connection"
+                    type="button"
+                    :disabled="relationshipActionPending"
+                    @click="submitConnectionDecision('continue')"
+                  >
+                    继续了解
+                  </button>
+                  <button
+                    v-if="connections.currentConnection.followup.confirmation !== 'proposed_by_me'"
+                    class="confirm-relationship"
+                    type="button"
+                    :disabled="relationshipActionPending"
+                    @click="submitConnectionDecision('confirm')"
+                  >
+                    {{
+                      connections.currentConnection.followup.confirmation ===
+                      "proposed_to_me"
+                        ? "接受确认关系"
+                        : "提出确认关系"
+                    }}
+                  </button>
+                  <button
+                    class="end-connection quiet-action"
+                    type="button"
+                    :disabled="relationshipActionPending"
+                    @click="submitConnectionDecision('end')"
+                  >
+                    结束接触
+                  </button>
+                </div>
+              </template>
+            </section>
             <button
               class="open-human-conversation"
               type="button"
@@ -2374,6 +2549,49 @@ async function withdrawPortrait() {
             <p v-if="humanConversationError" class="form-error" role="alert">
               {{ humanConversationError }}
             </p>
+          </section>
+
+          <section
+            v-if="connections.recovery"
+            class="connection-recovery contact-request-card"
+          >
+            <p class="step-label">结束后的下一步</p>
+            <template v-if="connections.recovery.status === 'review_required'">
+              <h2>完成一次私有接触复盘</h2>
+              <p>复盘只进入你的画像访谈，不会成为对另一方的公开评价。</p>
+              <button
+                class="start-connection-review"
+                type="button"
+                @click="startConnectionReview(connections.recovery.connectionId)"
+              >
+                进入私有接触复盘
+              </button>
+            </template>
+            <template
+              v-else-if="connections.recovery.status === 'portrait_update_required'"
+            >
+              <h2>让复盘进入新的分身版本</h2>
+              <p>提交新的理解版本、完成校准并发布后，才能主动恢复推荐。</p>
+              <button type="button" @click="showTab('twin')">
+                继续完善和校准
+              </button>
+            </template>
+            <template v-else-if="connections.recovery.status === 'ready_to_resume'">
+              <h2>新版本已准备好</h2>
+              <p>恢复不会自动发生，由你决定何时重新参加候选推荐。</p>
+              <button
+                class="resume-matching"
+                type="button"
+                :disabled="relationshipActionPending"
+                @click="resumeMatching(connections.recovery.connectionId)"
+              >
+                主动恢复推荐
+              </button>
+            </template>
+            <template v-else>
+              <h2>已主动恢复推荐</h2>
+              <p>新的候选将使用你复盘、提交并校准后的分身版本。</p>
+            </template>
           </section>
 
           <section class="contact-request-list" aria-label="收到的联系请求">

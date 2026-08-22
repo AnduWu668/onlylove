@@ -9,6 +9,17 @@ interface Invitation {
   expiresAt: string;
 }
 
+interface RelationshipMetrics {
+  dueConnections: number;
+  mutualContinue: number;
+  noFeedback: number;
+  ended: number;
+  confirmed: number;
+  recoveryPending: number;
+  resumed: number;
+  mutualContinueRate: number;
+}
+
 const router = useRouter();
 const email = ref("");
 const invitations = ref<Invitation[]>([]);
@@ -20,6 +31,7 @@ const settingsSuccess = ref("");
 const ownAgentDailyLimit = ref<number | null>(null);
 const candidateTwinDailyLimit = ref<number | null>(null);
 const quotaSettingsSuccess = ref("");
+const relationshipMetrics = ref<RelationshipMetrics>();
 
 const statusText: Record<Invitation["status"], string> = {
   active: "有效",
@@ -50,6 +62,12 @@ async function loadAgentQuotaSettings() {
   candidateTwinDailyLimit.value = settings.candidateTwinDailyLimit;
 }
 
+async function loadRelationshipMetrics() {
+  const response = await fetch("/api/admin/relationship-metrics");
+  if (!response.ok) throw new Error("无法读取关系指标");
+  relationshipMetrics.value = await response.json();
+}
+
 onMounted(async () => {
   const session = await fetch("/api/session");
   if (!session.ok) {
@@ -73,6 +91,7 @@ onMounted(async () => {
       loadInvitations(),
       loadMatchingSettings(),
       loadAgentQuotaSettings(),
+      loadRelationshipMetrics(),
     ]);
   } catch (caught) {
     error.value = caught instanceof Error ? caught.message : "暂时无法读取邀请。";
@@ -271,6 +290,28 @@ function formatDate(value: string) {
       <p v-if="quotaSettingsSuccess" class="save-success" role="status">
         {{ quotaSettingsSuccess }}
       </p>
+    </section>
+
+    <section v-if="relationshipMetrics" class="admin-panel relationship-metrics">
+      <div class="list-heading">
+        <div>
+          <h2>关系生命周期</h2>
+          <p>区分七日继续、未反馈、结束、确认关系与恢复推荐状态。</p>
+        </div>
+      </div>
+      <div class="relationship-rate">
+        <strong>{{ relationshipMetrics.mutualContinueRate }}%</strong>
+        <span>七日双向继续率</span>
+      </div>
+      <div class="relationship-metric-list">
+        <span>到期联系 {{ relationshipMetrics.dueConnections }}</span>
+        <span>双方继续 {{ relationshipMetrics.mutualContinue }}</span>
+        <span>未反馈 {{ relationshipMetrics.noFeedback }}</span>
+        <span>已结束 {{ relationshipMetrics.ended }}</span>
+        <span>确认关系 {{ relationshipMetrics.confirmed }}</span>
+        <span>待恢复 {{ relationshipMetrics.recoveryPending }}</span>
+        <span>已恢复推荐 {{ relationshipMetrics.resumed }}</span>
+      </div>
     </section>
 
     <section class="invitation-list" aria-labelledby="invitation-list-title">
