@@ -8,6 +8,8 @@ import {
 import {
   matchEvaluatorDefinition,
   portraitExtractorDefinition,
+  portraitInterviewerDefinition,
+  publicTwinDefinition,
 } from "../server/src/modules/agent-engine/definitions.js";
 import { PORTRAIT_DIMENSIONS } from "../server/src/modules/portraits/questions.js";
 import { PAIR_EVALUATION_SCHEMA_VERSION } from "../server/src/modules/matching/evaluation.js";
@@ -275,6 +277,238 @@ async function benchmarkTwin(engine: AgentEngine, item: TwinCase) {
   console.info(`PASS twin/${item.id} model=${result.actualModel}`);
 }
 
+function longHistory(prefix: string, markers: string[]) {
+  const markerByIndex = new Map([
+    [4, markers[0]],
+    [34, markers[1]],
+    [50, markers[2]],
+  ]);
+  const filler = "这是一段用于上下文长度实验的中性对话记录。".repeat(40);
+  return Array.from({ length: 60 }, (_, index) => ({
+    role: index % 2 === 0 ? ("member" as const) : ("agent" as const),
+    content: `${prefix}${index + 1}：${markerByIndex.get(index) ?? "没有新增代号。"}${filler}`,
+  }));
+}
+
+type ContextAttemptMetricSource = Pick<
+  AgentAttemptResult,
+  | "inputTokens"
+  | "outputTokens"
+  | "latencyMs"
+  | "firstTokenLatencyMs"
+  | "estimatedCostMicroCny"
+  | "actualModel"
+>;
+
+function contextAttemptMetrics(attempts: ContextAttemptMetricSource[]) {
+  const final = attempts.at(-1);
+  assert(final, "context benchmark requires at least one model attempt");
+  const sum = (
+    field:
+      | "inputTokens"
+      | "outputTokens"
+      | "latencyMs"
+      | "estimatedCostMicroCny",
+  ) => attempts.reduce((total, attempt) => total + attempt[field], 0);
+  const priorLatencyMs = attempts
+    .slice(0, -1)
+    .reduce((total, attempt) => total + attempt.latencyMs, 0);
+  return {
+    inputTokens: sum("inputTokens"),
+    outputTokens: sum("outputTokens"),
+    latencyMs: sum("latencyMs"),
+    firstTokenLatencyMs:
+      final.firstTokenLatencyMs === null
+        ? null
+        : priorLatencyMs + final.firstTokenLatencyMs,
+    estimatedCostMicroCny: sum("estimatedCostMicroCny"),
+    actualModel: final.actualModel,
+  };
+}
+
+function logContextResult(
+  role: "interview" | "twin",
+  inputBudget: number,
+  markers: string[],
+  text: string,
+  attempts: AgentAttemptResult[],
+) {
+  const metrics = contextAttemptMetrics(attempts);
+  // ponytail: exact marker recall is a synthetic ceiling; replace it with reviewed long-context gold cases before changing production models.
+  const recalled = markers.filter((marker) => text.includes(marker)).length;
+  console.info(
+    `RESULT context/${role} budget=${inputBudget} quality=${recalled}/${markers.length} ` +
+      `input_tokens=${metrics.inputTokens} output_tokens=${metrics.outputTokens} ` +
+      `latency_ms=${metrics.latencyMs} first_token_ms=${metrics.firstTokenLatencyMs} ` +
+      `cost_micro_cny=${metrics.estimatedCostMicroCny} model=${metrics.actualModel}`,
+  );
+  return {
+    role,
+    recalled,
+    total: markers.length,
+    ...metrics,
+  };
+}
+
+async function benchmarkLongContext(engine: AgentEngine, inputBudget: number) {
+  const interviewMarkers = ["访谈代号-青石", "访谈代号-远帆", "访谈代号-暖灯"];
+  const interview = await engine.continueInterview(
+    {
+      memberProfile: {
+        nickname: "长上下文成员",
+        birthDate: "1990-01-01",
+        gender: "female",
+        heightCm: 165,
+        city: "上海",
+        occupation: "设计师",
+      },
+      matchCriteria: null,
+      portraitDraft: emptyPortraitDraft(),
+      questionPlannerVersion: "portrait-question-planner-v1",
+      planningPriority: "long_context_recall",
+      recentMessages: longHistory("访谈记录", interviewMarkers),
+    },
+    "请只列出我在此前访谈中明确说过的三个访谈代号；没看到的不要猜。",
+    () => undefined,
+    async () => undefined,
+  );
+  collect(interview.attempts);
+  const interviewResult = logContextResult(
+    "interview",
+    inputBudget,
+    interviewMarkers,
+    interview.text,
+    interview.attempts,
+  );
+
+  const twinMarkers = ["分身代号-云桥", "分身代号-松风", "分身代号-星河"];
+  const twin = await engine.replyAsTwin(
+    {
+      personaContext: "只依据已提供的信息回答；不知道时明确说不知道。",
+      publicProfile: null,
+      recentMessages: longHistory("分身会话", twinMarkers),
+    },
+    "请只列出访客在此前会话中明确说过的三个分身代号；没看到的不要猜。",
+    undefined,
+    async () => undefined,
+  );
+  collect(twin.attempts);
+  const twinResult = logContextResult(
+    "twin",
+    inputBudget,
+    twinMarkers,
+    twin.text,
+    twin.attempts,
+  );
+  return {
+    inputBudget,
+    roles: { interview: interviewResult, twin: twinResult },
+    estimatedCostMicroCny:
+      interviewResult.estimatedCostMicroCny +
+      twinResult.estimatedCostMicroCny,
+  };
+}
+
+type ContextBudgetScore = {
+  inputBudget: number;
+  interviewRecall: number;
+  twinRecall: number;
+  estimatedCostMicroCny: number;
+};
+
+function suggestedContextBudget(scores: ContextBudgetScore[]) {
+  const byBudget = new Map(scores.map((score) => [score.inputBudget, score]));
+  const short = byBudget.get(16_384)!;
+  const baseline = byBudget.get(32_768)!;
+  const long = byBudget.get(65_536)!;
+  assert(short && baseline && long);
+  const noRoleDecline = (
+    candidate: ContextBudgetScore,
+    reference: ContextBudgetScore,
+  ) =>
+    candidate.interviewRecall >= reference.interviewRecall &&
+    candidate.twinRecall >= reference.twinRecall;
+  const cheaper = [short, baseline]
+    .filter((candidate) => noRoleDecline(candidate, baseline))
+    .sort(
+      (left, right) =>
+        left.estimatedCostMicroCny - right.estimatedCostMicroCny ||
+        left.inputBudget - right.inputBudget,
+    )[0]!;
+  const significantLongGain =
+    noRoleDecline(long, cheaper) &&
+    (long.interviewRecall >= cheaper.interviewRecall + 1 ||
+      long.twinRecall >= cheaper.twinRecall + 1);
+  return significantLongGain ? 65_536 : cheaper.inputBudget;
+}
+
+const contextScore = (
+  inputBudget: number,
+  interviewRecall: number,
+  twinRecall: number,
+  estimatedCostMicroCny: number,
+) => ({ inputBudget, interviewRecall, twinRecall, estimatedCostMicroCny });
+assert.deepEqual(
+  contextAttemptMetrics([
+    {
+      inputTokens: 10,
+      outputTokens: 0,
+      latencyMs: 7,
+      firstTokenLatencyMs: null,
+      estimatedCostMicroCny: 11,
+      actualModel: "primary-v1",
+    },
+    {
+      inputTokens: 20,
+      outputTokens: 5,
+      latencyMs: 3,
+      firstTokenLatencyMs: 2,
+      estimatedCostMicroCny: 22,
+      actualModel: "backup-v1",
+    },
+  ]),
+  {
+    inputTokens: 30,
+    outputTokens: 5,
+    latencyMs: 10,
+    firstTokenLatencyMs: 9,
+    estimatedCostMicroCny: 33,
+    actualModel: "backup-v1",
+  },
+);
+assert.equal(
+  suggestedContextBudget([
+    contextScore(16_384, 3, 3, 10),
+    contextScore(32_768, 3, 3, 20),
+    contextScore(65_536, 3, 3, 30),
+  ]),
+  16_384,
+);
+assert.equal(
+  suggestedContextBudget([
+    contextScore(16_384, 2, 3, 10),
+    contextScore(32_768, 3, 2, 20),
+    contextScore(65_536, 3, 2, 30),
+  ]),
+  32_768,
+);
+assert.equal(
+  suggestedContextBudget([
+    contextScore(16_384, 2, 2, 10),
+    contextScore(32_768, 3, 3, 20),
+    contextScore(65_536, 3, 4, 30),
+  ]),
+  65_536,
+);
+assert.equal(
+  suggestedContextBudget([
+    contextScore(16_384, 3, 3, 10),
+    contextScore(32_768, 2, 2, 20),
+    contextScore(65_536, 3, 2, 30),
+  ]),
+  16_384,
+);
+
 async function extractPortrait(
   engine: AgentEngine,
   current: ReturnType<typeof emptyPortraitDraft>,
@@ -400,9 +634,20 @@ async function benchmarkMatching(
 }
 
 loadRootEnv();
+const interviewOnly = process.argv.includes("--interview");
+const extractionOnly = process.argv.includes("--extraction");
+const twinOnly = process.argv.includes("--twin");
 const learningOnly = process.argv.includes("--portrait-learning");
 const matchingOnly = process.argv.includes("--matching");
+const contextOnly = process.argv.includes("--context");
 const deterministic = process.argv.includes("--deterministic");
+const selected =
+  interviewOnly ||
+  extractionOnly ||
+  twinOnly ||
+  learningOnly ||
+  matchingOnly ||
+  contextOnly;
 assert(
   !deterministic || matchingOnly,
   "deterministic mode currently supports the matching benchmark",
@@ -412,32 +657,48 @@ assert(
   deterministic || config?.agentModel,
   "Ark benchmark requires ARK_API_KEY, ARK_MODEL_ID and pricing configuration",
 );
-const engine = config?.agentModel
+const engine = config?.agentModel && !contextOnly
   ? new AgentEngine(config.agentModel, config.agentInputTokenBudget)
   : undefined;
 console.info(
   `benchmark config: portrait_dataset=${portraitLearningSuite.schemaVersion}, ` +
     `matching_dataset=${matchingSuite.schemaVersion}, ` +
     `matching_rubric=${matchingSuite.rubricVersion}, ` +
+    `matching_definition=${matchEvaluatorDefinition.version}, ` +
     `matching_schema=${PAIR_EVALUATION_SCHEMA_VERSION}, ` +
     `matching_prompt=${matchEvaluatorDefinition.promptVersion}, ` +
     `matching_prompt_file=${matchEvaluatorDefinition.promptFile}, ` +
-    `portrait_prompt=${portraitExtractorDefinition.promptVersion}, ` +
+    `interview_definition=${portraitInterviewerDefinition.version}, ` +
+    `interview_prompt=${portraitInterviewerDefinition.promptVersion}, ` +
+    `interview_schema=${portraitInterviewerDefinition.schemaVersion ?? "none"}, ` +
+    `extraction_definition=${portraitExtractorDefinition.version}, ` +
+    `extraction_prompt=${portraitExtractorDefinition.promptVersion}, ` +
+    `extraction_schema=${portraitExtractorDefinition.schemaVersion}, ` +
+    `twin_definition=${publicTwinDefinition.version}, ` +
+    `twin_prompt=${publicTwinDefinition.promptVersion}, ` +
+    `twin_schema=${publicTwinDefinition.schemaVersion ?? "none"}, ` +
     `requested_model=${config?.agentModel?.model ?? "matching-deterministic-v0"}, ` +
     `input_budget=${config?.agentInputTokenBudget ?? "deterministic"}, ` +
     `pricing_date=${config?.agentModel?.pricing.effectiveDate ?? "none"}`,
 );
 let caseCount = 0;
 try {
-  if (!matchingOnly && !learningOnly) {
+  if (!selected || interviewOnly) {
     assert(engine);
     for (const item of interviewCases) await benchmarkInterview(engine, item);
-    for (const item of extractionCases) await benchmarkExtraction(engine, item);
-    for (const item of twinCases) await benchmarkTwin(engine, item);
-    caseCount +=
-      interviewCases.length + extractionCases.length + twinCases.length;
+    caseCount += interviewCases.length;
   }
-  if (!matchingOnly) {
+  if (!selected || extractionOnly) {
+    assert(engine);
+    for (const item of extractionCases) await benchmarkExtraction(engine, item);
+    caseCount += extractionCases.length;
+  }
+  if (!selected || twinOnly) {
+    assert(engine);
+    for (const item of twinCases) await benchmarkTwin(engine, item);
+    caseCount += twinCases.length;
+  }
+  if (!selected || learningOnly) {
     assert(engine);
     const portraitLearningResults = [];
     for (const item of portraitLearningSuite.cases) {
@@ -466,7 +727,7 @@ try {
       `portrait learning vetoes: ${refined.vetoes.join(", ")}`,
     );
   }
-  if (!learningOnly) {
+  if (!selected || matchingOnly) {
     const matchingResults = [];
     for (const item of matchingSuite.cases) {
       matchingResults.push(
@@ -475,6 +736,38 @@ try {
     }
     assertMatchingRanking(matchingResults, deterministic);
     caseCount += matchingSuite.cases.length;
+  }
+  if (contextOnly) {
+    assert(config?.agentModel);
+    const contextResults = [];
+    for (const inputBudget of [16_384, 32_768, 65_536]) {
+      const contextEngine = new AgentEngine(config.agentModel, inputBudget);
+      try {
+        contextResults.push(
+          await benchmarkLongContext(contextEngine, inputBudget),
+        );
+      } finally {
+        contextEngine.close();
+      }
+    }
+    const scores = contextResults.map((result) =>
+      contextScore(
+        result.inputBudget,
+        result.roles.interview.recalled,
+        result.roles.twin.recalled,
+        result.estimatedCostMicroCny,
+      ),
+    );
+    console.info(
+      `context comparison: ${JSON.stringify({
+        results: contextResults,
+        syntheticSuggestionInputTokenBudget: suggestedContextBudget(scores),
+        significantRecallGain:
+          "no role declines and at least one additional marker is recalled in either role",
+        requiresManualQualityReview: true,
+      })}`,
+    );
+    caseCount += 6;
   }
 } finally {
   engine?.close();
