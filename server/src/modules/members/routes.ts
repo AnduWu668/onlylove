@@ -181,7 +181,7 @@ export interface MembersOptions {
   recheckRecommendations?: (memberId: string) => Promise<void>;
 }
 
-function normalizeEmail(email: string) {
+export function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
 }
 

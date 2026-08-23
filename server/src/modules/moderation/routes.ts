@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import type { Database } from "../../db.js";
+import type { AdministrationAuditInput } from "../members/administration.js";
 import {
   adminForRequest,
   authenticatedMemberForRequest,
@@ -25,7 +26,14 @@ function sendError(reply: FastifyReply, error: unknown) {
 
 export function registerModerationRoutes(
   app: FastifyInstance,
-  options: { moderation: Moderation; db: Database; now: () => Date },
+  options: {
+    moderation: Moderation;
+    db: Database;
+    now: () => Date;
+    recordAdministrationAudit: (
+      input: AdministrationAuditInput,
+    ) => Promise<unknown>;
+  },
 ) {
   const { moderation, db, now } = options;
 
@@ -246,9 +254,16 @@ export function registerModerationRoutes(
   );
 
   app.get("/api/admin/moderation-access-audit", async (request, reply) => {
-    const actor = await superAdminForRequest(request, db, now());
+    const viewedAt = now();
+    const actor = await superAdminForRequest(request, db, viewedAt);
     if (!actor) return reply.code(403).send({ code: "FORBIDDEN" });
-    return moderation.accessAudits();
+    const audits = await moderation.accessAudits();
+    await options.recordAdministrationAudit({
+      actorMemberId: actor.id,
+      action: "moderation_audit_viewed",
+      createdAt: viewedAt,
+    });
+    return audits;
   });
 
   app.post<{

@@ -50,6 +50,137 @@ interface DeletedMember {
   deletedAt: string;
 }
 
+interface Administrator {
+  id: string;
+  email: string;
+  role: "admin";
+  active: boolean;
+  createdAt: string;
+}
+
+interface DashboardMetrics {
+  members: {
+    registered: number;
+    profileCompleted: number;
+    structuredCriteriaCompleted: number;
+    portraitStarted: number;
+    portraitComplete: number;
+    submitted: number;
+    calibrationPassed: number;
+    published: number;
+    recommendationEligible: number;
+  };
+  recommendations: { requested: number; generated: number; noCandidate: number };
+  contacts: {
+    requested: number;
+    accepted: number;
+    current: number;
+    ended: number;
+    confirmed: number;
+    sevenDayResponses: number;
+  };
+  quality: {
+    calibrationPassRate: number;
+    criticalFabrications: number;
+    distortionFeedback: number;
+  };
+}
+
+interface AgentObservability {
+  summary: {
+    inputTokens: number;
+    outputTokens: number;
+    estimatedCostCny: number;
+    averageLatencyMs: number;
+    failures: number;
+    modelSwitches: number;
+  };
+  groups: Array<{
+    date: string;
+    role: string;
+    provider: string;
+    model: string;
+    inputTokens: number;
+    outputTokens: number;
+    estimatedCostCny: number;
+    averageLatencyMs: number;
+    failures: number;
+    modelSwitches: number;
+  }>;
+  disclaimer: string;
+}
+
+interface AgentRuntime {
+  pricing: {
+    effectiveDate: string;
+    inputCostCnyPerMillionTokens: number;
+    outputCostCnyPerMillionTokens: number;
+  } | null;
+  definitions: Array<{
+    role: string;
+    task: string;
+    definitionVersion: string;
+    promptVersion: string;
+    schemaVersion: string | null;
+    primaryModel: string | null;
+    backupModel: string | null;
+    systemPrompt: string;
+    promptFile?: string;
+  }>;
+  updatePolicy: string;
+}
+
+interface AdminMember {
+  id: string;
+  email: string;
+  nickname: string | null;
+  createdAt: string;
+  suspendedUntil: string | null;
+  deletedAt: string | null;
+}
+
+interface MemberDetail {
+  member: AdminMember;
+  portrait: { matchProfile: unknown; personaContext: string } | null;
+  evidence: Array<{ id: string; content: string }>;
+  conversations: Array<{
+    id: string;
+    type: string;
+    messages: Array<{ id: string; content: string }>;
+  }>;
+  pairEvaluations: Array<{ id: string; result: unknown }>;
+}
+
+interface FailedAgentJob {
+  id: string;
+  role: string;
+  task: string;
+  memberId: string;
+  assignedAdminId: string | null;
+  retryCount: number;
+  error: string | null;
+  failedAt: string | null;
+}
+
+interface AgentRun {
+  id: string;
+  role: string;
+  provider: string;
+  actualModel: string;
+  inputTokens: number;
+  outputTokens: number;
+  latencyMs: number;
+  error: string | null;
+}
+
+interface AdminAudit {
+  id: string;
+  action: string;
+  actorMemberId: string;
+  targetMemberId: string | null;
+  createdAt: string;
+}
+
 const router = useRouter();
 const adminRole = ref<"admin" | "super_admin">();
 const email = ref("");
@@ -68,6 +199,17 @@ const moderationMetrics = ref({ distortionFeedbackCount: 0, openCaseCount: 0 });
 const selectedModerationCase = ref<ModerationCaseDetail>();
 const deletedMembers = ref<DeletedMember[]>([]);
 const memberLifecycleSuccess = ref("");
+const administratorEmail = ref("");
+const administrators = ref<Administrator[]>([]);
+const dashboard = ref<DashboardMetrics>();
+const observability = ref<AgentObservability>();
+const runtime = ref<AgentRuntime>();
+const members = ref<AdminMember[]>([]);
+const selectedMember = ref<MemberDetail>();
+const failedAgentJobs = ref<FailedAgentJob[]>([]);
+const agentRuns = ref<AgentRun[]>([]);
+const audits = ref<AdminAudit[]>([]);
+const administrationSuccess = ref("");
 
 const statusText: Record<Invitation["status"], string> = {
   active: "有效",
@@ -128,6 +270,64 @@ async function loadModeration() {
   };
 }
 
+async function loadAgentOperations() {
+  const [jobsResponse, runsResponse] = await Promise.all([
+    fetch("/api/admin/agent-jobs/failed"),
+    fetch("/api/admin/agent-runs"),
+  ]);
+  if (!jobsResponse.ok || !runsResponse.ok) throw new Error("无法读取 Agent 任务");
+  const jobs = await jobsResponse.json();
+  const runs = await runsResponse.json();
+  failedAgentJobs.value = Array.isArray(jobs.jobs) ? jobs.jobs : [];
+  agentRuns.value = Array.isArray(runs.runs) ? runs.runs : [];
+}
+
+async function loadAdministration() {
+  const [
+    administratorsResponse,
+    dashboardResponse,
+    observabilityResponse,
+    runtimeResponse,
+    membersResponse,
+    auditsResponse,
+  ] = await Promise.all([
+    fetch("/api/admin/administrators"),
+    fetch("/api/admin/dashboard"),
+    fetch("/api/admin/agent-observability"),
+    fetch("/api/admin/agent-runtime"),
+    fetch("/api/admin/members"),
+    fetch("/api/admin/audits"),
+  ]);
+  if (
+    !administratorsResponse.ok ||
+    !dashboardResponse.ok ||
+    !observabilityResponse.ok ||
+    !runtimeResponse.ok ||
+    !membersResponse.ok ||
+    !auditsResponse.ok
+  ) {
+    throw new Error("无法读取管理观测数据");
+  }
+  const administratorData = await administratorsResponse.json();
+  const dashboardData = await dashboardResponse.json();
+  const observabilityData = await observabilityResponse.json();
+  const runtimeData = await runtimeResponse.json();
+  const memberData = await membersResponse.json();
+  const auditData = await auditsResponse.json();
+  administrators.value = Array.isArray(administratorData.administrators)
+    ? administratorData.administrators
+    : [];
+  if (dashboardData.members && dashboardData.recommendations) {
+    dashboard.value = dashboardData;
+  }
+  if (observabilityData.summary && Array.isArray(observabilityData.groups)) {
+    observability.value = observabilityData;
+  }
+  if (Array.isArray(runtimeData.definitions)) runtime.value = runtimeData;
+  members.value = Array.isArray(memberData.members) ? memberData.members : [];
+  audits.value = Array.isArray(auditData.audits) ? auditData.audits : [];
+}
+
 onMounted(async () => {
   const session = await fetch("/api/session");
   if (!session.ok) {
@@ -160,6 +360,8 @@ onMounted(async () => {
           ]
         : []),
     ]);
+    await loadAgentOperations();
+    if (member.role === "super_admin") await loadAdministration();
   } catch (caught) {
     error.value = caught instanceof Error ? caught.message : "暂时无法读取邀请。";
   }
@@ -174,6 +376,105 @@ async function inspectModerationCase(caseId: string) {
     selectedModerationCase.value = await response.json();
   } catch {
     error.value = "无法读取案件关联证据。";
+  }
+}
+
+async function createAdministrator() {
+  busy.value = true;
+  error.value = "";
+  administrationSuccess.value = "";
+  try {
+    const response = await fetch("/api/admin/administrators", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: administratorEmail.value }),
+    });
+    if (!response.ok) throw new Error("管理员邮箱已被占用或创建失败。");
+    administratorEmail.value = "";
+    administrationSuccess.value = "普通管理员已创建，可使用邮箱验证码首次登录。";
+    const listed = await fetch("/api/admin/administrators");
+    administrators.value = (await listed.json()).administrators;
+  } catch (caught) {
+    error.value = caught instanceof Error ? caught.message : "管理员创建失败。";
+  } finally {
+    busy.value = false;
+  }
+}
+
+async function setAdministratorActive(administrator: Administrator, active: boolean) {
+  busy.value = true;
+  error.value = "";
+  administrationSuccess.value = "";
+  try {
+    const response = await fetch(`/api/admin/administrators/${administrator.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ active }),
+    });
+    if (!response.ok) throw new Error();
+    Object.assign(administrator, await response.json());
+    administrationSuccess.value = active
+      ? "管理员已恢复。"
+      : "管理员已停用，现有会话已失效。";
+  } catch {
+    error.value = "管理员状态更新失败。";
+  } finally {
+    busy.value = false;
+  }
+}
+
+async function inspectMember(memberId: string) {
+  error.value = "";
+  selectedMember.value = undefined;
+  try {
+    const response = await fetch(`/api/admin/members/${memberId}`);
+    if (!response.ok) throw new Error();
+    selectedMember.value = await response.json();
+  } catch {
+    error.value = "无法读取成员敏感详情。";
+  }
+}
+
+async function retryAgentJob(jobId: string) {
+  busy.value = true;
+  error.value = "";
+  try {
+    const response = await fetch(`/api/admin/agent-jobs/${jobId}/retry`, {
+      method: "POST",
+    });
+    if (!response.ok) throw new Error();
+    failedAgentJobs.value = failedAgentJobs.value.filter((job) => job.id !== jobId);
+  } catch {
+    error.value = "任务不可重试或权限已变化。";
+  } finally {
+    busy.value = false;
+  }
+}
+
+async function assignAgentJob(job: FailedAgentJob) {
+  const suggested = administrators.value.find((administrator) => administrator.active);
+  const adminId = window.prompt(
+    `请输入普通管理员 ID。可用：${administrators.value
+      .filter((administrator) => administrator.active)
+      .map((administrator) => `${administrator.email}=${administrator.id}`)
+      .join("；")}`,
+    suggested?.id,
+  )?.trim();
+  if (!adminId) return;
+  busy.value = true;
+  error.value = "";
+  try {
+    const response = await fetch(`/api/admin/agent-jobs/${job.id}/assignment`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ adminId }),
+    });
+    if (!response.ok) throw new Error();
+    job.assignedAdminId = adminId;
+  } catch {
+    error.value = "任务分配失败，请选择在职管理员。";
+  } finally {
+    busy.value = false;
   }
 }
 
@@ -346,6 +647,14 @@ function formatDate(value: string) {
     minute: "2-digit",
   }).format(new Date(value));
 }
+
+function formatCost(value: number) {
+  return new Intl.NumberFormat("zh-CN", {
+    style: "currency",
+    currency: "CNY",
+    minimumFractionDigits: 4,
+  }).format(value);
+}
 </script>
 
 <template>
@@ -377,6 +686,52 @@ function formatDate(value: string) {
         </div>
         <button type="submit" :disabled="busy">签发邀请</button>
       </form>
+    </section>
+
+    <section
+      v-if="adminRole === 'super_admin'"
+      class="admin-panel moderation-admin-panel"
+    >
+      <div class="list-heading">
+        <div>
+          <h2>普通管理员</h2>
+          <p>创建后使用邮箱验证码完成首次登录；停用会立即清除现有会话。</p>
+        </div>
+        <span>{{ administrators.length }} 人</span>
+      </div>
+      <form class="invite-form administrator-form" @submit.prevent="createAdministrator">
+        <div>
+          <label for="administrator-email">管理员邮箱</label>
+          <input
+            id="administrator-email"
+            v-model="administratorEmail"
+            type="email"
+            autocomplete="email"
+            required
+          />
+        </div>
+        <button type="submit" :disabled="busy">创建普通管理员</button>
+      </form>
+      <p v-if="administrationSuccess" class="save-success" role="status">
+        {{ administrationSuccess }}
+      </p>
+      <div class="moderation-case-list administrator-list">
+        <article v-for="administrator in administrators" :key="administrator.id">
+          <div>
+            <strong>{{ administrator.email }}</strong>
+            <p>{{ administrator.active ? '在职' : '已停用' }}</p>
+          </div>
+          <button
+            type="button"
+            class="invitation-action"
+            :disabled="busy"
+            @click="setAdministratorActive(administrator, !administrator.active)"
+          >
+            {{ administrator.active ? '停用' : '恢复' }}
+          </button>
+        </article>
+        <p v-if="!administrators.length" class="empty-state">暂无普通管理员。</p>
+      </div>
     </section>
 
     <section v-if="adminRole === 'super_admin'" class="admin-panel matching-settings-panel">
@@ -467,6 +822,191 @@ function formatDate(value: string) {
         <span>待恢复 {{ relationshipMetrics.recoveryPending }}</span>
         <span>已恢复推荐 {{ relationshipMetrics.resumed }}</span>
       </div>
+    </section>
+
+    <section
+      v-if="adminRole === 'super_admin' && dashboard"
+      class="admin-panel relationship-metrics"
+    >
+      <div class="list-heading">
+        <div>
+          <h2>MVP 漏斗与质量</h2>
+          <p>从注册、画像和发布追踪到推荐、请求、联系与质量反馈。</p>
+        </div>
+      </div>
+      <div class="relationship-metric-list">
+        <span>注册 {{ dashboard.members.registered }}</span>
+        <span>基础档案完整 {{ dashboard.members.profileCompleted }}</span>
+        <span>结构化择偶条件完整 {{ dashboard.members.structuredCriteriaCompleted }}</span>
+        <span>开始画像 {{ dashboard.members.portraitStarted }}</span>
+        <span>画像完整 {{ dashboard.members.portraitComplete }}</span>
+        <span>已提交 {{ dashboard.members.submitted }}</span>
+        <span>校准通过 {{ dashboard.members.calibrationPassed }}</span>
+        <span>已发布 {{ dashboard.members.published }}</span>
+        <span>推荐资格 {{ dashboard.members.recommendationEligible }}</span>
+        <span>请求推荐 {{ dashboard.recommendations.requested }}</span>
+        <span>产生推荐 {{ dashboard.recommendations.generated }}</span>
+        <span>无候选 {{ dashboard.recommendations.noCandidate }}</span>
+        <span>联系请求 {{ dashboard.contacts.requested }}</span>
+        <span>已接受 {{ dashboard.contacts.accepted }}</span>
+        <span>当前联系 {{ dashboard.contacts.current }}</span>
+        <span>结束接触 {{ dashboard.contacts.ended }}</span>
+        <span>确认关系 {{ dashboard.contacts.confirmed }}</span>
+      </div>
+      <div class="relationship-rate">
+        <strong>{{ dashboard.quality.calibrationPassRate }}%</strong>
+        <span>分身校准通过率</span>
+      </div>
+      <div class="relationship-metric-list">
+        <span>关键事实捏造 {{ dashboard.quality.criticalFabrications }}</span>
+        <span>候选失真反馈 {{ dashboard.quality.distortionFeedback }}</span>
+      </div>
+    </section>
+
+    <section
+      v-if="adminRole === 'super_admin' && observability"
+      class="admin-panel moderation-admin-panel"
+    >
+      <div class="list-heading">
+        <div>
+          <h2>Agent 运行与 Token 成本</h2>
+          <p>{{ observability.disclaimer }}</p>
+        </div>
+      </div>
+      <div class="relationship-metric-list">
+        <span>输入 Token {{ observability.summary.inputTokens }}</span>
+        <span>输出 Token {{ observability.summary.outputTokens }}</span>
+        <span>估算成本 {{ formatCost(observability.summary.estimatedCostCny) }}</span>
+        <span>平均延迟 {{ observability.summary.averageLatencyMs }}ms</span>
+        <span>失败 {{ observability.summary.failures }}</span>
+        <span>备用模型切换 {{ observability.summary.modelSwitches }}</span>
+      </div>
+      <div class="moderation-case-list">
+        <article v-for="group in observability.groups" :key="`${group.date}:${group.role}:${group.provider}:${group.model}`">
+          <div>
+            <strong>{{ group.date }} · {{ group.role }}</strong>
+            <p>{{ group.provider }} / {{ group.model }}</p>
+            <p>
+              输入 {{ group.inputTokens }} · 输出 {{ group.outputTokens }} ·
+              {{ formatCost(group.estimatedCostCny) }} · {{ group.averageLatencyMs }}ms
+            </p>
+          </div>
+          <span>失败 {{ group.failures }} · 切换 {{ group.modelSwitches }}</span>
+        </article>
+        <p v-if="!observability.groups.length" class="empty-state">暂无 Agent 运行记录。</p>
+      </div>
+    </section>
+
+    <section
+      v-if="adminRole === 'super_admin' && runtime"
+      class="admin-panel moderation-admin-panel"
+    >
+      <div class="list-heading">
+        <div>
+          <h2>只读 Agent 配置</h2>
+          <p>{{ runtime.updatePolicy }}</p>
+          <p v-if="runtime.pricing">
+            单价生效日 {{ runtime.pricing.effectiveDate }} · 输入
+            ¥{{ runtime.pricing.inputCostCnyPerMillionTokens }}/百万 Token · 输出
+            ¥{{ runtime.pricing.outputCostCnyPerMillionTokens }}/百万 Token
+          </p>
+        </div>
+      </div>
+      <details v-for="definition in runtime.definitions" :key="definition.role">
+        <summary>{{ definition.role }} · {{ definition.definitionVersion }}</summary>
+        <p>
+          Prompt {{ definition.promptVersion }} · Schema
+          {{ definition.schemaVersion || '无' }} · 模型
+          {{ definition.primaryModel || '未配置' }}
+        </p>
+        <pre>{{ definition.systemPrompt }}</pre>
+      </details>
+    </section>
+
+    <section class="admin-panel moderation-admin-panel">
+      <div class="list-heading">
+        <div>
+          <h2>失败 Agent 任务</h2>
+          <p>普通管理员仅看到获授权任务；重试不会修改原始输入或输出。</p>
+        </div>
+        <span>{{ failedAgentJobs.length }} 个</span>
+      </div>
+      <div class="moderation-case-list">
+        <article v-for="job in failedAgentJobs" :key="job.id">
+          <div>
+            <strong>{{ job.role }} · {{ job.task }}</strong>
+            <p>{{ job.error || '未知错误' }} · 已自动尝试 {{ job.retryCount }} 次</p>
+          </div>
+          <div class="invitation-actions">
+            <button
+              v-if="adminRole === 'super_admin'"
+              type="button"
+              :disabled="busy"
+              @click="assignAgentJob(job)"
+            >
+              {{ job.assignedAdminId ? '重新分配' : '分配' }}
+            </button>
+            <button type="button" :disabled="busy" @click="retryAgentJob(job.id)">
+              重试
+            </button>
+          </div>
+        </article>
+        <p v-if="!failedAgentJobs.length" class="empty-state">暂无获授权失败任务。</p>
+      </div>
+      <details>
+        <summary>查看获授权运行明细（{{ agentRuns.length }} 条）</summary>
+        <p v-for="run in agentRuns" :key="run.id">
+          {{ run.role }} · {{ run.provider }}/{{ run.actualModel }} · 输入
+          {{ run.inputTokens }} · 输出 {{ run.outputTokens }} · {{ run.latencyMs }}ms
+          <span v-if="run.error"> · {{ run.error }}</span>
+        </p>
+      </details>
+    </section>
+
+    <section
+      v-if="adminRole === 'super_admin'"
+      class="admin-panel moderation-admin-panel"
+    >
+      <div class="list-heading">
+        <div>
+          <h2>成员敏感详情</h2>
+          <p>仅按成员进入匹配档案、特征证据、配对评估结果和聊天；不提供全站聊天信息流。</p>
+        </div>
+        <span>{{ members.length }} 人</span>
+      </div>
+      <div class="moderation-case-list">
+        <article v-for="member in members" :key="member.id">
+          <div>
+            <strong>{{ member.nickname || '未填写昵称' }}</strong>
+            <p>{{ member.email }}</p>
+          </div>
+          <button type="button" class="quiet-action" @click="inspectMember(member.id)">
+            查看敏感详情
+          </button>
+        </article>
+      </div>
+      <article v-if="selectedMember" class="moderation-case-detail member-sensitive-detail">
+        <h3>{{ selectedMember.member.nickname || selectedMember.member.email }}</h3>
+        <p>分身上下文：{{ selectedMember.portrait?.personaContext || '暂无' }}</p>
+        <details v-if="selectedMember.portrait">
+          <summary>匹配档案与特征证据</summary>
+          <pre>{{ JSON.stringify(selectedMember.portrait.matchProfile, null, 2) }}</pre>
+          <p v-for="message in selectedMember.evidence" :key="message.id">
+            {{ message.content }}
+          </p>
+        </details>
+        <details>
+          <summary>配对评估结果与方向 / 互惠适合度（{{ selectedMember.pairEvaluations.length }}）</summary>
+          <pre v-for="evaluation in selectedMember.pairEvaluations" :key="evaluation.id">{{ JSON.stringify(evaluation.result, null, 2) }}</pre>
+        </details>
+        <details>
+          <summary>该成员关联聊天（{{ selectedMember.conversations.length }}）</summary>
+          <div v-for="conversation in selectedMember.conversations" :key="conversation.id">
+            <strong>{{ conversation.type }}</strong>
+            <p v-for="message in conversation.messages" :key="message.id">{{ message.content }}</p>
+          </div>
+        </details>
+      </article>
     </section>
 
     <section
@@ -590,6 +1130,32 @@ function formatDate(value: string) {
           </button>
         </div>
       </article>
+    </section>
+
+    <section
+      v-if="adminRole === 'super_admin'"
+      class="admin-panel moderation-admin-panel"
+    >
+      <div class="list-heading">
+        <div>
+          <h2>敏感操作审计</h2>
+          <p>汇总超级管理员敏感读取、人员角色变更与全站配置修改。</p>
+        </div>
+        <span>{{ audits.length }} 条</span>
+      </div>
+      <div class="moderation-case-list audit-list">
+        <article v-for="audit in audits" :key="audit.id">
+          <div>
+            <strong>{{ audit.action }}</strong>
+            <p>
+              操作者 {{ audit.actorMemberId }}
+              <span v-if="audit.targetMemberId"> · 对象 {{ audit.targetMemberId }}</span>
+            </p>
+          </div>
+          <span>{{ formatDate(audit.createdAt) }}</span>
+        </article>
+        <p v-if="!audits.length" class="empty-state">暂无审计记录。</p>
+      </div>
     </section>
 
     <section
