@@ -123,6 +123,7 @@ describe("issue 17 no-photo MVP acceptance HTTP seam", () => {
       202,
     );
     await consumeAgentEvents(dynamic.json().eventsUrl, cookie);
+    return dynamic.json().quotaRemaining as number;
   }
 
   async function publishPortrait(cookie: string) {
@@ -270,6 +271,7 @@ describe("issue 17 no-photo MVP acceptance HTTP seam", () => {
       },
     ] as const;
     const cookies = new Map<string, string>();
+    const ownAgentQuotaUsed = new Map<string, number>();
     for (const member of members) {
       await api("POST", "/api/admin/invitations", ownerCookie, {
         email: member.email,
@@ -298,12 +300,47 @@ describe("issue 17 no-photo MVP acceptance HTTP seam", () => {
           occupationMode: null,
         },
       });
-      await completeInterview(cookie);
+      ownAgentQuotaUsed.set(member.email, 100 - (await completeInterview(cookie)));
       await publishPortrait(cookie);
     }
 
     const linxiaCookie = cookies.get("linxia@onlylove.test")!;
     const beichuanCookie = cookies.get("beichuan@onlylove.test")!;
+    await api("PUT", "/api/admin/agent-quota-settings", ownerCookie, {
+      ownAgentDailyLimit: ownAgentQuotaUsed.get("linxia@onlylove.test")! + 1,
+      candidateTwinDailyLimit: 50,
+    });
+    const ownAgentRace = await Promise.all([
+      app.inject({
+        method: "POST",
+        url: "/api/member/interview/messages",
+        headers: { cookie: linxiaCookie },
+        payload: {
+          clientMessageId: randomUUID(),
+          content: "建立联系前再补充一个判断。",
+        },
+      }),
+      app.inject({
+        method: "POST",
+        url: "/api/member/twin/messages",
+        headers: { cookie: linxiaCookie },
+        payload: {
+          clientMessageId: randomUUID(),
+          content: "同时验证自己的分身额度。",
+        },
+      }),
+    ]);
+    expect(ownAgentRace.map(({ statusCode }) => statusCode).sort()).toEqual([
+      202, 429,
+    ]);
+    const acceptedOwnAgentMessage = ownAgentRace.find(
+      ({ statusCode }) => statusCode === 202,
+    )!;
+    expect(acceptedOwnAgentMessage.json().quotaRemaining).toBe(0);
+    await consumeAgentEvents(
+      acceptedOwnAgentMessage.json().eventsUrl,
+      linxiaCookie,
+    );
     await api("POST", "/api/member/recommendations", linxiaCookie, undefined, 202);
     const matchingWorker = await createPortraitWorker({
       databaseUrl,
@@ -369,6 +406,32 @@ describe("issue 17 no-photo MVP acceptance HTTP seam", () => {
       linxiaCookie,
     );
     expect(currentForLinxia.json().currentConnection.id).toBe(connectionId);
+    await api("PUT", "/api/member/profile", linxiaCookie, {
+      profile: {
+        nickname: members[0].nickname,
+        birthDate: members[0].birthDate,
+        gender: members[0].gender,
+        heightCm: members[0].heightCm,
+        city: "上海",
+        occupation: members[0].occupation,
+      },
+      matchCriteria: {
+        desiredGender: "male",
+        ageMinimum: 25,
+        ageMaximum: 45,
+        ageMode: "required",
+        heightMinimumCm: 150,
+        heightMaximumCm: 195,
+        heightMode: "required",
+        acceptableCities: ["北京"],
+        occupationRequirement: null,
+        occupationMode: null,
+      },
+    });
+    expect(
+      (await api("GET", "/api/member/contact-requests", linxiaCookie)).json()
+        .currentConnection.id,
+    ).toBe(connectionId);
     const conversationId = currentForLinxia.json().currentConnection.conversation
       .id as string;
     const humanMessage = await api(

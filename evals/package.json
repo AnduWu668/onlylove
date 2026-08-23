@@ -9,7 +9,7 @@
     "benchmark:twin:ark": "tsx benchmark.ts --twin",
     "benchmark:matching": "tsx benchmark.ts --matching --deterministic",
     "benchmark:matching:ark": "tsx benchmark.ts --matching",
-    "benchmark:context:ark": "for budget in 16384 32768 65536; do AGENT_INPUT_TOKEN_BUDGET=$budget tsx benchmark.ts --context || exit; done",
+    "benchmark:context:ark": "tsx benchmark.ts --context",
     "test": "tsx check.ts && tsx benchmark.ts --matching --deterministic",
     "typecheck": "tsc -p tsconfig.json"
   },

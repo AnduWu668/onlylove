@@ -730,17 +730,35 @@ describe("Candidate recommendations HTTP seam", () => {
     ).toBe(401);
   });
 
-  it("keeps candidate twin quota across sessions and refunds a final failure", async () => {
-    const { memberCookie, memberEmail } =
+  it("deducts candidate twin quota atomically across sessions and refunds a final failure", async () => {
+    const { adminCookie, memberCookie, memberEmail } =
       await createEligiblePair("candidate-twin-quota");
-    const recommendation = (await generate(memberCookie)).json().candidates[0];
-    const opened = await app.inject({
-      method: "POST",
-      url: `/api/member/recommendations/${recommendation.id}/twin-conversation`,
-      headers: { cookie: memberCookie },
-      payload: { consentToOwnerVisibility: true },
+    const secondCandidateEmail = "candidate-twin-quota-second@onlylove.test";
+    await createMember(adminCookie, {
+      email: secondCandidateEmail,
+      nickname: "第二候选",
+      birthDate: "1991-03-02",
+      gender: "male",
+      heightCm: 180,
+      city: "上海",
+      occupation: "教师",
+      acceptableCities: ["上海"],
     });
-    const conversationId = opened.json().conversationId as string;
+    await publishEligiblePortrait(secondCandidateEmail);
+    const recommendations = (await generate(memberCookie)).json().candidates;
+    expect(recommendations).toHaveLength(2);
+    const conversationIds = await Promise.all(
+      recommendations.map(async ({ id }: { id: string }) => {
+        const opened = await app.inject({
+          method: "POST",
+          url: `/api/member/recommendations/${id}/twin-conversation`,
+          headers: { cookie: memberCookie },
+          payload: { consentToOwnerVisibility: true },
+        });
+        return opened.json().conversationId as string;
+      }),
+    );
+    const conversationId = conversationIds[0]!;
 
     await app.close();
     app = await createApp({
@@ -764,7 +782,48 @@ describe("Candidate recommendations HTTP seam", () => {
     await pool.query(
       `INSERT INTO candidate_twin_daily_quotas
         (member_id, quota_date, used, updated_at)
-       VALUES ($1, '2026-08-22', 50, $2)`,
+       VALUES ($1, '2026-08-22', 49, $2)`,
+      [memberId, currentTime],
+    );
+
+    const concurrent = await Promise.all(
+      conversationIds.map((id) =>
+        app.inject({
+          method: "POST",
+          url: `/api/member/candidate-twin-conversations/${id}/messages`,
+          headers: { cookie: memberCookie },
+          payload: { clientMessageId: randomUUID(), content: "并发的最后一条。" },
+        }),
+      ),
+    );
+    expect(concurrent.map(({ statusCode }) => statusCode).sort()).toEqual([
+      202, 429,
+    ]);
+    const concurrentAccepted = concurrent.find(
+      ({ statusCode }) => statusCode === 202,
+    )!;
+    expect(concurrentAccepted.json().quotaRemaining).toBe(0);
+    await app.inject({
+      method: "GET",
+      url: concurrentAccepted.json().eventsUrl,
+      headers: { cookie: memberCookie },
+    });
+    const afterConcurrentRefund = await app.inject({
+      method: "POST",
+      url: `/api/member/candidate-twin-conversations/${conversationId}/messages`,
+      headers: { cookie: memberCookie },
+      payload: { clientMessageId: randomUUID(), content: "退款后仍可再发一条。" },
+    });
+    expect(afterConcurrentRefund.statusCode).toBe(202);
+    expect(afterConcurrentRefund.json().quotaRemaining).toBe(0);
+    await app.inject({
+      method: "GET",
+      url: afterConcurrentRefund.json().eventsUrl,
+      headers: { cookie: memberCookie },
+    });
+    await pool.query(
+      `UPDATE candidate_twin_daily_quotas SET used = 50, updated_at = $2
+        WHERE member_id = $1 AND quota_date = '2026-08-22'`,
       [memberId, currentTime],
     );
 
@@ -1174,6 +1233,21 @@ describe("Candidate recommendations HTTP seam", () => {
     const response = await generate(memberCookie);
     expect(response.statusCode).toBe(200);
     expect(response.json().candidates).toEqual([]);
+  });
+
+  it("withholds an eligible evaluated pair below the configured reciprocal threshold", async () => {
+    const { adminCookie, memberCookie } =
+      await createEligiblePair("below-threshold");
+    const updated = await app.inject({
+      method: "PUT",
+      url: "/api/admin/matching-settings",
+      headers: { cookie: adminCookie },
+      payload: { candidateCapacity: 5, minimumReciprocalScore: 81 },
+    });
+    expect(updated.statusCode).toBe(200);
+
+    const generated = await generate(memberCookie);
+    expect(generated.json().candidates).toEqual([]);
   });
 
   it("withholds an uncertain pair and asks only the missing-information member", async () => {

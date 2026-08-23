@@ -6,18 +6,18 @@ Issue #17 的默认验收入口是：
 npm run acceptance
 ```
 
-该命令只使用确定性假模型，启动或复用本地 PostgreSQL，重建 `onlylove_test`，然后依次运行类型检查、全部自动测试、确定性配对 benchmark 和构建。最高层测试 `server/test/mvp-acceptance.http.test.ts` 通过公开 HTTP 接口串起超级管理员、普通管理员和两名成员，覆盖邀请注册、资料、固定与动态访谈、画像提交、十题校准、发布、推荐、双向分身聊天、联系、真人聊天、七日继续、确认关系、失真反馈、举报、处罚、复核、屏蔽和逻辑注销。
+该命令只使用确定性假模型，启动或复用本地 PostgreSQL，确保 `onlylove_test` 存在并重置测试数据，然后依次运行类型检查、全部自动测试、确定性配对 benchmark 和构建。最高层测试 `server/test/mvp-acceptance.http.test.ts` 通过公开 HTTP 接口串起超级管理员、普通管理员和两名成员，覆盖邀请注册、资料、固定题与引导完善、画像提交、十题校准、发布、推荐、双方分身会话、联系、真人聊天、七日继续、确认关系、失真反馈、举报、审核处置、复核、屏蔽和逻辑注销。
 
 ## 验收映射
 
 | Issue #17 验收行为 | 检查入口 |
 | --- | --- |
 | 超级管理员邀请、两名成员注册、资料和择偶条件 | `mvp-acceptance.http.test.ts` |
-| 固定访谈、动态草稿、提交、十题校准、发布 | `mvp-acceptance.http.test.ts`、`portrait-lifecycle.http.test.ts` |
+| 固定题、引导完善、画像草稿、提交、十题校准、发布 | `mvp-acceptance.http.test.ts`、`portrait-lifecycle.http.test.ts` |
 | 结构化过滤、配对评估、阈值和安全候选卡 | `mvp-acceptance.http.test.ts`、`recommendations.http.test.ts`、确定性配对 benchmark |
-| A/B 双向分身聊天、请求、接受和唯一当前联系 | `mvp-acceptance.http.test.ts`、`connections.http.test.ts` |
+| 双方分身会话、请求、接受和唯一当前联系 | `mvp-acceptance.http.test.ts`、`connections.http.test.ts` |
 | 真人聊天、七日继续、结束复盘或确认关系 | `mvp-acceptance.http.test.ts`、`connections.http.test.ts` |
-| 失真反馈、屏蔽、举报、处罚、复核、注销 | `mvp-acceptance.http.test.ts`、`moderation.http.test.ts`、`connections.http.test.ts` |
+| 失真反馈、屏蔽、举报、审核处置、复核、注销 | `mvp-acceptance.http.test.ts`、`moderation.http.test.ts`、`connections.http.test.ts` |
 | 管理员权限、任务、配置、审计、Token、成本和指标 | `mvp-acceptance.http.test.ts`、`admin-dashboard.http.test.ts`、`agent-engine.test.ts` |
 | 额度原子扣减、唯一联系、版本固定、数据隔离、即时失效 | `interview.http.test.ts`、`connections.http.test.ts`、`recommendations.http.test.ts`、`moderation.http.test.ts` |
 | 移动端和桌面浏览器 | 下方人工浏览器步骤 |
@@ -50,12 +50,12 @@ npm run e2e:dashboard
 npm run benchmark:context:ark -w evals
 ```
 
-命令用相同的长访谈和长分身会话依次运行三个预算。每个 `RESULT context/...` 都输出代号召回质量、实际输入/输出 Token、总延迟、首 Token 延迟、估算人民币成本和实际模型 ID。若 16K 质量不低于 32K，正式环境选择 16K；只有 64K 明显提高核心质量才选择 64K，否则保持当前 32K 默认值。决定后把 `AGENT_INPUT_TOKEN_BUDGET` 写入部署环境，并把原始结果随模型/Prompt 变更记录保存。
+命令用相同的长访谈和长分身会话依次运行三个预算。每个 `RESULT context/...` 都输出代号召回质量、实际输入/输出 Token、总延迟、首 Token 延迟、估算人民币成本和实际模型 ID；最后的 `context comparison` 对比三档结果，并按分角色召回与实测成本给出 `syntheticSuggestionInputTokenBudget`。该字段只是合成召回实验建议：16K 在访谈和分身均不退化时与 32K 比成本，64K 必须两类均不退化且至少多召回一个代号才会被建议。正式决定还需人工复核矛盾处理、未见场景一致性和关键事实捏造；通过后再把选择写入部署环境的 `AGENT_INPUT_TOKEN_BUDGET`，并保存原始结果。
 
 ## 移动端人工演示
 
 1. 运行 `npm run dev`，在 375×812 的窄屏浏览器打开 `http://localhost:5173`；管理员在 `/admin` 签发两个邀请。
-2. 用两个隔离浏览器会话完成两名成员的注册、资料、访谈、画像、校准、发布、推荐、双向分身聊天、联系、真人聊天与七日状态。所有主要按钮无需横向滚动，底部导航可达。
+2. 用两个隔离浏览器会话完成两名成员的注册、资料、访谈、画像、校准、发布、推荐、双方分身会话、联系、真人聊天与七日状态。所有主要按钮无需横向滚动，底部导航可达。
 3. 在 `/admin` 检查成员漏斗、推荐与关系指标、治理案件、Agent 任务、Token、成本和审计；普通管理员不能进入超级管理员页面。
 4. 在 1280px 以上桌面宽度重复打开成员页和管理页，确认布局可用；候选卡只显示昵称占位头像，不出现隐藏画像、分数或照片入口。
 
