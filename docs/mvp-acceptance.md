@@ -50,7 +50,7 @@ npm run e2e:dashboard
 npm run benchmark:context:ark -w evals
 ```
 
-命令用相同的长访谈和长分身会话依次运行三个预算。每个 `RESULT context/...` 都输出代号召回质量、实际输入/输出 Token、总延迟、首 Token 延迟、估算人民币成本和实际模型 ID；最后的 `context comparison` 对比三档结果，并按分角色召回与实测成本给出 `syntheticSuggestionInputTokenBudget`。该字段只是合成召回实验建议：16K 在访谈和分身均不退化时与 32K 比成本，64K 必须两类均不退化且至少多召回一个代号才会被建议。正式决定还需人工复核矛盾处理、未见场景一致性和关键事实捏造；通过后再把选择写入部署环境的 `AGENT_INPUT_TOKEN_BUDGET`，并保存原始结果。
+命令用相同的长访谈和长分身会话依次运行三个预算。每个 `RESULT context/...` 都输出代号召回质量、包含重试的实际输入/输出 Token、总延迟、首 Token 延迟、估算人民币成本和最终实际模型 ID；最后的 `context comparison` 对比三档结果，并按分角色召回与实测成本给出 `syntheticSuggestionInputTokenBudget`。该字段只是合成召回实验建议：先在访谈和分身均不低于 32K 的低预算配置中选择成本最低者；64K 必须相对该配置两类均不退化且至少多召回一个代号才会被建议。正式决定还需人工复核矛盾处理、未见场景一致性和关键事实捏造；通过后再把选择写入部署环境的 `AGENT_INPUT_TOKEN_BUDGET`，并保存原始结果。
 
 ## 移动端人工演示
 

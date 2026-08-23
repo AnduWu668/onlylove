@@ -290,6 +290,42 @@ function longHistory(prefix: string, markers: string[]) {
   }));
 }
 
+type ContextAttemptMetricSource = Pick<
+  AgentAttemptResult,
+  | "inputTokens"
+  | "outputTokens"
+  | "latencyMs"
+  | "firstTokenLatencyMs"
+  | "estimatedCostMicroCny"
+  | "actualModel"
+>;
+
+function contextAttemptMetrics(attempts: ContextAttemptMetricSource[]) {
+  const final = attempts.at(-1);
+  assert(final, "context benchmark requires at least one model attempt");
+  const sum = (
+    field:
+      | "inputTokens"
+      | "outputTokens"
+      | "latencyMs"
+      | "estimatedCostMicroCny",
+  ) => attempts.reduce((total, attempt) => total + attempt[field], 0);
+  const priorLatencyMs = attempts
+    .slice(0, -1)
+    .reduce((total, attempt) => total + attempt.latencyMs, 0);
+  return {
+    inputTokens: sum("inputTokens"),
+    outputTokens: sum("outputTokens"),
+    latencyMs: sum("latencyMs"),
+    firstTokenLatencyMs:
+      final.firstTokenLatencyMs === null
+        ? null
+        : priorLatencyMs + final.firstTokenLatencyMs,
+    estimatedCostMicroCny: sum("estimatedCostMicroCny"),
+    actualModel: final.actualModel,
+  };
+}
+
 function logContextResult(
   role: "interview" | "twin",
   inputBudget: number,
@@ -297,25 +333,20 @@ function logContextResult(
   text: string,
   attempts: AgentAttemptResult[],
 ) {
-  const attempt = attempts.at(-1)!;
+  const metrics = contextAttemptMetrics(attempts);
   // ponytail: exact marker recall is a synthetic ceiling; replace it with reviewed long-context gold cases before changing production models.
   const recalled = markers.filter((marker) => text.includes(marker)).length;
   console.info(
     `RESULT context/${role} budget=${inputBudget} quality=${recalled}/${markers.length} ` +
-      `input_tokens=${attempt.inputTokens} output_tokens=${attempt.outputTokens} ` +
-      `latency_ms=${attempt.latencyMs} first_token_ms=${attempt.firstTokenLatencyMs} ` +
-      `cost_micro_cny=${attempt.estimatedCostMicroCny} model=${attempt.actualModel}`,
+      `input_tokens=${metrics.inputTokens} output_tokens=${metrics.outputTokens} ` +
+      `latency_ms=${metrics.latencyMs} first_token_ms=${metrics.firstTokenLatencyMs} ` +
+      `cost_micro_cny=${metrics.estimatedCostMicroCny} model=${metrics.actualModel}`,
   );
   return {
     role,
     recalled,
     total: markers.length,
-    inputTokens: attempt.inputTokens,
-    outputTokens: attempt.outputTokens,
-    latencyMs: attempt.latencyMs,
-    firstTokenLatencyMs: attempt.firstTokenLatencyMs,
-    estimatedCostMicroCny: attempt.estimatedCostMicroCny,
-    actualModel: attempt.actualModel,
+    ...metrics,
   };
 }
 
@@ -391,21 +422,24 @@ function suggestedContextBudget(scores: ContextBudgetScore[]) {
   const baseline = byBudget.get(32_768)!;
   const long = byBudget.get(65_536)!;
   assert(short && baseline && long);
-  const noRoleDecline = (candidate: ContextBudgetScore) =>
-    candidate.interviewRecall >= baseline.interviewRecall &&
-    candidate.twinRecall >= baseline.twinRecall;
-  const significantLongGain =
-    noRoleDecline(long) &&
-    (long.interviewRecall >= baseline.interviewRecall + 1 ||
-      long.twinRecall >= baseline.twinRecall + 1);
-  if (significantLongGain) return 65_536;
-  return [short, baseline]
-    .filter(noRoleDecline)
+  const noRoleDecline = (
+    candidate: ContextBudgetScore,
+    reference: ContextBudgetScore,
+  ) =>
+    candidate.interviewRecall >= reference.interviewRecall &&
+    candidate.twinRecall >= reference.twinRecall;
+  const cheaper = [short, baseline]
+    .filter((candidate) => noRoleDecline(candidate, baseline))
     .sort(
       (left, right) =>
         left.estimatedCostMicroCny - right.estimatedCostMicroCny ||
         left.inputBudget - right.inputBudget,
-    )[0]!.inputBudget;
+    )[0]!;
+  const significantLongGain =
+    noRoleDecline(long, cheaper) &&
+    (long.interviewRecall >= cheaper.interviewRecall + 1 ||
+      long.twinRecall >= cheaper.twinRecall + 1);
+  return significantLongGain ? 65_536 : cheaper.inputBudget;
 }
 
 const contextScore = (
@@ -414,6 +448,34 @@ const contextScore = (
   twinRecall: number,
   estimatedCostMicroCny: number,
 ) => ({ inputBudget, interviewRecall, twinRecall, estimatedCostMicroCny });
+assert.deepEqual(
+  contextAttemptMetrics([
+    {
+      inputTokens: 10,
+      outputTokens: 0,
+      latencyMs: 7,
+      firstTokenLatencyMs: null,
+      estimatedCostMicroCny: 11,
+      actualModel: "primary-v1",
+    },
+    {
+      inputTokens: 20,
+      outputTokens: 5,
+      latencyMs: 3,
+      firstTokenLatencyMs: 2,
+      estimatedCostMicroCny: 22,
+      actualModel: "backup-v1",
+    },
+  ]),
+  {
+    inputTokens: 30,
+    outputTokens: 5,
+    latencyMs: 10,
+    firstTokenLatencyMs: 9,
+    estimatedCostMicroCny: 33,
+    actualModel: "backup-v1",
+  },
+);
 assert.equal(
   suggestedContextBudget([
     contextScore(16_384, 3, 3, 10),
@@ -437,6 +499,14 @@ assert.equal(
     contextScore(65_536, 3, 4, 30),
   ]),
   65_536,
+);
+assert.equal(
+  suggestedContextBudget([
+    contextScore(16_384, 3, 3, 10),
+    contextScore(32_768, 2, 2, 20),
+    contextScore(65_536, 3, 2, 30),
+  ]),
+  16_384,
 );
 
 async function extractPortrait(
