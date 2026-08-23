@@ -5,6 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { loadRootEnv } from "../src/env.js";
 import { MemoryMailer } from "../src/modules/members/mailer.js";
+import { PORTRAIT_DIMENSIONS } from "../src/modules/portraits/questions.js";
 
 loadRootEnv();
 const configuredTestUrl = process.env.TEST_DATABASE_URL;
@@ -48,6 +49,45 @@ describe("issue 16 administration HTTP seam", () => {
       ],
     );
     return { id, cookie: `onlylove_session=${token}` };
+  }
+
+  async function seedPassingCalibration(portraitVersionId: string) {
+    for (let position = 1; position <= 10; position += 1) {
+      const scenarioId = randomUUID();
+      await pool.query(
+        `INSERT INTO portrait_calibration_scenarios
+          (id, portrait_version_id, position, dimensions, prompt, prediction,
+           created_at)
+         VALUES ($1, $2, $3, ARRAY['values'], '测试场景', '测试回答', $4)`,
+        [scenarioId, portraitVersionId, position, now],
+      );
+      await pool.query(
+        `INSERT INTO portrait_calibration_answers
+          (scenario_id, rating, correction, critical_fabrication, created_at)
+         VALUES ($1, 'like', '', false, $2)`,
+        [scenarioId, now],
+      );
+    }
+  }
+
+  function completeMatchProfile() {
+    return {
+      schemaVersion: "match-profile-v1",
+      dimensions: Object.fromEntries(
+        PORTRAIT_DIMENSIONS.map((dimension) => [
+          dimension,
+          {
+            selfTendency: "愿意协商",
+            partnerExpectation: "愿意协商",
+            hardBoundary: null,
+            importance: 1,
+            confidence: "high",
+            evidenceMessageIds: [],
+            contradictions: [],
+          },
+        ]),
+      ),
+    };
   }
 
   beforeAll(async () => {
@@ -371,17 +411,90 @@ describe("issue 16 administration HTTP seam", () => {
     );
   });
 
+  it("retains completed lifecycle stages after logical deletion", async () => {
+    const superAdmin = await seedMember("owner@onlylove.test", "super_admin");
+    const member = await seedMember("deleted@onlylove.test");
+    await pool.query("UPDATE members SET deleted_at = $1 WHERE id = $2", [
+      now,
+      member.id,
+    ]);
+    await pool.query(
+      `INSERT INTO match_criteria_versions
+        (id, member_id, version, desired_gender, acceptable_cities, created_at)
+       VALUES ($1, $2, 1, 'male', ARRAY['上海'], $3)`,
+      [randomUUID(), member.id, now],
+    );
+
+    const dashboard = await app.inject({
+      method: "GET",
+      url: "/api/admin/dashboard",
+      headers: { cookie: superAdmin.cookie },
+    });
+    expect(dashboard.json().members).toMatchObject({
+      registered: 1,
+      profileCompleted: 1,
+      structuredCriteriaCompleted: 1,
+      recommendationEligible: 0,
+    });
+  });
+
+  it("excludes members with a current contact from recommendation eligibility", async () => {
+    const superAdmin = await seedMember("owner@onlylove.test", "super_admin");
+    const member = await seedMember("member@onlylove.test");
+    const candidate = await seedMember("candidate@onlylove.test");
+    const portraitId = randomUUID();
+    const matchProfile = completeMatchProfile();
+    await pool.query(
+      `INSERT INTO match_criteria_versions
+        (id, member_id, version, desired_gender, acceptable_cities, created_at)
+       VALUES ($1, $2, 1, 'male', ARRAY['上海'], $3)`,
+      [randomUUID(), member.id, now],
+    );
+    await pool.query(
+      `INSERT INTO portrait_versions
+        (id, member_id, version, client_request_id, source_draft_schema_version,
+         match_profile, persona_context_schema_version, persona_context,
+         calibration_schema_version, created_at)
+       VALUES ($1, $2, 1, $3, 'portrait-draft-v1', $4,
+               'persona-context-v1', '测试分身上下文',
+               'portrait-calibration-v1', $5)`,
+      [portraitId, member.id, randomUUID(), matchProfile, now],
+    );
+    await seedPassingCalibration(portraitId);
+    await pool.query(
+      `INSERT INTO portrait_member_states
+        (member_id, submitted_version_id, published_version_id, updated_at)
+       VALUES ($1, $2, $2, $3)`,
+      [member.id, portraitId, now],
+    );
+    await pool.query(
+      `INSERT INTO member_connections
+        (id, member_a_id, member_b_id, status, created_at)
+       VALUES ($1, $2, $3, 'active', $4)`,
+      [randomUUID(), member.id, candidate.id, now],
+    );
+
+    const dashboard = await app.inject({
+      method: "GET",
+      url: "/api/admin/dashboard",
+      headers: { cookie: superAdmin.cookie },
+    });
+    expect(dashboard.json().members.recommendationEligible).toBe(0);
+  });
+
   it("aggregates lifecycle, quality, token, cost, latency, failure and model data", async () => {
     const superAdmin = await seedMember("owner@onlylove.test", "super_admin");
     const member = await seedMember("member@onlylove.test");
     const candidate = await seedMember("candidate@onlylove.test");
     const portraitId = randomUUID();
+    const historicalPortraitId = randomUUID();
     const candidatePortraitId = randomUUID();
     const criteriaId = randomUUID();
     const candidateCriteriaId = randomUUID();
     const jobId = randomUUID();
     const matchingJobId = randomUUID();
     const evaluationId = randomUUID();
+    const recommendationId = randomUUID();
 
     await pool.query(
       `INSERT INTO portrait_drafts
@@ -396,20 +509,40 @@ describe("issue 16 administration HTTP seam", () => {
          match_profile, persona_context_schema_version, persona_context,
          calibration_schema_version, created_at)
        VALUES
-        ($1, $2, 1, $3, 'portrait-draft-v1', '{}',
-         'persona-context-v1', '隐藏上下文', 'portrait-calibration-v1', $4),
-        ($5, $6, 1, $7, 'portrait-draft-v1', '{}',
-         'persona-context-v1', '候选隐藏上下文', 'portrait-calibration-v1', $4)`,
+        ($1, $2, 1, $3, 'portrait-draft-v1', $4,
+         'persona-context-v1', '隐藏上下文', 'portrait-calibration-v1', $5),
+        ($6, $7, 1, $8, 'portrait-draft-v1', $9,
+         'persona-context-v1', '候选隐藏上下文', 'portrait-calibration-v1', $5)`,
       [
         portraitId,
         member.id,
         randomUUID(),
+        completeMatchProfile(),
         now,
         candidatePortraitId,
         candidate.id,
         randomUUID(),
+        completeMatchProfile(),
       ],
     );
+    await pool.query(
+      `INSERT INTO portrait_versions
+        (id, member_id, version, client_request_id, source_draft_schema_version,
+         match_profile, persona_context_schema_version, persona_context,
+         calibration_schema_version, created_at)
+       VALUES ($1, $2, 2, $3, 'portrait-draft-v1', $4,
+               'persona-context-v1', '历史隐藏上下文',
+               'portrait-calibration-v1', $5)`,
+      [
+        historicalPortraitId,
+        member.id,
+        randomUUID(),
+        completeMatchProfile(),
+        now,
+      ],
+    );
+    await seedPassingCalibration(portraitId);
+    await seedPassingCalibration(historicalPortraitId);
     await pool.query(
       `INSERT INTO match_criteria_versions
         (id, member_id, version, desired_gender, acceptable_cities, created_at)
@@ -479,7 +612,7 @@ describe("issue 16 administration HTTP seam", () => {
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
                '测试推荐理由', 'pending', $9, $9)`,
       [
-        randomUUID(),
+        recommendationId,
         member.id,
         candidate.id,
         evaluationId,
@@ -487,6 +620,48 @@ describe("issue 16 administration HTTP seam", () => {
         candidatePortraitId,
         criteriaId,
         candidateCriteriaId,
+        now,
+      ],
+    );
+    await pool.query(
+      `INSERT INTO recommendation_pair_jobs
+        (id, member_id, candidate_member_id, run_date, recommendation_id,
+         agent_job_id, pair_evaluation_id, member_portrait_version_id,
+         candidate_portrait_version_id, member_criteria_version_id,
+         candidate_criteria_version_id, input, status, created_at, updated_at)
+       VALUES ($1, $2, $3, '2026-08-23', $4, $5, $6, $7, $8, $9, $10,
+               '{}', 'completed', $11, $11)`,
+      [
+        randomUUID(),
+        member.id,
+        candidate.id,
+        recommendationId,
+        matchingJobId,
+        evaluationId,
+        portraitId,
+        candidatePortraitId,
+        criteriaId,
+        candidateCriteriaId,
+        now,
+      ],
+    );
+    await pool.query(
+      `INSERT INTO candidate_recommendations
+        (id, member_id, candidate_member_id, pair_evaluation_id,
+         member_portrait_version_id, candidate_portrait_version_id,
+         member_criteria_version_id, candidate_criteria_version_id,
+         reason, status, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
+               '同日其他来源推荐', 'pending', $9, $9)`,
+      [
+        randomUUID(),
+        candidate.id,
+        member.id,
+        evaluationId,
+        candidatePortraitId,
+        portraitId,
+        candidateCriteriaId,
+        criteriaId,
         now,
       ],
     );
@@ -512,8 +687,14 @@ describe("issue 16 administration HTTP seam", () => {
     });
     expect(dashboard.statusCode).toBe(200);
     expect(dashboard.json()).toMatchObject({
-      members: { registered: 2, portraitStarted: 1, submitted: 1, published: 1 },
-      recommendations: { requested: 2, generated: 1, noCandidate: 1 },
+      members: {
+        registered: 2,
+        portraitStarted: 1,
+        submitted: 1,
+        calibrationPassed: 1,
+        published: 1,
+      },
+      recommendations: { requested: 2, generated: 2, noCandidate: 1 },
       quality: {
         calibrationPassRate: expect.any(Number),
         criticalFabrications: 0,

@@ -181,6 +181,12 @@ export function registerAdministrationRoutes(
         moderation.metrics(),
       ]);
     const memberReady = new Set(memberMetrics.recommendationReadyMemberIds);
+    const recommendationEligible =
+      await matching.administrationRecommendationEligible(
+        portraitMetrics.publishedPassingMemberIds.filter((id) =>
+          memberReady.has(id),
+        ),
+      );
     await members.recordAudit({
       actorMemberId: actor.id,
       action: "dashboard_viewed",
@@ -196,9 +202,7 @@ export function registerAdministrationRoutes(
         submitted: portraitMetrics.submitted,
         calibrationPassed: portraitMetrics.calibrationPassed,
         published: portraitMetrics.published,
-        recommendationEligible: portraitMetrics.publishedPassingMemberIds.filter(
-          (id) => memberReady.has(id),
-        ).length,
+        recommendationEligible,
       },
       recommendations,
       contacts,

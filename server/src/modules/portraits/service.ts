@@ -1624,6 +1624,7 @@ export class Portraits {
       this.db
         .select({
           portraitVersionId: portraitCalibrationScenarios.portraitVersionId,
+          memberId: portraitVersions.memberId,
           rating: portraitCalibrationAnswers.rating,
           criticalFabrication: portraitCalibrationAnswers.criticalFabrication,
         })
@@ -1634,14 +1635,19 @@ export class Portraits {
             portraitCalibrationScenarios.id,
             portraitCalibrationAnswers.scenarioId,
           ),
+        )
+        .innerJoin(
+          portraitVersions,
+          eq(portraitVersions.id, portraitCalibrationScenarios.portraitVersionId),
         ),
     ]);
     const calibrationByVersion = new Map<
       string,
-      { total: number; likes: number; fabrication: boolean }
+      { memberId: string; total: number; likes: number; fabrication: boolean }
     >();
     for (const answer of calibration) {
       const outcome = calibrationByVersion.get(answer.portraitVersionId) ?? {
+        memberId: answer.memberId,
         total: 0,
         likes: 0,
         fabrication: false,
@@ -1654,17 +1660,19 @@ export class Portraits {
     const completed = [...calibrationByVersion.entries()].filter(
       ([, outcome]) => outcome.total === 10,
     );
-    const passedVersions = new Set(
-      completed
-        .filter(([, outcome]) => outcome.likes >= 8 && !outcome.fabrication)
-        .map(([versionId]) => versionId),
+    const passed = completed.filter(
+      ([, outcome]) => outcome.likes >= 8 && !outcome.fabrication,
+    );
+    const passedVersions = new Set(passed.map(([versionId]) => versionId));
+    const passedMembers = new Set(
+      passed.map(([, outcome]) => outcome.memberId),
     );
     return {
       portraitStarted: drafts.length,
       portraitComplete: drafts.filter((draft) => draft.completedDimensions === 8)
         .length,
       submitted: states.length,
-      calibrationPassed: passedVersions.size,
+      calibrationPassed: passedMembers.size,
       published: states.filter((state) => state.publishedVersionId).length,
       publishedPassingMemberIds: states
         .filter(

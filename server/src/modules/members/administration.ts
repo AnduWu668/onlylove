@@ -182,11 +182,9 @@ export class MembersAdministration {
         .from(matchCriteriaVersions),
     ]);
     const criteriaMembers = new Set(criteriaRows.map(({ memberId }) => memberId));
-    const activeCompleteMembers = memberRows.filter(
+    const completeMembers = memberRows.filter(
       (member) =>
-        !member.deletedAt &&
         !member.purgedAt &&
-        (!member.suspendedUntil || member.suspendedUntil <= at) &&
         member.birthDate &&
         member.nickname &&
         member.gender &&
@@ -195,11 +193,16 @@ export class MembersAdministration {
     );
     return {
       registered: memberRows.filter((member) => !member.purgedAt).length,
-      profileCompleted: activeCompleteMembers.length,
+      profileCompleted: completeMembers.length,
       structuredCriteriaCompleted: new Set(criteriaRows.map(({ memberId }) => memberId))
         .size,
-      recommendationReadyMemberIds: activeCompleteMembers
-        .filter((member) => criteriaMembers.has(member.id))
+      recommendationReadyMemberIds: completeMembers
+        .filter(
+          (member) =>
+            !member.deletedAt &&
+            (!member.suspendedUntil || member.suspendedUntil <= at) &&
+            criteriaMembers.has(member.id),
+        )
         .map(({ id }) => id),
     };
   }

@@ -311,16 +311,19 @@ export class Matching {
       this.db.select().from(recommendationPairJobs),
       this.db.select().from(candidateRecommendations),
     ]);
+    const recommendationEvaluationIds = new Set(
+      recommendations.map(({ pairEvaluationId }) => pairEvaluationId),
+    );
     const runsWithCandidate = new Set(
       pairJobs
-        .filter((job) => job.runDate && job.recommendationId)
+        .filter(
+          (job) =>
+            job.runDate &&
+            (job.recommendationId ||
+              (job.pairEvaluationId &&
+                recommendationEvaluationIds.has(job.pairEvaluationId))),
+        )
         .map((job) => `${job.memberId}:${job.runDate}`),
-    );
-    const recommendationDates = new Set(
-      recommendations.map(
-        (recommendation) =>
-          `${recommendation.memberId}:${beijingDate(recommendation.createdAt)}`,
-      ),
     );
     return {
       requested: dailyRuns.length,
@@ -328,10 +331,15 @@ export class Matching {
       noCandidate: dailyRuns.filter(
         (run) =>
           run.status === "completed" &&
-          !runsWithCandidate.has(`${run.memberId}:${run.runDate}`) &&
-          !recommendationDates.has(`${run.memberId}:${run.runDate}`),
+          !runsWithCandidate.has(`${run.memberId}:${run.runDate}`),
       ).length,
     };
+  }
+
+  async administrationRecommendationEligible(memberIds: string[]) {
+    if (!memberIds.length) return 0;
+    const qualifications = await this.qualifications(memberIds);
+    return memberIds.filter((id) => qualifications.get(id)?.eligible).length;
   }
 
   private async qualifications(memberIds: string[]) {
