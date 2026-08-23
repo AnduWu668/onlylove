@@ -20,7 +20,8 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run db:ensure && npm run test:prepare -w server && npm run test --workspaces --if-present",
     "test:ci": "npm run test:prepare -w server && npm run typecheck && npm run test --workspaces --if-present",
-    "test:core": "npm run db:ensure && npm run test:prepare -w server && npm run test:core -w server"
+    "test:core": "npm run db:ensure && npm run test:prepare -w server && npm run test:core -w server",
+    "acceptance": "npm run db:ensure && npm run test:ci && npm run build"
   },
   "devDependencies": {
     "concurrently": "9.2.4"

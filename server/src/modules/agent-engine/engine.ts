@@ -52,7 +52,7 @@ export interface DeterministicAgentModelOptions {
   model: string;
   backupModel?: string;
   reply?: string;
-  extractReply?: string;
+  extractReply?: string | ((content: string) => string);
   error?: string;
   attempts?: DeterministicAttempt[];
 }
@@ -179,6 +179,7 @@ export class AgentRunError extends Error {
 
 function deterministicRuntime(
   options: DeterministicAgentModelOptions,
+  inputTokenBudget: number,
 ): AgentModelRuntime {
   const scripted = options.attempts;
   if (
@@ -197,7 +198,7 @@ function deterministicRuntime(
     models: modelIds.map((id) => ({
       id,
       input: ["text"],
-      contextWindow: 32_768,
+      contextWindow: inputTokenBudget + 4_096,
     })),
     tokensPerSecond: 0,
   });
@@ -207,10 +208,16 @@ function deterministicRuntime(
       ? registration.getModel(options.backupModel)
       : undefined,
     prepareAttempt: (attempt, model, content, history, systemPrompt) => {
-      const response =
+      const extractReply =
         systemPrompt === portraitExtractorDefinition.systemPrompt &&
         options.extractReply !== undefined
-          ? { reply: options.extractReply }
+          ? typeof options.extractReply === "function"
+            ? options.extractReply(content)
+            : options.extractReply
+          : undefined;
+      const response =
+        extractReply !== undefined
+          ? { reply: extractReply }
           : scripted?.[attempt] ?? {
               reply: options.reply,
               error: options.error,
@@ -262,7 +269,11 @@ function deterministicRuntime(
   };
 }
 
-function arkModel(options: ArkAgentModelOptions, id: string): Model<"openai-completions"> {
+function arkModel(
+  options: ArkAgentModelOptions,
+  id: string,
+  inputTokenBudget: number,
+): Model<"openai-completions"> {
   return {
     id,
     name: id,
@@ -272,7 +283,7 @@ function arkModel(options: ArkAgentModelOptions, id: string): Model<"openai-comp
     reasoning: false,
     input: ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 32_768,
+    contextWindow: inputTokenBudget + 4_096,
     maxTokens: 4_096,
     compat: {
       supportsStore: false,
@@ -284,11 +295,14 @@ function arkModel(options: ArkAgentModelOptions, id: string): Model<"openai-comp
   };
 }
 
-function arkRuntime(options: ArkAgentModelOptions): AgentModelRuntime {
+function arkRuntime(
+  options: ArkAgentModelOptions,
+  inputTokenBudget: number,
+): AgentModelRuntime {
   return {
-    primaryModel: arkModel(options, options.model),
+    primaryModel: arkModel(options, options.model, inputTokenBudget),
     backupModel: options.backupModel
-      ? arkModel(options, options.backupModel)
+      ? arkModel(options, options.backupModel, inputTokenBudget)
       : undefined,
     getApiKey: (provider) =>
       provider === options.provider ? options.apiKey : undefined,
@@ -416,8 +430,8 @@ export class AgentEngine {
   ) {
     this.#runtime = options
       ? options.provider === "deterministic-fake"
-        ? deterministicRuntime(options)
-        : arkRuntime(options)
+        ? deterministicRuntime(options, inputTokenBudget)
+        : arkRuntime(options, inputTokenBudget)
       : {};
     this.#inputTokenBudget = inputTokenBudget;
     this.interviewerDefinition = {

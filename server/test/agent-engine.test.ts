@@ -264,6 +264,25 @@ describe("Agent Engine continueInterview seam", () => {
     engine.close();
   });
 
+  it("lets the deterministic extractor derive a reply from the current prompt", async () => {
+    const engine = new AgentEngine({
+      provider: "deterministic-fake",
+      model: "extractor-v1",
+      reply: "unused text reply",
+      extractReply: (prompt) =>
+        JSON.stringify({ summary: prompt.includes("evidence-17") ? "found" : "missing" }),
+    });
+
+    const result = await engine.extractPortrait(
+      "extract evidence-17",
+      Type.Object({ summary: Type.String() }),
+      async () => undefined,
+    );
+
+    expect(result.value).toEqual({ summary: "found" });
+    engine.close();
+  });
+
   it("assembles member data and recent messages within the token budget", async () => {
     const history = Array.from({ length: 30 }, (_, index) => ({
       role: index % 2 ? ("agent" as const) : ("member" as const),

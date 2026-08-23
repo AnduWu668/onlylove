@@ -275,6 +275,75 @@ async function benchmarkTwin(engine: AgentEngine, item: TwinCase) {
   console.info(`PASS twin/${item.id} model=${result.actualModel}`);
 }
 
+function longHistory(prefix: string, markers: string[]) {
+  const markerByIndex = new Map([
+    [4, markers[0]],
+    [34, markers[1]],
+    [50, markers[2]],
+  ]);
+  const filler = "这是一段用于上下文长度实验的中性对话记录。".repeat(40);
+  return Array.from({ length: 60 }, (_, index) => ({
+    role: index % 2 === 0 ? ("member" as const) : ("agent" as const),
+    content: `${prefix}${index + 1}：${markerByIndex.get(index) ?? "没有新增代号。"}${filler}`,
+  }));
+}
+
+function logContextResult(
+  role: "interview" | "twin",
+  markers: string[],
+  text: string,
+  attempts: AgentAttemptResult[],
+) {
+  const attempt = attempts.at(-1)!;
+  const recalled = markers.filter((marker) => text.includes(marker)).length;
+  console.info(
+    `RESULT context/${role} quality=${recalled}/${markers.length} ` +
+      `input_tokens=${attempt.inputTokens} output_tokens=${attempt.outputTokens} ` +
+      `latency_ms=${attempt.latencyMs} first_token_ms=${attempt.firstTokenLatencyMs} ` +
+      `cost_micro_cny=${attempt.estimatedCostMicroCny} model=${attempt.actualModel}`,
+  );
+}
+
+async function benchmarkLongContext(engine: AgentEngine) {
+  const interviewMarkers = ["访谈代号-青石", "访谈代号-远帆", "访谈代号-暖灯"];
+  const interview = await engine.continueInterview(
+    {
+      memberProfile: {
+        nickname: "长上下文成员",
+        birthDate: "1990-01-01",
+        gender: "female",
+        heightCm: 165,
+        city: "上海",
+        occupation: "设计师",
+      },
+      matchCriteria: null,
+      portraitDraft: emptyPortraitDraft(),
+      questionPlannerVersion: "portrait-question-planner-v1",
+      planningPriority: "long_context_recall",
+      recentMessages: longHistory("访谈记录", interviewMarkers),
+    },
+    "请只列出我在此前访谈中明确说过的三个访谈代号；没看到的不要猜。",
+    () => undefined,
+    async () => undefined,
+  );
+  collect(interview.attempts);
+  logContextResult("interview", interviewMarkers, interview.text, interview.attempts);
+
+  const twinMarkers = ["分身代号-云桥", "分身代号-松风", "分身代号-星河"];
+  const twin = await engine.replyAsTwin(
+    {
+      personaContext: "只依据已提供的信息回答；不知道时明确说不知道。",
+      publicProfile: null,
+      recentMessages: longHistory("分身会话", twinMarkers),
+    },
+    "请只列出访客在此前会话中明确说过的三个分身代号；没看到的不要猜。",
+    undefined,
+    async () => undefined,
+  );
+  collect(twin.attempts);
+  logContextResult("twin", twinMarkers, twin.text, twin.attempts);
+}
+
 async function extractPortrait(
   engine: AgentEngine,
   current: ReturnType<typeof emptyPortraitDraft>,
@@ -400,9 +469,20 @@ async function benchmarkMatching(
 }
 
 loadRootEnv();
+const interviewOnly = process.argv.includes("--interview");
+const extractionOnly = process.argv.includes("--extraction");
+const twinOnly = process.argv.includes("--twin");
 const learningOnly = process.argv.includes("--portrait-learning");
 const matchingOnly = process.argv.includes("--matching");
+const contextOnly = process.argv.includes("--context");
 const deterministic = process.argv.includes("--deterministic");
+const selected =
+  interviewOnly ||
+  extractionOnly ||
+  twinOnly ||
+  learningOnly ||
+  matchingOnly ||
+  contextOnly;
 assert(
   !deterministic || matchingOnly,
   "deterministic mode currently supports the matching benchmark",
@@ -429,15 +509,22 @@ console.info(
 );
 let caseCount = 0;
 try {
-  if (!matchingOnly && !learningOnly) {
+  if (!selected || interviewOnly) {
     assert(engine);
     for (const item of interviewCases) await benchmarkInterview(engine, item);
-    for (const item of extractionCases) await benchmarkExtraction(engine, item);
-    for (const item of twinCases) await benchmarkTwin(engine, item);
-    caseCount +=
-      interviewCases.length + extractionCases.length + twinCases.length;
+    caseCount += interviewCases.length;
   }
-  if (!matchingOnly) {
+  if (!selected || extractionOnly) {
+    assert(engine);
+    for (const item of extractionCases) await benchmarkExtraction(engine, item);
+    caseCount += extractionCases.length;
+  }
+  if (!selected || twinOnly) {
+    assert(engine);
+    for (const item of twinCases) await benchmarkTwin(engine, item);
+    caseCount += twinCases.length;
+  }
+  if (!selected || learningOnly) {
     assert(engine);
     const portraitLearningResults = [];
     for (const item of portraitLearningSuite.cases) {
@@ -466,7 +553,7 @@ try {
       `portrait learning vetoes: ${refined.vetoes.join(", ")}`,
     );
   }
-  if (!learningOnly) {
+  if (!selected || matchingOnly) {
     const matchingResults = [];
     for (const item of matchingSuite.cases) {
       matchingResults.push(
@@ -475,6 +562,11 @@ try {
     }
     assertMatchingRanking(matchingResults, deterministic);
     caseCount += matchingSuite.cases.length;
+  }
+  if (contextOnly) {
+    assert(engine);
+    await benchmarkLongContext(engine);
+    caseCount += 2;
   }
 } finally {
   engine?.close();
