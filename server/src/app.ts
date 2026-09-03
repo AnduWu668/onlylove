@@ -206,12 +206,25 @@ export async function createApp(options: AppOptions) {
     moderation,
     portraits,
   });
+  let maintenanceRun: Promise<void> | undefined;
+  const runMaintenance = () => {
+    if (!maintenanceRun) {
+      maintenanceRun = connections
+        .runMaintenance()
+        .catch((error) => app.log.error(error))
+        .finally(() => {
+          maintenanceRun = undefined;
+        });
+    }
+    return maintenanceRun;
+  };
   const connectionMaintenance = setInterval(() => {
-    void connections.runMaintenance().catch((error) => app.log.error(error));
+    void runMaintenance();
   }, options.connectionMaintenanceIntervalMs ?? 60_000);
   connectionMaintenance.unref();
   app.addHook("onClose", async () => {
     clearInterval(connectionMaintenance);
+    if (maintenanceRun) await maintenanceRun;
     agentEngine.close();
     await pool.end();
   });
